@@ -1,0 +1,22 @@
+# Core dependencies (with compatible versions)
+torch>=2.5.0
+torchvision>=0.20.0
+pytorchvideo @ git+https://github.com/facebookresearch/pytorchvideo.git
+av>=8.0.0
+typing-extensions>=4.0.0
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-xdist>=3.0.0
+pytest-mock>=3.10.0
+
+# Code quality
+flake8>=5.0.0
+black>=22.0.0
+isort>=5.10.0
+
+# Additional utilities
+numpy>=1.21.0
+matplotlib>=3.5.0
+scikit-learn>=1.0.0 
