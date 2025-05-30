@@ -222,8 +222,8 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         running_loss += total_loss.item() * batch_data["clips"].size(0)
         sev_acc = calculate_accuracy(sev_logits, severity_labels)
         act_acc = calculate_accuracy(act_logits, action_labels)
-        sev_f1 = calculate_f1_score(sev_logits, severity_labels, 4)
-        act_f1 = calculate_f1_score(act_logits, action_labels, 8)
+        sev_f1 = calculate_f1_score(sev_logits, severity_labels, 5)  # 5 severity classes
+        act_f1 = calculate_f1_score(act_logits, action_labels, 9)  # 9 action classes
         
         running_sev_acc += sev_acc
         running_act_acc += act_acc
@@ -291,8 +291,8 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             act_acc = calculate_accuracy(act_logits, action_labels)
             running_sev_acc += sev_acc
             running_act_acc += act_acc
-            running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 4)
-            running_act_f1 += calculate_f1_score(act_logits, action_labels, 8)
+            running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 5)  # 5 severity classes
+            running_act_f1 += calculate_f1_score(act_logits, action_labels, 9)  # 9 action classes
             processed_batches += 1
             
             # Update progress bar
@@ -494,8 +494,8 @@ if __name__ == "__main__":
     # Initialize model with proper configuration
     logger.info(f"Initializing model: {args.model_name}")
     model = MultiTaskMultiViewMViT(
-        num_severity=4,  # 4 severity classes: No Offence, Offence + No Card, Offence + Yellow Card, Offence + Red Card
-        num_action_type=8,  # 8 action types: Standing Tackle, Tackle, Holding, Pushing, Challenge, Dive, High Leg, Elbowing
+        num_severity=5,  # 5 severity classes: 1.0, 2.0, 3.0, 4.0, 5.0
+        num_action_type=9,  # 9 action types: Challenge, Dive, Dont know, Elbowing, High leg, Holding, Pushing, Standing tackling, Tackling
         vocab_sizes=vocab_sizes,
         config=model_config
     )

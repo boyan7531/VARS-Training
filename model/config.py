@@ -23,17 +23,17 @@ class ModelConfig:
     handball_offence_embedding_dim: int = 8
     offence_embedding_dim: int = 8
     
-    # Standard vocabulary sizes (fixed)
-    num_offence_classes: int = 2
-    num_contact_standard_classes: int = 2
-    num_bodypart_standard_classes: int = 3
-    num_upper_bodypart_standard_classes: int = 3
-    num_lower_bodypart_standard_classes: int = 4
-    num_multiple_fouls_standard_classes: int = 2
-    num_try_to_play_standard_classes: int = 2
-    num_touch_ball_standard_classes: int = 2
-    num_handball_standard_classes: int = 2
-    num_handball_offence_standard_classes: int = 2
+    # Standard vocabulary sizes (fixed) - Updated to match actual dataset values
+    num_offence_classes: int = 3  # "No offence": 0, "Offence": 1, "Between": 2
+    num_contact_standard_classes: int = 2  # "Without contact": 0, "With contact": 1
+    num_bodypart_standard_classes: int = 3  # "": 0, "Upper body": 1, "Under body": 2
+    num_upper_bodypart_standard_classes: int = 3  # "": 0, "Use of shoulder": 1, "Use of arms": 2
+    num_lower_bodypart_standard_classes: int = 4  # "": 0, "Use of leg": 1, "Use of knee": 2, "Use of foot": 3
+    num_multiple_fouls_standard_classes: int = 2  # "": 0, "Yes": 1
+    num_try_to_play_standard_classes: int = 2  # "": 0, "No": 0, "Yes": 1
+    num_touch_ball_standard_classes: int = 3  # "": 0, "No": 0, "Yes": 1, "Maybe": 2
+    num_handball_standard_classes: int = 2  # "No handball": 0, "Handball": 1
+    num_handball_offence_standard_classes: int = 2  # "": 0, "No offence": 0, "Offence": 1
     
     # Model settings
     pretrained_model_name: str = 'mvit_base_16x4'

@@ -6,11 +6,25 @@ import json
 from pathlib import Path
 import random
 
-# Define label mappings (as per SoccerNet MVFoul task description)
-SEVERITY_LABELS = {"No Offence": 0, "Offence + No Card": 1, "Offence + Yellow Card": 2, "Offence + Red Card": 3}
+# Define label mappings based on actual dataset annotations
+SEVERITY_LABELS = {
+    "1.0": 0,  # Lowest severity 
+    "2.0": 1,  # Low severity
+    "3.0": 2,  # Medium severity  
+    "4.0": 3,  # High severity
+    "5.0": 4   # Highest severity (Red card level)
+}
+
 ACTION_TYPE_LABELS = {
-    "Standing Tackle": 0, "Tackle": 1, "Holding": 2, "Pushing": 3,
-    "Challenge": 4, "Dive": 5, "High Leg": 6, "Elbowing": 7
+    "Challenge": 0,
+    "Dive": 1, 
+    "Dont know": 2,
+    "Elbowing": 3,
+    "High leg": 4,
+    "Holding": 5,
+    "Pushing": 6,
+    "Standing tackling": 7,
+    "Tackling": 8
 }
 # Inverse maps for potential debugging or inspection
 INV_SEVERITY_LABELS = {v: k for k, v in SEVERITY_LABELS.items()}
@@ -29,17 +43,17 @@ HANDBALL_OFFENCE_FIELD = "Handball offence"
 REPLAY_SPEED_FIELD = "Replay speed"
 UNKNOWN_TOKEN = "<UNK>"
 
-# Standard mappings for common fields (for reference and consistent values)
-OFFENCE_VALUES = {"Offence": 1, "No offence": 0}
+# Standard mappings for common fields (updated to handle all possible values)
+OFFENCE_VALUES = {"Offence": 1, "No offence": 0, "Between": 2}
 CONTACT_VALUES = {"With contact": 1, "Without contact": 0}
-BODYPART_VALUES = {"Upper body": 1, "Lower body": 2}
-UPPER_BODYPART_VALUES = {"Use of shoulder": 1, "Use of arm": 2}
+BODYPART_VALUES = {"Upper body": 1, "Under body": 2, "": 0}  # Empty string maps to 0
+UPPER_BODYPART_VALUES = {"Use of shoulder": 1, "Use of arms": 2, "": 0}  # Empty string maps to 0
 LOWER_BODYPART_VALUES = {"Use of leg": 1, "Use of knee": 2, "Use of foot": 3}
-MULTIPLE_FOULS_VALUES = {"Yes": 1, "No": 0}
-TRY_TO_PLAY_VALUES = {"Yes": 1, "No": 0}
-TOUCH_BALL_VALUES = {"Yes": 1, "No": 0}
+MULTIPLE_FOULS_VALUES = {"Yes": 1, "": 0}  # Empty string maps to 0 (No)
+TRY_TO_PLAY_VALUES = {"Yes": 1, "No": 0, "": 0}  # Empty string maps to 0 (No)
+TOUCH_BALL_VALUES = {"Yes": 1, "No": 0, "Maybe": 2, "": 0}  # Empty string maps to 0 (No)
 HANDBALL_VALUES = {"Handball": 1, "No handball": 0}
-HANDBALL_OFFENCE_VALUES = {"Yes": 1, "No": 0}
+HANDBALL_OFFENCE_VALUES = {"Offence": 1, "No offence": 0, "": 0}  # Empty string maps to 0 (No offence)
 
 # Inverse mappings
 INV_OFFENCE_VALUES = {v: k for k, v in OFFENCE_VALUES.items()}
@@ -155,7 +169,7 @@ class SoccerNetMVFoulDataset(Dataset):
         for action_details in actions_dict.values():
             if isinstance(action_details, dict):
                 value = action_details.get(field_name)
-                if value is not None and isinstance(value, str) and value.strip(): # Ensure it's a non-empty string
+                if value is not None and isinstance(value, str): # Include empty strings
                     unique_values.add(value)
                 
                 # Also check in clips for replay speed
@@ -163,7 +177,7 @@ class SoccerNetMVFoulDataset(Dataset):
                     for clip in action_details["Clips"]:
                         if isinstance(clip, dict) and REPLAY_SPEED_FIELD in clip:
                             replay_speed = str(clip.get(REPLAY_SPEED_FIELD))
-                            if replay_speed and replay_speed.strip():
+                            if replay_speed is not None:
                                 unique_values.add(replay_speed)
         
         sorted_values = sorted(list(unique_values))
@@ -175,32 +189,6 @@ class SoccerNetMVFoulDataset(Dataset):
     def _process_annotations(self, annotations_data: dict):
         processed_actions = []
 
-        # Mappings from your specific JSON values to the internal label strings
-        # For Severity:
-        # "1.0" -> "Offence + No Card"
-        # "3.0" -> "Offence + Yellow Card"
-        # "5.0" -> "Offence + Red Card"
-        # "" (empty string) or main "Offence" field is "No offence" -> "No Offence"
-        severity_json_map = {
-            "1.0": "Offence + No Card",
-            "3.0": "Offence + Yellow Card",
-            "5.0": "Offence + Red Card",
-            "": "No Offence" 
-        }
-
-        # For Action Class:
-        action_class_json_map = {
-            "Challenge": "Challenge",
-            "Tackling": "Tackle",
-            "Standing tackling": "Standing Tackle",
-            "High leg": "High Leg",
-            "Dive": "Dive",
-            "Pushing": "Pushing", # Added based on common foul types
-            "Holding": "Holding",   # Added based on common foul types
-            "Elbowing": "Elbowing" # Added based on common foul types
-            # Add other mappings if present in your JSON, e.g. "Handball foul" -> ?
-        }
-
         actions_dict = annotations_data.get("Actions")
         if not isinstance(actions_dict, dict):
             print(f"Warning: 'Actions' key not found in {self.annotation_path} or is not a dictionary. No actions will be loaded.")
@@ -208,41 +196,53 @@ class SoccerNetMVFoulDataset(Dataset):
 
         for action_id_str, action_details in actions_dict.items():
             if not isinstance(action_details, dict):
-                # print(f"Warning: Action details for ID {action_id_str} is not a dictionary. Skipping.")
                 continue
 
-            # --- Severity Label ---
-            json_severity_val = action_details.get("Severity", "") # Default to empty string if missing
+            # --- Severity Label (with graceful handling of missing values) ---
+            json_severity_val = action_details.get("Severity", "")  # Default to empty string if missing
             
-            # If main "Offence" field is "No offence", it should always be "No Offence" severity
-            if action_details.get("Offence") == "No offence":
-                 severity_label_str = "No Offence"
-            elif json_severity_val in severity_json_map:
-                severity_label_str = severity_json_map[json_severity_val]
+            # Handle missing severity values based on Offence field
+            if json_severity_val == "" or json_severity_val is None:
+                offence_val = action_details.get("Offence", "")
+                if offence_val == "No offence":
+                    # If explicitly marked as no offence, assign lowest severity
+                    json_severity_val = "1.0"
+                    print(f"Info: Missing severity for action {action_id_str}, assigned 1.0 based on 'No offence'")
+                elif offence_val == "Offence":
+                    # If marked as offence but no severity, assign medium severity
+                    json_severity_val = "2.0" 
+                    print(f"Info: Missing severity for action {action_id_str}, assigned 2.0 based on 'Offence'")
+                elif offence_val == "Between":
+                    # Uncertain cases get low severity
+                    json_severity_val = "1.0"
+                    print(f"Info: Missing severity for action {action_id_str}, assigned 1.0 based on 'Between'")
+                else:
+                    # Complete fallback - assign low severity
+                    json_severity_val = "1.0"
+                    print(f"Info: Missing severity for action {action_id_str}, assigned default 1.0")
+            
+            # Direct mapping from JSON values
+            if json_severity_val in SEVERITY_LABELS:
+                numerical_severity = SEVERITY_LABELS[json_severity_val]
             else:
-                # print(f"Warning: Unknown 'Severity' value '{json_severity_val}' for action {action_id_str}. Defaulting to 'No Offence'.")
-                severity_label_str = "No Offence" # Default or skip
+                print(f"Warning: Unknown 'Severity' value '{json_severity_val}' for action {action_id_str}. Assigning default 1.0.")
+                numerical_severity = SEVERITY_LABELS["1.0"]  # Default to lowest severity
 
-            if severity_label_str not in SEVERITY_LABELS:
-                # This case should ideally be handled by the map or a default above
-                # print(f"Warning: Mapped severity '{severity_label_str}' not in SEVERITY_LABELS for action {action_id_str}. Skipping.")
-                continue
+            # --- Action Type Label (with graceful handling of missing values) ---
+            json_action_class = action_details.get("Action class", "")
             
-            numerical_severity = SEVERITY_LABELS[severity_label_str]
-
-            # --- Action Type Label ---
-            json_action_class = action_details.get("Action class")
-            if json_action_class in action_class_json_map:
-                action_type_label_str = action_class_json_map[json_action_class]
+            # Handle missing action class values  
+            if json_action_class == "" or json_action_class is None:
+                # Assign most common action type as default
+                json_action_class = "Standing tackling"  # Most common in dataset (43.5%)
+                print(f"Info: Missing action class for action {action_id_str}, assigned default 'Standing tackling'")
+                
+            # Direct mapping from JSON values
+            if json_action_class in ACTION_TYPE_LABELS:
+                numerical_action_type = ACTION_TYPE_LABELS[json_action_class]
             else:
-                # print(f"Warning: Unknown 'Action class' value '{json_action_class}' for action {action_id_str}. Skipping this action.")
-                continue # Skip if action class is unknown and unmapped
-
-            if action_type_label_str not in ACTION_TYPE_LABELS:
-                # print(f"Warning: Mapped action type '{action_type_label_str}' not in ACTION_TYPE_LABELS for action {action_id_str}. Skipping.")
-                continue
-            
-            numerical_action_type = ACTION_TYPE_LABELS[action_type_label_str]
+                print(f"Warning: Unknown 'Action class' value '{json_action_class}' for action {action_id_str}. Assigning default 'Dont know'.")
+                numerical_action_type = ACTION_TYPE_LABELS["Dont know"]  # Default to unknown category
 
             # --- Video Files ---
             clips_info_list = action_details.get("Clips", [])
@@ -297,11 +297,11 @@ class SoccerNetMVFoulDataset(Dataset):
             # --- Process all categorical features using standard mappings ---
             
             # Offence
-            offence_str = action_details.get("Offence", UNKNOWN_TOKEN)
+            offence_str = action_details.get("Offence", "")  # Default to empty string
             offence_idx = OFFENCE_VALUES.get(offence_str, 0) # Default to 0 (No offence) if not found
             
             # Contact
-            contact_str = action_details.get(CONTACT_FIELD, UNKNOWN_TOKEN)
+            contact_str = action_details.get(CONTACT_FIELD, "")  # Default to empty string
             contact_idx = self.contact_vocab.get(contact_str, self.contact_vocab[UNKNOWN_TOKEN])
             # Standard mapping for consistent numerical values
             if contact_str in CONTACT_VALUES:
@@ -310,7 +310,7 @@ class SoccerNetMVFoulDataset(Dataset):
                 contact_standard_idx = 0 # Default to "Without contact"
             
             # Bodypart
-            bodypart_str = action_details.get(BODYPART_FIELD, UNKNOWN_TOKEN)
+            bodypart_str = action_details.get(BODYPART_FIELD, "")  # Default to empty string
             bodypart_idx = self.bodypart_vocab.get(bodypart_str, self.bodypart_vocab[UNKNOWN_TOKEN])
             # Standard mapping for consistent numerical values
             if bodypart_str in BODYPART_VALUES:
@@ -319,7 +319,7 @@ class SoccerNetMVFoulDataset(Dataset):
                 bodypart_standard_idx = 0 # Default to unknown
             
             # Upper body part (only applicable when Bodypart is "Upper body")
-            upper_bodypart_str = action_details.get(UPPER_BODYPART_FIELD, UNKNOWN_TOKEN)
+            upper_bodypart_str = action_details.get(UPPER_BODYPART_FIELD, "")  # Default to empty string
             upper_bodypart_idx = self.upper_bodypart_vocab.get(upper_bodypart_str, self.upper_bodypart_vocab[UNKNOWN_TOKEN])
             # Standard mapping
             if upper_bodypart_str in UPPER_BODYPART_VALUES:
@@ -328,7 +328,7 @@ class SoccerNetMVFoulDataset(Dataset):
                 upper_bodypart_standard_idx = 0 # Default to unknown
                 
             # Lower body part (only applicable when Bodypart is "Lower body")
-            lower_bodypart_str = action_details.get(LOWER_BODYPART_FIELD, UNKNOWN_TOKEN)
+            lower_bodypart_str = action_details.get(LOWER_BODYPART_FIELD, "")  # Default to empty string
             # Create vocab on the fly if this field wasn't explicitly processed
             if not hasattr(self, 'lower_bodypart_vocab'):
                 self.lower_bodypart_vocab = {UNKNOWN_TOKEN: 0}
@@ -343,7 +343,7 @@ class SoccerNetMVFoulDataset(Dataset):
                 lower_bodypart_standard_idx = 0 # Default to unknown
             
             # Multiple fouls
-            multiple_fouls_str = action_details.get(MULTIPLE_FOULS_FIELD, UNKNOWN_TOKEN)
+            multiple_fouls_str = action_details.get(MULTIPLE_FOULS_FIELD, "")  # Default to empty string
             multiple_fouls_idx = self.multiple_fouls_vocab.get(multiple_fouls_str, self.multiple_fouls_vocab[UNKNOWN_TOKEN])
             # Standard mapping
             if multiple_fouls_str in MULTIPLE_FOULS_VALUES:
@@ -352,7 +352,7 @@ class SoccerNetMVFoulDataset(Dataset):
                 multiple_fouls_standard_idx = 0 # Default to "No"
             
             # Try to play
-            try_to_play_str = action_details.get(TRY_TO_PLAY_FIELD, UNKNOWN_TOKEN)
+            try_to_play_str = action_details.get(TRY_TO_PLAY_FIELD, "")  # Default to empty string
             try_to_play_idx = self.try_to_play_vocab.get(try_to_play_str, self.try_to_play_vocab[UNKNOWN_TOKEN])
             # Standard mapping
             if try_to_play_str in TRY_TO_PLAY_VALUES:
@@ -361,7 +361,7 @@ class SoccerNetMVFoulDataset(Dataset):
                 try_to_play_standard_idx = 0 # Default to "No"
             
             # Touch ball
-            touch_ball_str = action_details.get(TOUCH_BALL_FIELD, UNKNOWN_TOKEN)
+            touch_ball_str = action_details.get(TOUCH_BALL_FIELD, "")  # Default to empty string
             touch_ball_idx = self.touch_ball_vocab.get(touch_ball_str, self.touch_ball_vocab[UNKNOWN_TOKEN])
             # Standard mapping
             if touch_ball_str in TOUCH_BALL_VALUES:
@@ -370,7 +370,7 @@ class SoccerNetMVFoulDataset(Dataset):
                 touch_ball_standard_idx = 0 # Default to "No"
             
             # Handball
-            handball_str = action_details.get(HANDBALL_FIELD, UNKNOWN_TOKEN)
+            handball_str = action_details.get(HANDBALL_FIELD, "No handball")  # Default to "No handball"
             handball_idx = self.handball_vocab.get(handball_str, self.handball_vocab[UNKNOWN_TOKEN])
             # Standard mapping
             if handball_str in HANDBALL_VALUES:
@@ -379,7 +379,7 @@ class SoccerNetMVFoulDataset(Dataset):
                 handball_standard_idx = 0 # Default to "No handball"
             
             # Handball offence
-            handball_offence_str = action_details.get(HANDBALL_OFFENCE_FIELD, UNKNOWN_TOKEN)
+            handball_offence_str = action_details.get(HANDBALL_OFFENCE_FIELD, "")  # Default to empty string
             handball_offence_idx = self.handball_offence_vocab.get(handball_offence_str, self.handball_offence_vocab[UNKNOWN_TOKEN])
             # Standard mapping
             if handball_offence_str in HANDBALL_OFFENCE_VALUES:

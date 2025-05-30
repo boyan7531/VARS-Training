@@ -12,3 +12,5 @@ mvfouls/
 *.mkv
 *.flv
 *.wmv
+
+combined_vars_training.py
