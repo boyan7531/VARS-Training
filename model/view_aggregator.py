@@ -56,7 +56,7 @@ class ViewAggregator(nn.Module):
         
         # Apply mask to set scores of invalid views to -inf
         mask_expanded = view_mask.unsqueeze(-1)
-        masked_scores = attention_scores.masked_fill(~mask_expanded, -1e9)
+        masked_scores = attention_scores.masked_fill(~mask_expanded, -1e4)
         
         # Apply softmax to get attention weights
         attention_weights = torch.softmax(masked_scores, dim=1)
