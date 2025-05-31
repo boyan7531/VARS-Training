@@ -10,12 +10,38 @@ from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
 import sys
 import os
+from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dataset import SoccerNetMVFoulDataset, variable_views_collate_fn
 from model import MultiTaskMultiViewMViT, ModelConfig
 from pytorchvideo.transforms import ShortSideScale, Normalize as VideoNormalize
 from torchvision.transforms import Compose, CenterCrop
+
+def find_mvfouls_directory():
+    """Find mvfouls directory regardless of current working directory."""
+    # Try current directory first
+    if Path("mvfouls").exists():
+        return "mvfouls"
+    
+    # Try parent directory (if running from scripts/)
+    if Path("../mvfouls").exists():
+        return "../mvfouls"
+    
+    # Try relative to script location
+    script_dir = Path(__file__).parent
+    project_root = script_dir.parent
+    mvfouls_path = project_root / "mvfouls"
+    if mvfouls_path.exists():
+        return str(mvfouls_path)
+    
+    # Last resort - search common locations
+    for path in [".", "..", "../..", "../../.."]:
+        test_path = Path(path) / "mvfouls"
+        if test_path.exists():
+            return str(test_path)
+    
+    raise FileNotFoundError("Cannot find mvfouls directory. Please ensure the dataset is downloaded.")
 
 class ConvertToFloatAndScale(torch.nn.Module):
     def __call__(self, clip_cthw_uint8):
@@ -38,6 +64,10 @@ def test_dataset_and_dataloader():
     """Test dataset + DataLoader with collate function."""
     print("🔍 Testing Dataset + DataLoader...")
     
+    # Find mvfouls directory dynamically
+    mvfouls_path = find_mvfouls_directory()
+    print(f"Found mvfouls directory at: {mvfouls_path}")
+    
     transform = Compose([
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -46,7 +76,7 @@ def test_dataset_and_dataloader():
     ])
     
     dataset = SoccerNetMVFoulDataset(
-        dataset_path="../mvfouls",
+        dataset_path=mvfouls_path,
         split='train',
         frames_per_clip=16,
         target_fps=15,
@@ -180,7 +210,6 @@ def test_training_components(model, dataloader, device, scaler):
             print("✅ Standard training step successful")
         
         print(f"Loss: {total_loss.item():.4f}")
-        
     except RuntimeError as e:
         if "out of range" in str(e).lower() or "index" in str(e).lower():
             print(f"❌ ANNOTATION ISSUE: CrossEntropyLoss failed - {e}")
@@ -222,7 +251,6 @@ def test_validation_mode(model, dataloader, device):
             total_loss = loss_sev + loss_act
         
         print(f"✅ Validation step successful, Loss: {total_loss.item():.4f}")
-        
     except RuntimeError as e:
         if "out of range" in str(e).lower() or "index" in str(e).lower():
             print(f"❌ ANNOTATION ISSUE in validation: CrossEntropyLoss failed - {e}")
@@ -243,6 +271,9 @@ def test_memory_stress():
         initial_memory = torch.cuda.memory_allocated() / 1024**2
         print(f"Initial GPU memory: {initial_memory:.1f} MB")
     
+    # Find mvfouls directory dynamically
+    mvfouls_path = find_mvfouls_directory()
+    
     # Reload fresh components for stress test
     transform = Compose([
         ConvertToFloatAndScale(),
@@ -252,7 +283,7 @@ def test_memory_stress():
     ])
     
     dataset = SoccerNetMVFoulDataset(
-        dataset_path="../mvfouls", split='train', frames_per_clip=16,
+        dataset_path=mvfouls_path, split='train', frames_per_clip=16,
         target_fps=15, max_views_to_load=4, transform=transform,
         target_height=224, target_width=224
     )
