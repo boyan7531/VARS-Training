@@ -68,7 +68,11 @@ def parse_args():
     parser.add_argument('--model_name', type=str, default='mvit_base_16x4', help="Pretrained MViT model name")
     parser.add_argument('--frames_per_clip', type=int, default=16, help='Number of frames per clip')
     parser.add_argument('--target_fps', type=int, default=15, help='Target FPS for clips')
-    parser.add_argument('--img_size', type=int, default=224, help='Target image height/width')
+    parser.add_argument('--start_frame', type=int, default=67, help='Start frame index for foul-centered extraction (8 frames before foul at frame 75)')
+    parser.add_argument('--end_frame', type=int, default=82, help='End frame index for foul-centered extraction (7 frames after foul at frame 75)')
+    parser.add_argument('--img_height', type=int, default=224, help='Target image height')
+    parser.add_argument('--img_width', type=int, default=398, help='Target image width (matches original VARS paper)')
+    # Note: Currently using square crops for MViT compatibility. Future models may support rectangular inputs.
     parser.add_argument('--max_views', type=int, default=None, help='Optional limit on max views per action (default: use all available)')
     parser.add_argument('--save_dir', type=str, default='checkpoints', help='Directory to save model checkpoints')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
@@ -80,7 +84,13 @@ def parse_args():
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--scheduler', type=str, default='cosine', choices=['cosine', 'onecycle', 'none'], help='Learning rate scheduler')
     parser.add_argument('--warmup_epochs', type=int, default=5, help='Number of warmup epochs')
-    parser.add_argument('--loss_weights', type=float, nargs=2, default=[1.0, 1.0], help='Loss weights for [severity, action_type]')
+    
+    # Multi-task loss balancing
+    parser.add_argument('--main_task_weights', type=float, nargs=2, default=[3.0, 3.0], 
+                       help='Loss weights for [severity, action_type] - main tasks')
+    parser.add_argument('--auxiliary_task_weight', type=float, default=0.5,
+                       help='Loss weight for all auxiliary tasks (currently not implemented)')
+    
     parser.add_argument('--attention_aggregation', action='store_true', default=True, help='Use attention for view aggregation')
     
     # Test run arguments
@@ -124,6 +134,34 @@ def calculate_f1_score(outputs, labels, num_classes):
     from sklearn.metrics import f1_score
     _, predicted = torch.max(outputs.data, 1)
     return f1_score(labels.cpu().numpy(), predicted.cpu().numpy(), average='weighted', zero_division=0)
+
+def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, aux_weight=0.5):
+    """
+    Calculate weighted multi-task loss with proper balancing between main and auxiliary tasks.
+    
+    Args:
+        sev_logits: Severity classification logits
+        act_logits: Action type classification logits  
+        batch_data: Batch data containing labels
+        main_weights: [severity_weight, action_weight] for main tasks
+        aux_weight: Weight for auxiliary tasks (currently not implemented)
+    
+    Returns:
+        total_loss, loss_sev, loss_act
+    """
+    # Main task losses with weighting
+    loss_sev = nn.CrossEntropyLoss()(sev_logits, batch_data["label_severity"]) * main_weights[0]
+    loss_act = nn.CrossEntropyLoss()(act_logits, batch_data["label_type"]) * main_weights[1]
+    
+    # Future: Add auxiliary task losses here
+    # aux_losses = []
+    # if "contact_logits" in outputs:
+    #     aux_losses.append(nn.CrossEntropyLoss()(outputs["contact_logits"], batch_data["contact_idx"]) * aux_weight)
+    # ... add other auxiliary tasks
+    
+    total_loss = loss_sev + loss_act  # + sum(aux_losses)
+    
+    return total_loss, loss_sev, loss_act
 
 class EarlyStopping:
     """Early stopping utility."""
@@ -191,9 +229,9 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         if scaler is not None:
             with autocast():
                 sev_logits, act_logits = model(batch_data)
-                loss_sev = criterion_severity(sev_logits, severity_labels) * loss_weights[0]
-                loss_act = criterion_action(act_logits, action_labels) * loss_weights[1]
-                total_loss = loss_sev + loss_act
+                total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
+                    sev_logits, act_logits, batch_data, loss_weights
+                )
 
             scaler.scale(total_loss).backward()
             scaler.unscale_(optimizer)
@@ -206,9 +244,9 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
             scaler.update()
         else:
             sev_logits, act_logits = model(batch_data)
-            loss_sev = criterion_severity(sev_logits, severity_labels) * loss_weights[0]
-            loss_act = criterion_action(act_logits, action_labels) * loss_weights[1]
-            total_loss = loss_sev + loss_act
+            total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
+                sev_logits, act_logits, batch_data, loss_weights
+            )
 
             total_loss.backward()
             
@@ -282,9 +320,9 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
 
             sev_logits, act_logits = model(batch_data)
             
-            loss_sev = criterion_severity(sev_logits, severity_labels) * loss_weights[0]
-            loss_act = criterion_action(act_logits, action_labels) * loss_weights[1]
-            total_loss = loss_sev + loss_act
+            total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
+                sev_logits, act_logits, batch_data, loss_weights
+            )
 
             running_loss += total_loss.item() * batch_data["clips"].size(0)
             sev_acc = calculate_accuracy(sev_logits, severity_labels)
@@ -403,16 +441,16 @@ if __name__ == "__main__":
     train_transform = Compose([
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ShortSideScale(size=int(args.img_size * 1.1)),  # Slightly larger for cropping
-        PerFrameCenterCrop((args.img_size, args.img_size))  # Use deterministic crop for now
+        ShortSideScale(size=int(args.img_height * 1.1)),  # Slightly larger for cropping
+        PerFrameCenterCrop((args.img_height, args.img_height))  # Square crop for MViT compatibility
     ])
     
     # Deterministic validation transforms
     val_transform = Compose([
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ShortSideScale(size=args.img_size),
-        PerFrameCenterCrop((args.img_size, args.img_size))  # Deterministic for validation
+        ShortSideScale(size=args.img_height),
+        PerFrameCenterCrop((args.img_height, args.img_height))  # Square crop for MViT compatibility
     ])
 
     # Load datasets
@@ -423,10 +461,12 @@ if __name__ == "__main__":
             split='train',
             frames_per_clip=args.frames_per_clip,
             target_fps=args.target_fps,
+            start_frame=args.start_frame,
+            end_frame=args.end_frame,
             max_views_to_load=args.max_views,  # None by default = use all views
             transform=train_transform,
-            target_height=args.img_size,
-            target_width=args.img_size
+            target_height=args.img_height,
+            target_width=args.img_width
         )
         
         val_dataset = SoccerNetMVFoulDataset(
@@ -434,10 +474,12 @@ if __name__ == "__main__":
             split='valid', 
             frames_per_clip=args.frames_per_clip,
             target_fps=args.target_fps,
+            start_frame=args.start_frame,
+            end_frame=args.end_frame,
             max_views_to_load=args.max_views,  # None by default = use all views
             transform=val_transform,
-            target_height=args.img_size,
-            target_width=args.img_size
+            target_height=args.img_height,
+            target_width=args.img_width
         )
     except FileNotFoundError as e:
         logger.error(f"Error loading dataset: {e}")
@@ -487,8 +529,9 @@ if __name__ == "__main__":
     model_config = ModelConfig(
         pretrained_model_name=args.model_name,
         use_attention_aggregation=args.attention_aggregation,
-        input_height=args.img_size,
-        input_width=args.img_size
+        input_frames=args.frames_per_clip,
+        input_height=args.img_height,
+        input_width=args.img_height  # Use square input for MViT compatibility
     )
 
     # Initialize model with proper configuration
@@ -560,7 +603,7 @@ if __name__ == "__main__":
         train_metrics = train_one_epoch(
             model, train_loader, criterion_severity, criterion_action, optimizer, device,
             scaler=scaler, max_batches=num_batches_to_run, 
-            loss_weights=args.loss_weights, gradient_clip_norm=args.gradient_clip_norm
+            loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm
         )
         
         train_loss, train_sev_acc, train_act_acc, train_sev_f1, train_act_f1 = train_metrics
@@ -568,7 +611,7 @@ if __name__ == "__main__":
         # Validation
         val_metrics = validate_one_epoch(
             model, val_loader, criterion_severity, criterion_action, device,
-            max_batches=num_batches_to_run, loss_weights=args.loss_weights
+            max_batches=num_batches_to_run, loss_weights=args.main_task_weights
         )
         
         val_loss, val_sev_acc, val_act_acc, val_sev_f1, val_act_f1 = val_metrics

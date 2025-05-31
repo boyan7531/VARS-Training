@@ -72,8 +72,10 @@ class SoccerNetMVFoulDataset(Dataset):
                  dataset_path: str, 
                  split: str, 
                  annotation_file_name: str = "annotations.json",
-                 frames_per_clip: int = 24,
+                 frames_per_clip: int = 16,
                  target_fps: int = 17,
+                 start_frame: int = 67,
+                 end_frame: int = 82,
                  load_all_views: bool = True,
                  max_views_to_load: int = None,
                  views_indices: list[int] = None,
@@ -96,6 +98,8 @@ class SoccerNetMVFoulDataset(Dataset):
                                       - 'original_fps' (optional): FPS of the source video if resampling is needed.
             frames_per_clip (int): Number of frames to sample for each video clip.
             target_fps (int): Desired frames per second for the output clip.
+            start_frame (int): Start frame index for foul-centered extraction (default: 67, 8 frames before foul at frame 75).
+            end_frame (int): End frame index for foul-centered extraction (default: 82, 7 frames after foul at frame 75).
             load_all_views (bool): If True (default), loads all available views for each action.
             max_views_to_load (int): Optional limit on number of views to load. If None (default), loads all available views.
             views_indices (list[int]): Specific indices of views to load from the 'video_files' list in annotations.
@@ -111,6 +115,8 @@ class SoccerNetMVFoulDataset(Dataset):
 
         self.frames_per_clip = frames_per_clip
         self.target_fps = target_fps
+        self.start_frame = start_frame
+        self.end_frame = end_frame
 
         self.load_all_views = load_all_views
         self.max_views_to_load = max_views_to_load
@@ -119,6 +125,12 @@ class SoccerNetMVFoulDataset(Dataset):
         self.transform = transform
         self.target_height = target_height
         self.target_width = target_width
+
+        # Validate frame range
+        expected_frames = end_frame - start_frame + 1
+        if expected_frames != frames_per_clip:
+            print(f"Warning: Frame range ({start_frame}-{end_frame}) gives {expected_frames} frames, but frames_per_clip is {frames_per_clip}. "
+                  f"Will sample {frames_per_clip} frames from the range.")
 
         if not self.annotation_path.exists():
             raise FileNotFoundError(f"Annotation file not found: {self.annotation_path}. "
@@ -151,6 +163,8 @@ class SoccerNetMVFoulDataset(Dataset):
         print(f"Built '{TOUCH_BALL_FIELD}' vocab ({self.num_touch_ball_classes} classes): {self.touch_ball_vocab}")
         print(f"Built '{HANDBALL_FIELD}' vocab ({self.num_handball_classes} classes): {self.handball_vocab}")
         print(f"Built '{HANDBALL_OFFENCE_FIELD}' vocab ({self.num_handball_offence_classes} classes): {self.handball_offence_vocab}")
+
+        print(f"Dataset configured for foul-centered extraction: frames {start_frame}-{end_frame} ({expected_frames} frames)")
 
         self.actions = self._process_annotations(raw_annotations_data)
 
@@ -448,7 +462,7 @@ class SoccerNetMVFoulDataset(Dataset):
                 # print(f"Warning: Could not read metadata for {video_path} due to {e}. Defaulting to None.")
                 original_fps = None 
         
-        # --- Load all frames from the video clip --- 
+        # --- Load entire video first to get total frame count and extract specific range ---
         try:
             # print(f"Attempting to read entire video {video_path}")
             vframes, aframes, info = read_video(str(video_path), pts_unit='sec', output_format="TCHW")
@@ -460,17 +474,47 @@ class SoccerNetMVFoulDataset(Dataset):
             # print(f"Warning: No frames read from {video_path} for specified time range. Skipping view.")
             return None
 
-        # Sample self.frames_per_clip frames
-        num_loaded_frames = vframes.size(0)
-        if num_loaded_frames < self.frames_per_clip:
-            # print(f"Warning: Loaded only {num_loaded_frames} frames from {video_path}, which is less than frames_per_clip ({self.frames_per_clip}). Returning all loaded frames.")
-            # Padding will be handled in __getitem__ if necessary
-            sampled_frames = vframes 
+        total_frames = vframes.size(0)
+        
+        # --- Extract specific frame range (foul-centered) ---
+        # Ensure frame indices are within video bounds
+        start_idx = max(0, min(self.start_frame, total_frames - 1))
+        end_idx = max(start_idx, min(self.end_frame, total_frames - 1))
+        
+        if start_idx >= total_frames:
+            print(f"Warning: start_frame {self.start_frame} >= total_frames {total_frames} for {video_path}. Using last frame.")
+            start_idx = total_frames - 1
+            end_idx = total_frames - 1
+        
+        if end_idx >= total_frames:
+            print(f"Warning: end_frame {self.end_frame} >= total_frames {total_frames} for {video_path}. Adjusting to {total_frames - 1}.")
+            end_idx = total_frames - 1
+        
+        # Extract the frame range
+        extracted_frames = vframes[start_idx:end_idx + 1]  # +1 because end is inclusive
+        num_extracted_frames = extracted_frames.size(0)
+        
+        if num_extracted_frames == 0:
+            print(f"Warning: No frames extracted from range {start_idx}-{end_idx} for {video_path}. Using single frame.")
+            extracted_frames = vframes[start_idx:start_idx + 1]
+            num_extracted_frames = 1
+        
+        # --- Sample to desired frames_per_clip if different from extracted range ---
+        if num_extracted_frames < self.frames_per_clip:
+            # If we have fewer frames than needed, repeat the last frame
+            print(f"Warning: Extracted only {num_extracted_frames} frames from range {start_idx}-{end_idx} for {video_path}, but need {self.frames_per_clip}. Padding with last frame.")
+            padding_needed = self.frames_per_clip - num_extracted_frames
+            last_frame = extracted_frames[-1:].repeat(padding_needed, 1, 1, 1)
+            sampled_frames = torch.cat([extracted_frames, last_frame], dim=0)
+        elif num_extracted_frames > self.frames_per_clip:
+            # If we have more frames than needed, subsample uniformly
+            indices = torch.linspace(0, num_extracted_frames - 1, self.frames_per_clip).long()
+            sampled_frames = torch.index_select(extracted_frames, 0, indices)
         else:
-            indices = torch.linspace(0, num_loaded_frames - 1, self.frames_per_clip).long()
-            sampled_frames = torch.index_select(vframes, 0, indices) # (frames_per_clip, C, H, W)
+            # Perfect match
+            sampled_frames = extracted_frames
 
-        clip = sampled_frames.permute(1, 0, 2, 3) # (C, T, H, W) -> (C, frames_per_clip or num_loaded_frames, H, W)
+        clip = sampled_frames.permute(1, 0, 2, 3) # (C, T, H, W) -> (C, frames_per_clip, H, W)
         return clip
 
     def __getitem__(self, idx):
