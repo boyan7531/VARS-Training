@@ -380,10 +380,31 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, filepat
     logger.info(f"Checkpoint saved to {filepath}")
 
 def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None):
-    """Load training checkpoint."""
+    """Load training checkpoint with DataParallel compatibility."""
     checkpoint = torch.load(filepath, map_location='cpu')
     
-    model.load_state_dict(checkpoint['model_state_dict'])
+    # Handle DataParallel state dict key mismatch
+    state_dict = checkpoint['model_state_dict']
+    model_state_dict = model.state_dict()
+    
+    # Check if we need to add or remove 'module.' prefix
+    model_keys = list(model_state_dict.keys())
+    checkpoint_keys = list(state_dict.keys())
+    
+    if len(model_keys) > 0 and len(checkpoint_keys) > 0:
+        model_has_module = model_keys[0].startswith('module.')
+        checkpoint_has_module = checkpoint_keys[0].startswith('module.')
+        
+        if model_has_module and not checkpoint_has_module:
+            # Model is DataParallel wrapped, checkpoint is not - add 'module.' prefix
+            state_dict = {f'module.{k}': v for k, v in state_dict.items()}
+            logger.info("Added 'module.' prefix to checkpoint keys for DataParallel compatibility")
+        elif not model_has_module and checkpoint_has_module:
+            # Model is not DataParallel wrapped, checkpoint is - remove 'module.' prefix
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            logger.info("Removed 'module.' prefix from checkpoint keys for DataParallel compatibility")
+    
+    model.load_state_dict(state_dict)
     
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
