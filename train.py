@@ -568,10 +568,16 @@ if __name__ == "__main__":
         model = nn.DataParallel(model)
         logger.info(f"Model wrapped with DataParallel for {num_gpus} GPUs")
 
-    # Log model info
-    model_info = model.get_model_info()
-    logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-    logger.info(f"Combined feature dimension: {model_info['video_feature_dim'] + model_info['total_embedding_dim']}")
+    # Log model info - handle DataParallel wrapper
+    try:
+        # Get the actual model (unwrap DataParallel if needed)
+        actual_model = model.module if hasattr(model, 'module') else model
+        model_info = actual_model.get_model_info()
+        logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+        logger.info(f"Combined feature dimension: {model_info['video_feature_dim'] + model_info['total_embedding_dim']}")
+    except Exception as e:
+        logger.warning(f"Could not get model info: {e}")
+        logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Loss functions and optimizer
     criterion_severity = nn.CrossEntropyLoss()
