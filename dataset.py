@@ -225,7 +225,7 @@ class SoccerNetMVFoulDataset(Dataset):
             # --- Severity Label (with graceful handling of missing values) ---
             json_severity_val = action_details.get("Severity", "")  # Default to empty string if missing
             
-            # Handle missing severity values based on Offence field
+            # Handle missing severity values - only assign defaults if explicitly needed
             if json_severity_val == "" or json_severity_val is None:
                 offence_val = action_details.get("Offence", "")
                 if offence_val == "No offence":
@@ -241,7 +241,7 @@ class SoccerNetMVFoulDataset(Dataset):
                     json_severity_val = "1.0"
                     print(f"Info: Missing severity for action {action_id_str}, assigned 1.0 based on 'Between'")
                 else:
-                    # Complete fallback - assign low severity
+                    # If both severity and offence are empty/unknown, assign default
                     json_severity_val = "1.0"
                     print(f"Info: Missing severity for action {action_id_str}, assigned default 1.0")
             
@@ -252,20 +252,24 @@ class SoccerNetMVFoulDataset(Dataset):
                 print(f"Warning: Unknown 'Severity' value '{json_severity_val}' for action {action_id_str}. Assigning default 1.0.")
                 numerical_severity = SEVERITY_LABELS["1.0"]  # Default to lowest severity
 
-            # --- Action Type Label (with graceful handling of missing values) ---
+            # --- Action Type Label (allow empty values without forcing defaults) ---
             json_action_class = action_details.get("Action class", "")
             
-            # Handle missing action class values  
+            # Only assign default if we need a valid classification for training
+            # For empty values, we'll handle them gracefully
             if json_action_class == "" or json_action_class is None:
-                # Assign most common action type as default
-                json_action_class = "Standing tackling"  # Most common in dataset (43.5%)
-                print(f"Info: Missing action class for action {action_id_str}, assigned default 'Standing tackling'")
+                # Keep as empty - don't force a default assignment
+                print(f"Info: Empty action class for action {action_id_str}, keeping as empty")
+                json_action_class = ""
                 
-            # Direct mapping from JSON values
+            # Direct mapping from JSON values or handle empty case
             if json_action_class in ACTION_TYPE_LABELS:
                 numerical_action_type = ACTION_TYPE_LABELS[json_action_class]
+            elif json_action_class == "":
+                # For empty action class, assign a special "unknown" category
+                numerical_action_type = ACTION_TYPE_LABELS["Dont know"]  # Use existing unknown category
             else:
-                print(f"Warning: Unknown 'Action class' value '{json_action_class}' for action {action_id_str}. Assigning default 'Dont know'.")
+                print(f"Warning: Unknown 'Action class' value '{json_action_class}' for action {action_id_str}. Assigning 'Dont know'.")
                 numerical_action_type = ACTION_TYPE_LABELS["Dont know"]  # Default to unknown category
 
             # --- Video Files ---
@@ -320,8 +324,13 @@ class SoccerNetMVFoulDataset(Dataset):
 
             # --- Process all categorical features using standard mappings ---
             
-            # Offence
+            # Offence (allow empty values without forcing defaults)
             offence_str = action_details.get("Offence", "")  # Default to empty string
+            
+            # Don't force defaults for empty offence values - handle them as they are
+            if offence_str == "":
+                print(f"Info: Empty offence value for action {action_id_str}, keeping as empty")
+            
             offence_idx = OFFENCE_VALUES.get(offence_str, 0) # Default to 0 (No offence) if not found
             
             # Contact
