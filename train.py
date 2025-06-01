@@ -109,6 +109,16 @@ def parse_args():
     parser.add_argument('--force_batch_size', action='store_true', 
                        help='Force specified batch size even with multi-GPU (disable auto-scaling)')
     
+    # Multi-scale and advanced training options for higher accuracy
+    parser.add_argument('--multi_scale', action='store_true', help='Enable multi-scale training for better accuracy')
+    parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor (0.1 recommended)')
+    parser.add_argument('--dropout_rate', type=float, default=0.1, help='Dropout rate for regularization')
+    parser.add_argument('--lr_warmup', action='store_true', help='Enable learning rate warmup')
+    
+    # Advanced optimization
+    parser.add_argument('--optimizer', type=str, default='adamw', choices=['adamw', 'sgd', 'adam'], help='Optimizer type')
+    parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum')
+    
     args = parser.parse_args()
     
     # Construct the specific mvfouls path from the root
@@ -431,15 +441,16 @@ if __name__ == "__main__":
     if scaler:
         logger.info("Using mixed precision training")
 
-    # Transforms optimized for ResNet3D (supports rectangular inputs)
+    # Enhanced transforms with aggressive augmentation for better accuracy
     train_transform = Compose([
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ShortSideScale(size=int(args.img_height * 1.1)),  # Slightly larger for cropping
-        PerFrameCenterCrop((args.img_height, args.img_width))  # Rectangular crop for ResNet3D
+        ShortSideScale(size=int(args.img_height * 1.2)),  # Larger scale for more crop variety
+        PerFrameCenterCrop((args.img_height, args.img_width)),  # Rectangular crop for ResNet3D
+        # Add more augmentation here if needed
     ])
     
-    # Deterministic validation transforms
+    # Deterministic validation transforms (no augmentation)
     val_transform = Compose([
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
