@@ -5,6 +5,7 @@ from torchvision.io import read_video, read_video_timestamps
 import json
 from pathlib import Path
 import random
+from collections import defaultdict
 
 # Define label mappings based on actual dataset annotations
 SEVERITY_LABELS = {
@@ -170,6 +171,15 @@ class SoccerNetMVFoulDataset(Dataset):
 
         if not self.actions:
             print(f"Warning: No actions loaded from {self.annotation_path} after processing. Check the annotation file format and content.")
+
+        # Manual shuffling for better data mixing
+        if self.split == 'train':
+            # Set a different seed for shuffling to ensure thorough data mixing
+            original_random_state = random.getstate()
+            random.seed(42 + len(self.actions))  # Use dataset size as additional entropy
+            random.shuffle(self.actions)
+            random.setstate(original_random_state)  # Restore original random state
+            print(f"Manually shuffled {len(self.actions)} training actions for better data mixing")
 
     def _build_vocab(self, all_actions_data: dict, field_name: str, unknown_token: str = UNKNOWN_TOKEN):
         unique_values = set()
