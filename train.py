@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR, StepLR, ReduceLROnPlateau
 from torch.cuda.amp import GradScaler, autocast
 from torchvision.transforms import Compose, CenterCrop
 from pathlib import Path
@@ -82,8 +82,16 @@ def parse_args():
     parser.add_argument('--mixed_precision', action='store_true', help='Use mixed precision training')
     parser.add_argument('--gradient_clip_norm', type=float, default=1.0, help='Gradient clipping norm')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
-    parser.add_argument('--scheduler', type=str, default='cosine', choices=['cosine', 'onecycle', 'none'], help='Learning rate scheduler')
+    parser.add_argument('--scheduler', type=str, default='cosine', 
+                       choices=['cosine', 'onecycle', 'step', 'exponential', 'reduce_on_plateau', 'none'], 
+                       help='Learning rate scheduler type')
     parser.add_argument('--warmup_epochs', type=int, default=5, help='Number of warmup epochs')
+    
+    # Additional scheduler parameters
+    parser.add_argument('--step_size', type=int, default=10, help='Step size for StepLR scheduler')
+    parser.add_argument('--gamma', type=float, default=0.5, help='Decay factor for StepLR/ExponentialLR')
+    parser.add_argument('--plateau_patience', type=int, default=5, help='Patience for ReduceLROnPlateau')
+    parser.add_argument('--min_lr', type=float, default=1e-6, help='Minimum learning rate')
     
     # Multi-task loss balancing
     parser.add_argument('--main_task_weights', type=float, nargs=2, default=[3.0, 3.0], 
@@ -209,7 +217,8 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
     # Create progress bar
     total_batches = max_batches if max_batches else len(dataloader)
     pbar = tqdm(enumerate(dataloader), total=total_batches, desc="Training", 
-                leave=False, ncols=100)
+                leave=False, ncols=120, 
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}')
     
     for i, batch_data in pbar:
         if max_batches is not None and (i + 1) > max_batches:
@@ -269,11 +278,16 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         running_act_f1 += act_f1
         processed_batches += 1
         
-        # Update progress bar
+        # Update progress bar with current metrics
+        current_avg_loss = running_loss / (processed_batches * batch_data["clips"].size(0))
+        current_avg_sev_acc = running_sev_acc / processed_batches
+        current_avg_act_acc = running_act_acc / processed_batches
+        
         pbar.set_postfix({
-            'Loss': f'{total_loss.item():.4f}',
-            'Sev_Acc': f'{sev_acc:.3f}',
-            'Act_Acc': f'{act_acc:.3f}'
+            'Loss': f'{current_avg_loss:.3f}',
+            'SevAcc': f'{current_avg_sev_acc:.3f}',
+            'ActAcc': f'{current_avg_act_acc:.3f}',
+            'LR': f'{optimizer.param_groups[0]["lr"]:.1e}'
         })
 
     pbar.close()
@@ -303,7 +317,8 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
     # Create progress bar
     total_batches = max_batches if max_batches else len(dataloader)
     pbar = tqdm(enumerate(dataloader), total=total_batches, desc="Validation", 
-                leave=False, ncols=100)
+                leave=False, ncols=120,
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}')
     
     with torch.no_grad():
         for i, batch_data in pbar:
@@ -333,11 +348,15 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             running_act_f1 += calculate_f1_score(act_logits, action_labels, 9)  # 9 action classes
             processed_batches += 1
             
-            # Update progress bar
+            # Update progress bar with current metrics
+            current_avg_loss = running_loss / (processed_batches * batch_data["clips"].size(0))
+            current_avg_sev_acc = running_sev_acc / processed_batches
+            current_avg_act_acc = running_act_acc / processed_batches
+            
             pbar.set_postfix({
-                'Loss': f'{total_loss.item():.4f}',
-                'Sev_Acc': f'{sev_acc:.3f}',
-                'Act_Acc': f'{act_acc:.3f}'
+                'Loss': f'{current_avg_loss:.3f}',
+                'SevAcc': f'{current_avg_sev_acc:.3f}',
+                'ActAcc': f'{current_avg_act_acc:.3f}'
             })
 
     pbar.close()
@@ -567,8 +586,10 @@ if __name__ == "__main__":
 
     # Learning rate scheduler
     scheduler = None
+    scheduler_info = "None"
     if args.scheduler == 'cosine':
         scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
+        scheduler_info = f"CosineAnnealing (T_max={args.epochs}, eta_min={args.lr * 0.01:.1e})"
     elif args.scheduler == 'onecycle':
         steps_per_epoch = len(train_loader)
         scheduler = OneCycleLR(
@@ -578,6 +599,16 @@ if __name__ == "__main__":
             steps_per_epoch=steps_per_epoch,
             pct_start=args.warmup_epochs / args.epochs
         )
+        scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, warmup_epochs={args.warmup_epochs})"
+    elif args.scheduler == 'step':
+        scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
+        scheduler_info = f"StepLR (step_size={args.step_size}, gamma={args.gamma})"
+    elif args.scheduler == 'exponential':
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.gamma)
+        scheduler_info = f"ExponentialLR (gamma={args.gamma})"
+    elif args.scheduler == 'reduce_on_plateau':
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=args.gamma, patience=args.plateau_patience, min_lr=args.min_lr)
+        scheduler_info = f"ReduceLROnPlateau (factor={args.gamma}, patience={args.plateau_patience}, min_lr={args.min_lr:.1e})"
 
     # Early stopping
     early_stopping = EarlyStopping(patience=args.early_stopping_patience)
@@ -594,10 +625,13 @@ if __name__ == "__main__":
     best_epoch = -1
 
     logger.info("Starting Training")
-    logger.info(f"Configuration: {vars(args)}")
+    logger.info(f"Configuration: Epochs={args.epochs}, Batch Size={args.batch_size}, LR={args.lr}, Backbone={args.backbone_name}")
+    logger.info(f"Learning Rate Scheduler: {scheduler_info}")
+    logger.info(f"Dataset: Train={len(train_dataset)}, Val={len(val_dataset)}")
+    logger.info("=" * 80)
 
     for epoch in range(start_epoch, args.epochs):
-        logger.info(f"\nEpoch {epoch + 1}/{args.epochs}")
+        epoch_start_time = time.time()
         
         # Training
         train_metrics = train_one_epoch(
@@ -621,32 +655,50 @@ if __name__ == "__main__":
             if isinstance(scheduler, OneCycleLR):
                 # OneCycleLR updates per batch, handled in training loop if needed
                 pass
+            elif isinstance(scheduler, ReduceLROnPlateau):
+                # ReduceLROnPlateau needs the validation loss
+                scheduler.step(val_loss)
             else:
                 scheduler.step()
 
-        # Log epoch results
+        # Calculate epoch time and combined metrics
+        epoch_time = time.time() - epoch_start_time
         current_lr = optimizer.param_groups[0]['lr']
-        logger.info(f"Epoch {epoch+1} Results:")
-        logger.info(f"  Train - Loss: {train_loss:.4f}, Sev Acc: {train_sev_acc:.4f}, Act Acc: {train_act_acc:.4f}")
-        logger.info(f"  Train - Sev F1: {train_sev_f1:.4f}, Act F1: {train_act_f1:.4f}")
-        logger.info(f"  Val   - Loss: {val_loss:.4f}, Sev Acc: {val_sev_acc:.4f}, Act Acc: {val_act_acc:.4f}")
-        logger.info(f"  Val   - Sev F1: {val_sev_f1:.4f}, Act F1: {val_act_f1:.4f}")
-        logger.info(f"  Learning Rate: {current_lr:.6f}")
+        prev_lr = history.get('learning_rate', [current_lr])[-1] if history.get('learning_rate') else current_lr
+        train_combined_acc = (train_sev_acc + train_act_acc) / 2
+        val_combined_acc = (val_sev_acc + val_act_acc) / 2
 
-        # Store history
+        # Check if this is a new best model
+        is_new_best = val_combined_acc > best_val_acc
+        best_indicator = " 🌟 NEW BEST!" if is_new_best else ""
+
+        # Check for learning rate changes
+        lr_change_indicator = ""
+        if abs(current_lr - prev_lr) > 1e-8:  # If LR changed significantly
+            lr_change_indicator = f" 📉 LR↓"
+
+        # Compact epoch summary
+        logger.info(f"Epoch {epoch+1:2d}/{args.epochs} [{epoch_time:.1f}s] "
+                   f"| Train: Loss={train_loss:.3f}, Acc={train_combined_acc:.3f} "
+                   f"| Val: Loss={val_loss:.3f}, Acc={val_combined_acc:.3f} "
+                   f"| LR={current_lr:.1e}{lr_change_indicator}{best_indicator}")
+
+        # Store history (including learning rate)
         history['train_loss'].append(train_loss)
         history['train_sev_acc'].append(train_sev_acc)
         history['train_act_acc'].append(train_act_acc)
         history['val_loss'].append(val_loss)
         history['val_sev_acc'].append(val_sev_acc)
         history['val_act_acc'].append(val_act_acc)
+        history['learning_rate'] = history.get('learning_rate', []) + [current_lr]
 
         # Model saving and early stopping
         if not args.test_run:
-            current_val_acc = (val_sev_acc + val_act_acc) / 2
+            current_val_acc = val_combined_acc
             
             # Save best model
             if current_val_acc > best_val_acc:
+                improvement = current_val_acc - best_val_acc
                 best_val_acc = current_val_acc
                 best_epoch = epoch + 1
                 
@@ -663,11 +715,11 @@ if __name__ == "__main__":
                 
                 save_path = os.path.join(args.save_dir, f'best_model_epoch_{best_epoch}.pth')
                 save_checkpoint(model, optimizer, scheduler, scaler, best_epoch, metrics, save_path)
-                logger.info(f"New best model saved! Combined val acc: {best_val_acc:.4f}")
+                logger.info(f"📁 Best model updated! Accuracy: {best_val_acc:.4f} (+{improvement:.4f}) - Saved to {save_path}")
 
             # Early stopping check
             if early_stopping(current_val_acc, model):
-                logger.info(f"Early stopping triggered after {epoch + 1} epochs")
+                logger.info(f"⏹️  Early stopping triggered after {epoch + 1} epochs")
                 break
 
             # Save regular checkpoint every 10 epochs
@@ -675,6 +727,7 @@ if __name__ == "__main__":
                 checkpoint_path = os.path.join(args.save_dir, f'checkpoint_epoch_{epoch + 1}.pth')
                 metrics = {'epoch': epoch + 1}
                 save_checkpoint(model, optimizer, scheduler, scaler, epoch + 1, metrics, checkpoint_path)
+                logger.info(f"💾 Checkpoint saved at epoch {epoch + 1}")
 
     # Save training history
     if not args.test_run:
@@ -683,12 +736,12 @@ if __name__ == "__main__":
             # Convert numpy types to native Python types for JSON serialization
             history_serializable = {k: [float(x) for x in v] for k, v in history.items()}
             json.dump(history_serializable, f, indent=2)
-        logger.info(f"Training history saved to {history_path}")
+        logger.info(f"💾 Training history saved to {history_path}")
 
-    logger.info("\n" + "="*60)
-    logger.info("Training Finished!")
+    logger.info("=" * 80)
+    logger.info("🎉 Training Finished!")
     if not args.test_run:
-        logger.info(f"Best validation combined accuracy: {best_val_acc:.4f} at epoch {best_epoch}")
+        logger.info(f"🏆 Best validation accuracy: {best_val_acc:.4f} at epoch {best_epoch}")
     else:
-        logger.info("Test run completed successfully")
-    logger.info("="*60) 
+        logger.info("✅ Test run completed successfully")
+    logger.info("=" * 80) 
