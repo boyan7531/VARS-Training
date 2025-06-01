@@ -6,12 +6,17 @@ Test script to validate the image resolution and loss balancing improvements
 import torch
 import argparse
 from dataset import SoccerNetMVFoulDataset
-from model import MultiTaskMultiViewMViT, ModelConfig
+from model import MultiTaskMultiViewResNet3D, ModelConfig
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose
 from pytorchvideo.transforms import ShortSideScale, Normalize as VideoNormalize
 import sys
 import os
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+import warnings
+warnings.filterwarnings("ignore")
 
 # Add transforms
 class ConvertToFloatAndScale(torch.nn.Module):
@@ -80,29 +85,32 @@ def test_model_with_new_resolution():
     print("\n🤖 Testing Model with New Resolution")
     
     # Create model config with new resolution
-    config = ModelConfig(
-        pretrained_model_name='mvit_base_16x4',
+    vocab_sizes = {
+        'contact': 5,
+        'bodypart': 5,
+        'upper_bodypart': 5,
+        'lower_bodypart': 5,
+        'multiple_fouls': 5,
+        'try_to_play': 5,
+        'touch_ball': 5,
+        'handball': 5,
+        'handball_offence': 5,
+    }
+    
+    model_config = ModelConfig(
         use_attention_aggregation=True,
         input_frames=16,
         input_height=224,
-        input_width=398  # New width
+        input_width=398  # ResNet3D supports rectangular inputs  
     )
     
-    print(f"✅ Model config created with resolution {config.input_height}x{config.input_width}")
-    
-    # Test vocab sizes (dummy)
-    vocab_sizes = {
-        'contact': 3, 'bodypart': 4, 'upper_bodypart': 5, 'lower_bodypart': 1,
-        'multiple_fouls': 4, 'try_to_play': 4, 'touch_ball': 5,
-        'handball': 3, 'handball_offence': 3
-    }
-    
     try:
-        model = MultiTaskMultiViewMViT(
+        model = MultiTaskMultiViewResNet3D(
             num_severity=5,
             num_action_type=9,
             vocab_sizes=vocab_sizes,
-            config=config
+            backbone_name='resnet3d_18',
+            config=model_config
         )
         print("✅ Model created successfully with new resolution")
         

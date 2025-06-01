@@ -6,8 +6,10 @@ Evaluates trained models on the test dataset with comprehensive metrics.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torchvision.transforms import Compose
+from torch.cuda.amp import autocast
+from torchvision.transforms import Compose, CenterCrop
 from pathlib import Path
 import argparse
 import logging
@@ -20,10 +22,12 @@ import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
 import warnings
 warnings.filterwarnings('ignore')
+import time
+import os
 
 # Imports from our other files
 from dataset import SoccerNetMVFoulDataset, variable_views_collate_fn
-from model import MultiTaskMultiViewMViT, ModelConfig
+from model import MultiTaskMultiViewResNet3D, ModelConfig
 from pytorchvideo.transforms import ShortSideScale, Normalize as VideoNormalize
 
 # Define transforms locally
@@ -38,7 +42,6 @@ class PerFrameCenterCrop(torch.nn.Module):
     """Applies CenterCrop to each frame of a (C, T, H, W) video tensor."""
     def __init__(self, size):
         super().__init__()
-        from torchvision.transforms import CenterCrop
         self.cropper = CenterCrop(size)
 
     def forward(self, clip_cthw):
@@ -64,27 +67,24 @@ ACTION_TYPE_LABELS = ["Challenge", "Dive", "Dont know", "Elbowing", "High leg",
                      "Holding", "Pushing", "Standing tackling", "Tackling"]
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Test trained VARS model on test dataset')
-    parser.add_argument('--dataset_root', type=str, default=".", help='Root directory containing the mvfouls folder')
-    parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to trained model checkpoint')
-    parser.add_argument('--batch_size', type=int, default=8, help='Batch size for testing')
+    parser = argparse.ArgumentParser(description='Test Multi-Task Multi-View ResNet3D for Foul Recognition')
+    parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to model checkpoint')
+    parser.add_argument('--dataset_root', type=str, default="", help='Root directory containing the mvfouls folder')
+    parser.add_argument('--split', type=str, default='test', choices=['test', 'challenge'], help='Dataset split to evaluate on')
+    parser.add_argument('--batch_size', type=int, default=8, help='Batch size for evaluation')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
-    
-    # Model configuration (should match training)
-    parser.add_argument('--model_name', type=str, default='mvit_base_16x4', help="Pretrained MViT model name")
+    parser.add_argument('--backbone_name', type=str, default='resnet3d_18', choices=['resnet3d_18', 'resnet3d_50'], help="ResNet3D backbone variant")
     parser.add_argument('--frames_per_clip', type=int, default=16, help='Number of frames per clip')
-    parser.add_argument('--target_fps', type=int, default=17, help='Target FPS for clips')
+    parser.add_argument('--target_fps', type=int, default=15, help='Target FPS for clips')
     parser.add_argument('--start_frame', type=int, default=67, help='Start frame index for foul-centered extraction')
     parser.add_argument('--end_frame', type=int, default=82, help='End frame index for foul-centered extraction')
     parser.add_argument('--img_height', type=int, default=224, help='Target image height')
     parser.add_argument('--img_width', type=int, default=398, help='Target image width')
     parser.add_argument('--max_views', type=int, default=None, help='Optional limit on max views per action')
     parser.add_argument('--attention_aggregation', action='store_true', default=True, help='Use attention for view aggregation')
-    
-    # Testing options
-    parser.add_argument('--save_results', action='store_true', help='Save detailed results and plots')
-    parser.add_argument('--results_dir', type=str, default='test_results', help='Directory to save test results')
-    parser.add_argument('--detailed_analysis', action='store_true', help='Generate detailed per-class analysis')
+    parser.add_argument('--save_results', action='store_true', help='Save detailed results to file')
+    parser.add_argument('--results_dir', type=str, default='results', help='Directory to save results')
+    parser.add_argument('--mixed_precision', action='store_true', help='Use mixed precision inference')
     
     args = parser.parse_args()
     
@@ -401,12 +401,12 @@ def main():
     # Load checkpoint
     checkpoint, metrics, epoch = load_model_checkpoint(args.checkpoint_path, device)
     
-    # Create test transforms (deterministic)
+    # Create test transforms (deterministic, optimized for ResNet3D)
     test_transform = Compose([
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ShortSideScale(size=args.img_height),
-        PerFrameCenterCrop((args.img_height, args.img_height))  # Square crop for MViT compatibility
+        PerFrameCenterCrop((args.img_height, args.img_width))  # Rectangular crop for ResNet3D
     ])
     
     # Load test dataset
@@ -414,7 +414,7 @@ def main():
     try:
         test_dataset = SoccerNetMVFoulDataset(
             dataset_path=args.mvfouls_path,
-            split='test',
+            split=args.split,
             frames_per_clip=args.frames_per_clip,
             target_fps=args.target_fps,
             start_frame=args.start_frame,
@@ -460,19 +460,19 @@ def main():
     
     # Model configuration
     model_config = ModelConfig(
-        pretrained_model_name=args.model_name,
         use_attention_aggregation=args.attention_aggregation,
         input_frames=args.frames_per_clip,
         input_height=args.img_height,
-        input_width=args.img_height  # Use square input for MViT compatibility
+        input_width=args.img_width  # ResNet3D supports rectangular inputs
     )
     
     # Initialize model
-    logger.info(f"Initializing model: {args.model_name}")
-    model = MultiTaskMultiViewMViT(
+    logger.info(f"Initializing ResNet3D model: {args.backbone_name}")
+    model = MultiTaskMultiViewResNet3D(
         num_severity=5,
         num_action_type=9,
         vocab_sizes=vocab_sizes,
+        backbone_name=args.backbone_name,
         config=model_config
     )
     

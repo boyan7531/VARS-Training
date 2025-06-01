@@ -1,11 +1,11 @@
 """
-Multi-task Multi-view MViT Model Package
+Multi-task Multi-view Video Model Package
 
-This package provides a modular, maintainable implementation of a multi-task,
-multi-view video transformer model for sports action classification.
+This package provides modular implementations of multi-task, multi-view video models
+for sports action classification using ResNet3D architecture.
 """
 
-from .model import MultiTaskMultiViewMViT, create_multitask_multiview_mvit
+from .resnet3d_model import MultiTaskMultiViewResNet3D, ResNet3DBackbone
 from .config import ModelConfig
 from .loader import ModelLoader, ModelLoadingError
 from .embedding_manager import EmbeddingManager
@@ -16,20 +16,16 @@ __version__ = "1.0.0"
 __author__ = "VARS Team"
 
 __all__ = [
-    # Main model class
-    "MultiTaskMultiViewMViT",
-    "create_multitask_multiview_mvit",  # Legacy compatibility
-    
-    # Configuration
+    # Main model classes
+    "MultiTaskMultiViewResNet3D",
+    "ResNet3DBackbone",
+    # Configuration and utilities
     "ModelConfig",
-    
-    # Components
     "ModelLoader",
-    "EmbeddingManager", 
+    "ModelLoadingError",
+    # Components
+    "EmbeddingManager",
     "ViewAggregator",
     "InputValidator",
-    
-    # Exceptions
-    "ModelLoadingError",
     "ValidationError",
 ] 

@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dataset import SoccerNetMVFoulDataset, variable_views_collate_fn
-from model import MultiTaskMultiViewMViT, ModelConfig
+from model import MultiTaskMultiViewResNet3D, ModelConfig
 from pytorchvideo.transforms import ShortSideScale, Normalize as VideoNormalize
 from torchvision.transforms import Compose, CenterCrop
 
@@ -72,7 +72,7 @@ def test_dataset_and_dataloader():
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ShortSideScale(size=224),
-        PerFrameCenterCrop((224, 224))
+        PerFrameCenterCrop((224, 398))  # ResNet3D supports rectangular inputs
     ])
     
     dataset = SoccerNetMVFoulDataset(
@@ -82,7 +82,7 @@ def test_dataset_and_dataloader():
         target_fps=15,
         max_views_to_load=4,
         target_height=224,
-        target_width=224,
+        target_width=398,  # ResNet3D supports rectangular inputs
         transform=transform
     )
     
@@ -122,12 +122,18 @@ def test_model_components(dataloader, dataset):
     
     print(f"Vocab sizes: {vocab_sizes}")
     
-    # Model setup - updated to match actual dataset annotations
-    config = ModelConfig(pretrained_model_name='mvit_base_16x4')
-    model = MultiTaskMultiViewMViT(
+    # Model setup - updated for ResNet3D
+    config = ModelConfig(
+        use_attention_aggregation=True,
+        input_frames=16,
+        input_height=224,
+        input_width=398  # ResNet3D supports rectangular inputs
+    )
+    model = MultiTaskMultiViewResNet3D(
         num_severity=5,  # 5 severity classes: 1.0, 2.0, 3.0, 4.0, 5.0
         num_action_type=9,  # 9 action types: Challenge, Dive, Dont know, Elbowing, High leg, Holding, Pushing, Standing tackling, Tackling
         vocab_sizes=vocab_sizes,
+        backbone_name='resnet3d_18',
         config=config
     )
     model.to(device)
@@ -279,13 +285,13 @@ def test_memory_stress():
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ShortSideScale(size=224),
-        PerFrameCenterCrop((224, 224))
+        PerFrameCenterCrop((224, 398))  # ResNet3D supports rectangular inputs
     ])
     
     dataset = SoccerNetMVFoulDataset(
         dataset_path=mvfouls_path, split='train', frames_per_clip=16,
         target_fps=15, max_views_to_load=4, transform=transform,
-        target_height=224, target_width=224
+        target_height=224, target_width=398  # ResNet3D supports rectangular inputs
     )
     
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True, 

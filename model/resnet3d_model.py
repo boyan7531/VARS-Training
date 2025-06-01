@@ -1,22 +1,52 @@
 import torch
 import torch.nn as nn
+import torchvision.models as models
 from typing import Dict, List, Union, Tuple
 import logging
 
-# Import our modular components
 from .config import ModelConfig
-from .loader import ModelLoader, ModelLoadingError
 from .embedding_manager import EmbeddingManager
 from .view_aggregator import ViewAggregator
 from .validator import InputValidator, ValidationError
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class MultiTaskMultiViewMViT(nn.Module):
+class ResNet3DBackbone(nn.Module):
+    """3D ResNet backbone for video feature extraction."""
+    
+    def __init__(self, model_name='resnet3d_18', pretrained=True):
+        super().__init__()
+        
+        # Load pretrained ResNet3D
+        if model_name == 'resnet3d_18':
+            self.backbone = models.video.r3d_18(pretrained=pretrained)
+            self.feature_dim = 512
+        elif model_name == 'resnet3d_50':
+            self.backbone = models.video.r3d_50(pretrained=pretrained)  
+            self.feature_dim = 2048
+        else:
+            raise ValueError(f"Unsupported model: {model_name}")
+        
+        # Remove final classification layer
+        self.backbone.fc = nn.Identity()
+        
+        # Add dropout for regularization
+        self.dropout = nn.Dropout(0.3)
+        
+    def forward(self, x):
+        """
+        Args:
+            x: [B, C, T, H, W] video tensor
+        Returns:
+            features: [B, feature_dim] global video features
+        """
+        features = self.backbone(x)
+        features = self.dropout(features)
+        return features
+
+class MultiTaskMultiViewResNet3D(nn.Module):
     """
-    Multi-task, multi-view MViT model for sports action classification.
+    Multi-task, multi-view ResNet3D model for sports action classification.
     
     This model processes multiple video views and categorical features to predict:
     1. Severity of the action
@@ -28,15 +58,17 @@ class MultiTaskMultiViewMViT(nn.Module):
         num_severity: int,
         num_action_type: int,
         vocab_sizes: Dict[str, int],
+        backbone_name: str = 'resnet3d_18',
         config: ModelConfig = None
     ):
         """
-        Initialize the multi-task multi-view model.
+        Initialize the multi-task multi-view ResNet3D model.
         
         Args:
             num_severity: Number of classes for severity prediction
             num_action_type: Number of classes for action type prediction
             vocab_sizes: Dictionary mapping feature names to vocabulary sizes
+            backbone_name: ResNet3D variant ('resnet3d_18' or 'resnet3d_50')
             config: Model configuration object
         """
         super().__init__()
@@ -45,6 +77,7 @@ class MultiTaskMultiViewMViT(nn.Module):
         self.config = config if config is not None else ModelConfig()
         self.num_severity = num_severity
         self.num_action_type = num_action_type
+        self.backbone_name = backbone_name
         
         # Validate vocabulary sizes
         self._validate_vocab_sizes(vocab_sizes)
@@ -53,8 +86,8 @@ class MultiTaskMultiViewMViT(nn.Module):
         # Initialize components
         self._initialize_components()
         
-        logger.info(f"Initialized MultiTaskMultiViewMViT with {num_severity} severity classes "
-                   f"and {num_action_type} action type classes")
+        logger.info(f"Initialized MultiTaskMultiViewResNet3D with {backbone_name}, "
+                   f"{num_severity} severity classes and {num_action_type} action type classes")
     
     def _validate_vocab_sizes(self, vocab_sizes: Dict[str, int]) -> None:
         """Validate that all required vocabulary sizes are provided."""
@@ -75,27 +108,38 @@ class MultiTaskMultiViewMViT(nn.Module):
     def _initialize_components(self) -> None:
         """Initialize all model components."""
         try:
-            # Load base model
-            model_loader = ModelLoader(self.config)
-            self.base_model, self.mvit_feature_dim = model_loader.load_base_model()
+            # Load ResNet3D backbone
+            self.backbone = ResNet3DBackbone(self.backbone_name, pretrained=True)
+            self.video_feature_dim = self.backbone.feature_dim
             
-            # Initialize embedding manager
+            # Initialize embedding manager (reuse existing)
             self.embedding_manager = EmbeddingManager(self.config, self.vocab_sizes)
             
-            # Initialize view aggregator
-            self.view_aggregator = ViewAggregator(self.config, self.mvit_feature_dim)
+            # Initialize view aggregator (reuse existing) 
+            self.view_aggregator = ViewAggregator(self.config, self.video_feature_dim)
             
-            # Initialize input validator
+            # Initialize input validator (reuse existing)
             self.input_validator = InputValidator(self.config, self.vocab_sizes)
             
             # Calculate combined feature dimension
-            combined_feature_dim = self.mvit_feature_dim + self.config.get_total_embedding_dim()
+            combined_feature_dim = self.video_feature_dim + self.config.get_total_embedding_dim()
             
-            # Create classification heads
-            self.severity_head = nn.Linear(combined_feature_dim, self.num_severity)
-            self.action_type_head = nn.Linear(combined_feature_dim, self.num_action_type)
+            # Create classification heads with regularization
+            self.severity_head = nn.Sequential(
+                nn.Linear(combined_feature_dim, 256),
+                nn.ReLU(),
+                nn.Dropout(0.5),
+                nn.Linear(256, self.num_severity)
+            )
             
-            logger.info(f"Model components initialized successfully. "
+            self.action_type_head = nn.Sequential(
+                nn.Linear(combined_feature_dim, 256), 
+                nn.ReLU(),
+                nn.Dropout(0.5),
+                nn.Linear(256, self.num_action_type)
+            )
+            
+            logger.info(f"ResNet3D components initialized successfully. "
                        f"Combined feature dim: {combined_feature_dim}")
             
         except Exception as e:
@@ -147,18 +191,14 @@ class MultiTaskMultiViewMViT(nn.Module):
         
         if isinstance(clips, list):
             # Handle variable-length views
-            features, view_mask = self.view_aggregator.process_variable_views(clips, self.base_model)
+            features, view_mask = self.view_aggregator.process_variable_views(clips, self.backbone)
         else:
             # Handle standard tensor input
             batch_size, max_views = clips.shape[:2]
             
-            # Reshape and process through base model
+            # Reshape and process through backbone
             clips_flat = clips.view(-1, *clips.shape[2:])  # [B*N, C, T, H, W]
-            features_flat = self.base_model(clips_flat)
-            
-            # Handle different output formats
-            if features_flat.ndim == 3:
-                features_flat = features_flat[:, 0]  # Use class token
+            features_flat = self.backbone(clips_flat)
             
             # Reshape back to [B, N, feature_dim]
             features = features_flat.view(batch_size, max_views, -1)
@@ -183,65 +223,50 @@ class MultiTaskMultiViewMViT(nn.Module):
         num_severity: int,
         num_action_type: int,
         vocab_sizes: Dict[str, int],
-        pretrained_model_name: str = 'mvit_base_16x4',
+        backbone_name: str = 'resnet3d_18',
         use_attention_aggregation: bool = True,
         **config_kwargs
-    ) -> 'MultiTaskMultiViewMViT':
+    ) -> 'MultiTaskMultiViewResNet3D':
         """
-        Factory method to create a model with custom configuration.
+        Factory method to create a ResNet3D model with custom configuration.
         
         Args:
             num_severity: Number of severity classes
             num_action_type: Number of action type classes
             vocab_sizes: Dictionary of vocabulary sizes
-            pretrained_model_name: Name of pretrained MViT model
+            backbone_name: ResNet3D variant ('resnet3d_18' or 'resnet3d_50')
             use_attention_aggregation: Whether to use attention for view aggregation
             **config_kwargs: Additional configuration parameters
         
         Returns:
-            Initialized model instance
+            Configured MultiTaskMultiViewResNet3D model
         """
+        # Create configuration
         config = ModelConfig(
-            pretrained_model_name=pretrained_model_name,
             use_attention_aggregation=use_attention_aggregation,
             **config_kwargs
         )
         
+        # Create and return model
         return cls(
             num_severity=num_severity,
             num_action_type=num_action_type,
             vocab_sizes=vocab_sizes,
+            backbone_name=backbone_name,
             config=config
         )
     
     def get_model_info(self) -> Dict[str, any]:
-        """Get information about the model configuration."""
+        """Get model information for logging/debugging."""
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        
         return {
-            'num_severity_classes': self.num_severity,
-            'num_action_type_classes': self.num_action_type,
-            'vocab_sizes': self.vocab_sizes,
-            'mvit_feature_dim': self.mvit_feature_dim,
+            'backbone_name': self.backbone_name,
+            'video_feature_dim': self.video_feature_dim,
             'total_embedding_dim': self.config.get_total_embedding_dim(),
-            'pretrained_model_name': self.config.pretrained_model_name,
-            'use_attention_aggregation': self.config.use_attention_aggregation,
-            'input_dimensions': {
-                'channels': self.config.input_channels,
-                'frames': self.config.input_frames,
-                'height': self.config.input_height,
-                'width': self.config.input_width
-            }
-        }
-    
-    def enable_attention_debug(self, enable: bool = True):
-        """Enable/disable attention weight debugging."""
-        if hasattr(self.view_aggregator, 'attention_net'):
-            self.view_aggregator.debug_attention = enable
-            logger.info(f"Attention debugging {'enabled' if enable else 'disabled'}")
-        else:
-            logger.warning("Model is not using attention aggregation")
-
-# Backward compatibility aliases
-def create_multitask_multiview_mvit(*args, **kwargs):
-    """Legacy function for backward compatibility."""
-    logger.warning("create_multitask_multiview_mvit is deprecated. Use MultiTaskMultiViewMViT.create_model instead.")
-    return MultiTaskMultiViewMViT.create_model(*args, **kwargs) 
+            'total_parameters': total_params,
+            'trainable_parameters': trainable_params,
+            'num_severity_classes': self.num_severity,
+            'num_action_type_classes': self.num_action_type
+        } 

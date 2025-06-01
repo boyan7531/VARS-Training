@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 # Imports from our other files
 from dataset import SoccerNetMVFoulDataset, variable_views_collate_fn
-from model import MultiTaskMultiViewMViT, ModelConfig
+from model import MultiTaskMultiViewResNet3D, ModelConfig
 
 # Import transforms directly
 from pytorchvideo.transforms import ShortSideScale, Normalize as VideoNormalize
@@ -58,21 +58,21 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration & Hyperparameters ---
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train Multi-Task Multi-View MViT for Foul Recognition')
+    parser = argparse.ArgumentParser(description='Train Multi-Task Multi-View ResNet3D for Foul Recognition')
     parser.add_argument('--dataset_root', type=str, default="", help='Root directory containing the mvfouls folder')
     parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for training and validation')
     parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='Weight decay for AdamW')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
-    parser.add_argument('--model_name', type=str, default='mvit_base_16x4', help="Pretrained MViT model name")
+    parser.add_argument('--backbone_name', type=str, default='resnet3d_18', choices=['resnet3d_18', 'resnet3d_50'], help="ResNet3D backbone variant")
     parser.add_argument('--frames_per_clip', type=int, default=16, help='Number of frames per clip')
     parser.add_argument('--target_fps', type=int, default=15, help='Target FPS for clips')
     parser.add_argument('--start_frame', type=int, default=67, help='Start frame index for foul-centered extraction (8 frames before foul at frame 75)')
     parser.add_argument('--end_frame', type=int, default=82, help='End frame index for foul-centered extraction (7 frames after foul at frame 75)')
     parser.add_argument('--img_height', type=int, default=224, help='Target image height')
     parser.add_argument('--img_width', type=int, default=398, help='Target image width (matches original VARS paper)')
-    # Note: Currently using square crops for MViT compatibility. Future models may support rectangular inputs.
+    # Note: ResNet3D supports rectangular inputs unlike MViT
     parser.add_argument('--max_views', type=int, default=None, help='Optional limit on max views per action (default: use all available)')
     parser.add_argument('--save_dir', type=str, default='checkpoints', help='Directory to save model checkpoints')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
@@ -437,12 +437,12 @@ if __name__ == "__main__":
     if scaler:
         logger.info("Using mixed precision training")
 
-    # Transforms with better augmentation
+    # Transforms optimized for ResNet3D (supports rectangular inputs)
     train_transform = Compose([
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ShortSideScale(size=int(args.img_height * 1.1)),  # Slightly larger for cropping
-        PerFrameCenterCrop((args.img_height, args.img_height))  # Square crop for MViT compatibility
+        PerFrameCenterCrop((args.img_height, args.img_width))  # Rectangular crop for ResNet3D
     ])
     
     # Deterministic validation transforms
@@ -450,7 +450,7 @@ if __name__ == "__main__":
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ShortSideScale(size=args.img_height),
-        PerFrameCenterCrop((args.img_height, args.img_height))  # Square crop for MViT compatibility
+        PerFrameCenterCrop((args.img_height, args.img_width))  # Rectangular crop for ResNet3D
     ])
 
     # Load datasets
@@ -527,19 +527,19 @@ if __name__ == "__main__":
 
     # Model configuration
     model_config = ModelConfig(
-        pretrained_model_name=args.model_name,
         use_attention_aggregation=args.attention_aggregation,
         input_frames=args.frames_per_clip,
         input_height=args.img_height,
-        input_width=args.img_height  # Use square input for MViT compatibility
+        input_width=args.img_width  # ResNet3D supports rectangular inputs
     )
 
     # Initialize model with proper configuration
-    logger.info(f"Initializing model: {args.model_name}")
-    model = MultiTaskMultiViewMViT(
+    logger.info(f"Initializing ResNet3D model: {args.backbone_name}")
+    model = MultiTaskMultiViewResNet3D(
         num_severity=5,  # 5 severity classes: 1.0, 2.0, 3.0, 4.0, 5.0
         num_action_type=9,  # 9 action types: Challenge, Dive, Dont know, Elbowing, High leg, Holding, Pushing, Standing tackling, Tackling
         vocab_sizes=vocab_sizes,
+        backbone_name=args.backbone_name,
         config=model_config
     )
     model.to(device)
@@ -552,7 +552,7 @@ if __name__ == "__main__":
     # Log model info
     model_info = model.get_model_info()
     logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-    logger.info(f"Combined feature dimension: {model_info['mvit_feature_dim'] + model_info['total_embedding_dim']}")
+    logger.info(f"Combined feature dimension: {model_info['video_feature_dim'] + model_info['total_embedding_dim']}")
 
     # Loss functions and optimizer
     criterion_severity = nn.CrossEntropyLoss()
