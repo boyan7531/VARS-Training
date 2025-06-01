@@ -588,8 +588,8 @@ if __name__ == "__main__":
         scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.gamma)
         scheduler_info = f"ExponentialLR (gamma={args.gamma})"
     elif args.scheduler == 'reduce_on_plateau':
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=args.gamma, patience=args.plateau_patience, min_lr=args.min_lr)
-        scheduler_info = f"ReduceLROnPlateau (factor={args.gamma}, patience={args.plateau_patience}, min_lr={args.min_lr:.1e})"
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=args.gamma, patience=args.plateau_patience, min_lr=args.min_lr)
+        scheduler_info = f"ReduceLROnPlateau (mode=max, factor={args.gamma}, patience={args.plateau_patience}, min_lr={args.min_lr:.1e})"
 
     # Early stopping
     early_stopping = EarlyStopping(patience=args.early_stopping_patience)
@@ -637,8 +637,8 @@ if __name__ == "__main__":
                 # OneCycleLR updates per batch, handled in training loop if needed
                 pass
             elif isinstance(scheduler, ReduceLROnPlateau):
-                # ReduceLROnPlateau needs the validation loss
-                scheduler.step(val_loss)
+                # ReduceLROnPlateau monitors validation accuracy (mode='max')
+                scheduler.step(val_act_acc)
             else:
                 scheduler.step()
 
