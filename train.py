@@ -630,14 +630,24 @@ if __name__ == "__main__":
 
     # Resume from checkpoint if specified
     start_epoch = 0
+    best_val_acc = 0.0  # Initialize here
+    best_epoch = -1
+    
     if args.resume:
-        start_epoch, _ = load_checkpoint(args.resume, model, optimizer, scheduler, scaler)
+        start_epoch, loaded_metrics = load_checkpoint(args.resume, model, optimizer, scheduler, scaler)
+        
+        # Restore best validation accuracy from checkpoint
+        if 'best_val_acc' in loaded_metrics:
+            best_val_acc = loaded_metrics['best_val_acc']
+            best_epoch = loaded_metrics.get('epoch', start_epoch)
+            logger.info(f"Restored best validation accuracy: {best_val_acc:.4f} from epoch {best_epoch}")
+        else:
+            logger.warning("No best_val_acc found in checkpoint metrics - starting fresh tracking")
+        
         logger.info(f"Resuming training from epoch {start_epoch}")
 
     # Training history
     history = defaultdict(list)
-    best_val_acc = 0.0
-    best_epoch = -1
 
     logger.info("Starting Training")
     logger.info(f"Configuration: Epochs={args.epochs}, Batch Size={args.batch_size}, LR={args.lr}, Backbone={args.backbone_name}")
