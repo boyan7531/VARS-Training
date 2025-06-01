@@ -21,11 +21,19 @@ class ResNet3DBackbone(nn.Module):
         if model_name == 'resnet3d_18':
             self.backbone = models.video.r3d_18(pretrained=pretrained)
             self.feature_dim = 512
+        elif model_name == 'mc3_18':
+            self.backbone = models.video.mc3_18(pretrained=pretrained)
+            self.feature_dim = 512
+        elif model_name == 'r2plus1d_18':
+            self.backbone = models.video.r2plus1d_18(pretrained=pretrained)
+            self.feature_dim = 512
         elif model_name == 'resnet3d_50':
-            self.backbone = models.video.r3d_50(pretrained=pretrained)  
-            self.feature_dim = 2048
+            # resnet3d_50 doesn't exist in torchvision, fall back to best available model
+            print(f"Warning: resnet3d_50 not available in torchvision. Using r2plus1d_18 (better accuracy) instead.")
+            self.backbone = models.video.r2plus1d_18(pretrained=pretrained)
+            self.feature_dim = 512
         else:
-            raise ValueError(f"Unsupported model: {model_name}")
+            raise ValueError(f"Unsupported model: {model_name}. Available options: 'resnet3d_18', 'mc3_18', 'r2plus1d_18'")
         
         # Remove final classification layer
         self.backbone.fc = nn.Identity()
@@ -68,7 +76,7 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             num_severity: Number of classes for severity prediction
             num_action_type: Number of classes for action type prediction
             vocab_sizes: Dictionary mapping feature names to vocabulary sizes
-            backbone_name: ResNet3D variant ('resnet3d_18' or 'resnet3d_50')
+            backbone_name: ResNet3D variant ('resnet3d_18', 'mc3_18', 'r2plus1d_18')
             config: Model configuration object
         """
         super().__init__()
@@ -228,18 +236,18 @@ class MultiTaskMultiViewResNet3D(nn.Module):
         **config_kwargs
     ) -> 'MultiTaskMultiViewResNet3D':
         """
-        Factory method to create a ResNet3D model with custom configuration.
+        Factory method to create a configured model instance.
         
         Args:
             num_severity: Number of severity classes
-            num_action_type: Number of action type classes
-            vocab_sizes: Dictionary of vocabulary sizes
-            backbone_name: ResNet3D variant ('resnet3d_18' or 'resnet3d_50')
-            use_attention_aggregation: Whether to use attention for view aggregation
+            num_action_type: Number of action type classes  
+            vocab_sizes: Dictionary mapping feature names to vocabulary sizes
+            backbone_name: ResNet3D variant ('resnet3d_18', 'mc3_18', 'r2plus1d_18')
+            use_attention_aggregation: Whether to use attention-based view aggregation
             **config_kwargs: Additional configuration parameters
-        
+            
         Returns:
-            Configured MultiTaskMultiViewResNet3D model
+            Configured MultiTaskMultiViewResNet3D instance
         """
         # Create configuration
         config = ModelConfig(
