@@ -73,7 +73,9 @@ def parse_args():
     parser.add_argument('--split', type=str, default='test', choices=['test', 'challenge'], help='Dataset split to evaluate on')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for evaluation')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
-    parser.add_argument('--backbone_name', type=str, default='resnet3d_18', choices=['resnet3d_18', 'resnet3d_50'], help="ResNet3D backbone variant")
+    parser.add_argument('--backbone_name', type=str, default='resnet3d_18', 
+                        choices=['resnet3d_18', 'mc3_18', 'r2plus1d_18', 'resnet3d_50'], 
+                        help="ResNet3D backbone variant (r2plus1d_18 recommended for best accuracy)")
     parser.add_argument('--frames_per_clip', type=int, default=16, help='Number of frames per clip')
     parser.add_argument('--target_fps', type=int, default=15, help='Target FPS for clips')
     parser.add_argument('--start_frame', type=int, default=67, help='Start frame index for foul-centered extraction')
