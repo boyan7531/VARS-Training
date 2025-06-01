@@ -9,23 +9,25 @@ from collections import defaultdict
 
 # Define label mappings based on actual dataset annotations
 SEVERITY_LABELS = {
-    "1.0": 0,  # Lowest severity 
-    "2.0": 1,  # Low severity
-    "3.0": 2,  # Medium severity  
-    "4.0": 3,  # High severity
-    "5.0": 4   # Highest severity (Red card level)
+    "": 0,           # Empty/unknown severity
+    "1.0": 1,        # Lowest severity 
+    "2.0": 2,        # Low severity
+    "3.0": 3,        # Medium severity  
+    "4.0": 4,        # High severity
+    "5.0": 5         # Highest severity (Red card level)
 }
 
 ACTION_TYPE_LABELS = {
-    "Challenge": 0,
-    "Dive": 1, 
-    "Dont know": 2,
-    "Elbowing": 3,
-    "High leg": 4,
-    "Holding": 5,
-    "Pushing": 6,
-    "Standing tackling": 7,
-    "Tackling": 8
+    "": 0,              # Empty/unknown action
+    "Challenge": 1,
+    "Dive": 2, 
+    "Dont know": 3,
+    "Elbowing": 4,
+    "High leg": 5,
+    "Holding": 6,
+    "Pushing": 7,
+    "Standing tackling": 8,
+    "Tackling": 9
 }
 # Inverse maps for potential debugging or inspection
 INV_SEVERITY_LABELS = {v: k for k, v in SEVERITY_LABELS.items()}
@@ -222,55 +224,29 @@ class SoccerNetMVFoulDataset(Dataset):
             if not isinstance(action_details, dict):
                 continue
 
-            # --- Severity Label (with graceful handling of missing values) ---
+            # --- Severity Label (map empty to class 0, others to their explicit classes) ---
             json_severity_val = action_details.get("Severity", "")  # Default to empty string if missing
             
-            # Handle missing severity values - only assign defaults if explicitly needed
-            if json_severity_val == "" or json_severity_val is None:
-                offence_val = action_details.get("Offence", "")
-                if offence_val == "No offence":
-                    # If explicitly marked as no offence, assign lowest severity
-                    json_severity_val = "1.0"
-                    print(f"Info: Missing severity for action {action_id_str}, assigned 1.0 based on 'No offence'")
-                elif offence_val == "Offence":
-                    # If marked as offence but no severity, assign medium severity
-                    json_severity_val = "2.0" 
-                    print(f"Info: Missing severity for action {action_id_str}, assigned 2.0 based on 'Offence'")
-                elif offence_val == "Between":
-                    # Uncertain cases get low severity
-                    json_severity_val = "1.0"
-                    print(f"Info: Missing severity for action {action_id_str}, assigned 1.0 based on 'Between'")
-                else:
-                    # If both severity and offence are empty/unknown, assign default
-                    json_severity_val = "1.0"
-                    print(f"Info: Missing severity for action {action_id_str}, assigned default 1.0")
-            
-            # Direct mapping from JSON values
+            # Map all values (including empty) through the label mapping
             if json_severity_val in SEVERITY_LABELS:
                 numerical_severity = SEVERITY_LABELS[json_severity_val]
+                if json_severity_val == "":
+                    print(f"Info: Empty severity for action {action_id_str}, mapped to class 0")
             else:
-                print(f"Warning: Unknown 'Severity' value '{json_severity_val}' for action {action_id_str}. Assigning default 1.0.")
-                numerical_severity = SEVERITY_LABELS["1.0"]  # Default to lowest severity
+                print(f"Warning: Unknown 'Severity' value '{json_severity_val}' for action {action_id_str}. Mapping to empty class 0.")
+                numerical_severity = 0  # Map unknown values to empty class
 
-            # --- Action Type Label (allow empty values without forcing defaults) ---
+            # --- Action Type Label (map empty to class 0, others to their explicit classes) ---
             json_action_class = action_details.get("Action class", "")
             
-            # Only assign default if we need a valid classification for training
-            # For empty values, we'll handle them gracefully
-            if json_action_class == "" or json_action_class is None:
-                # Keep as empty - don't force a default assignment
-                print(f"Info: Empty action class for action {action_id_str}, keeping as empty")
-                json_action_class = ""
-                
-            # Direct mapping from JSON values or handle empty case
+            # Map all values (including empty) through the label mapping
             if json_action_class in ACTION_TYPE_LABELS:
                 numerical_action_type = ACTION_TYPE_LABELS[json_action_class]
-            elif json_action_class == "":
-                # For empty action class, assign a special "unknown" category
-                numerical_action_type = ACTION_TYPE_LABELS["Dont know"]  # Use existing unknown category
+                if json_action_class == "":
+                    print(f"Info: Empty action class for action {action_id_str}, mapped to class 0")
             else:
-                print(f"Warning: Unknown 'Action class' value '{json_action_class}' for action {action_id_str}. Assigning 'Dont know'.")
-                numerical_action_type = ACTION_TYPE_LABELS["Dont know"]  # Default to unknown category
+                print(f"Warning: Unknown 'Action class' value '{json_action_class}' for action {action_id_str}. Mapping to empty class 0.")
+                numerical_action_type = 0  # Map unknown values to empty class
 
             # --- Video Files ---
             clips_info_list = action_details.get("Clips", [])
@@ -324,14 +300,21 @@ class SoccerNetMVFoulDataset(Dataset):
 
             # --- Process all categorical features using standard mappings ---
             
-            # Offence (allow empty values without forcing defaults)
+            # Offence (keep empty values as they are without forcing defaults)
             offence_str = action_details.get("Offence", "")  # Default to empty string
             
-            # Don't force defaults for empty offence values - handle them as they are
+            # Keep empty values as empty - don't force any defaults
             if offence_str == "":
                 print(f"Info: Empty offence value for action {action_id_str}, keeping as empty")
             
-            offence_idx = OFFENCE_VALUES.get(offence_str, 0) # Default to 0 (No offence) if not found
+            # Map to indices, using 0 for empty (which can represent "unknown" or "no classification")
+            if offence_str in OFFENCE_VALUES:
+                offence_idx = OFFENCE_VALUES[offence_str]
+            elif offence_str == "":
+                offence_idx = 0  # Map empty to 0 (can represent "No offence" or "unknown")
+            else:
+                print(f"Warning: Unknown offence value '{offence_str}' for action {action_id_str}, mapping to 0")
+                offence_idx = 0
             
             # Contact
             contact_str = action_details.get(CONTACT_FIELD, "")  # Default to empty string

@@ -564,8 +564,8 @@ if __name__ == "__main__":
     # Initialize model with proper configuration
     logger.info(f"Initializing ResNet3D model: {args.backbone_name}")
     model = MultiTaskMultiViewResNet3D(
-        num_severity=5,  # 5 severity classes: 1.0, 2.0, 3.0, 4.0, 5.0
-        num_action_type=9,  # 9 action types: Challenge, Dive, Dont know, Elbowing, High leg, Holding, Pushing, Standing tackling, Tackling
+        num_severity=6,  # 6 severity classes: "", 1.0, 2.0, 3.0, 4.0, 5.0
+        num_action_type=10,  # 10 action types: "", Challenge, Dive, Dont know, Elbowing, High leg, Holding, Pushing, Standing tackling, Tackling
         vocab_sizes=vocab_sizes,
         backbone_name=args.backbone_name,
         config=model_config

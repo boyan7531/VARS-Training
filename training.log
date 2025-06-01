@@ -1,0 +1,22 @@
+2025-06-02 00:45:25,762 - INFO - ============================================================
+2025-06-02 00:45:25,763 - INFO - PERFORMING TEST RUN (1 Epoch, 2 Batches)
+2025-06-02 00:45:25,763 - INFO - Model checkpoints will NOT be saved.
+2025-06-02 00:45:25,763 - INFO - ============================================================
+2025-06-02 00:45:25,771 - INFO - Using device: cpu
+2025-06-02 00:45:25,772 - INFO - Using single GPU training.
+2025-06-02 00:45:25,772 - INFO - Loading datasets...
+2025-06-02 00:45:26,131 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 00:45:26,132 - INFO - Initializing ResNet3D model: resnet3d_18
+2025-06-02 00:45:26,793 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 00:45:26,794 - INFO - Initialized MultiTaskMultiViewResNet3D with resnet3d_18, 6 severity classes and 10 action type classes
+2025-06-02 00:45:26,802 - INFO - Model initialized - Total parameters: 33,626,601
+2025-06-02 00:45:26,803 - INFO - Combined feature dimension: 760
+2025-06-02 00:45:26,804 - INFO - Starting Training
+2025-06-02 00:45:26,805 - INFO - Configuration: Epochs=1, Batch Size=4, LR=0.0002, Backbone=resnet3d_18
+2025-06-02 00:45:26,805 - INFO - Learning Rate Scheduler: CosineAnnealing (T_max=1, eta_min=2.0e-06)
+2025-06-02 00:45:26,806 - INFO - Dataset: Train=2916, Val=411
+2025-06-02 00:45:26,806 - INFO - ================================================================================
+2025-06-02 00:48:06,917 - INFO -   Training Progress: 50% | Loss: 12.068 | SevAcc: 0.250 | ActAcc: 0.000
+2025-06-02 00:50:33,474 - INFO -   Training Progress: 100% | Loss: 12.098 | SevAcc: 0.500 | ActAcc: 0.000
+2025-06-02 00:52:21,965 - INFO - ================================================================================
+2025-06-02 00:52:21,983 - INFO - ================================================================================

@@ -54,8 +54,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Label mappings
-SEVERITY_LABELS = ["1.0", "2.0", "3.0", "4.0", "5.0"]
-ACTION_TYPE_LABELS = ["Challenge", "Dive", "Dont know", "Elbowing", "High leg", 
+SEVERITY_LABELS = ["", "1.0", "2.0", "3.0", "4.0", "5.0"]
+ACTION_TYPE_LABELS = ["", "Challenge", "Dive", "Dont know", "Elbowing", "High leg", 
                      "Holding", "Pushing", "Standing tackling", "Tackling"]
 
 def parse_args():
@@ -96,7 +96,7 @@ def load_model_checkpoint(checkpoint_path, device):
     """Load model from checkpoint and extract vocab sizes"""
     logger.info(f"Loading checkpoint from: {checkpoint_path}")
     
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     
     # Extract metadata
     metrics = checkpoint.get('metrics', {})
@@ -110,23 +110,39 @@ def load_model_checkpoint(checkpoint_path, device):
     state_dict = checkpoint['model_state_dict']
     
     vocab_sizes = {}
+    
+    # Check if embeddings exist in the state dict
     embedding_keys = {
-        'contact': 'embedding_manager.original_embeddings.contact.weight',
-        'bodypart': 'embedding_manager.original_embeddings.bodypart.weight', 
-        'upper_bodypart': 'embedding_manager.original_embeddings.upper_bodypart.weight',
-        'lower_bodypart': 'embedding_manager.original_embeddings.lower_bodypart.weight',
-        'multiple_fouls': 'embedding_manager.original_embeddings.multiple_fouls.weight',
-        'try_to_play': 'embedding_manager.original_embeddings.try_to_play.weight',
-        'touch_ball': 'embedding_manager.original_embeddings.touch_ball.weight',
-        'handball': 'embedding_manager.original_embeddings.handball.weight',
-        'handball_offence': 'embedding_manager.original_embeddings.handball_offence.weight'
+        'contact': ['embedding_manager.original_embeddings.contact.weight', 'module.embedding_manager.original_embeddings.contact.weight'],
+        'bodypart': ['embedding_manager.original_embeddings.bodypart.weight', 'module.embedding_manager.original_embeddings.bodypart.weight'],
+        'upper_bodypart': ['embedding_manager.original_embeddings.upper_bodypart.weight', 'module.embedding_manager.original_embeddings.upper_bodypart.weight'],
+        'lower_bodypart': ['embedding_manager.original_embeddings.lower_bodypart.weight', 'module.embedding_manager.original_embeddings.lower_bodypart.weight'],
+        'multiple_fouls': ['embedding_manager.original_embeddings.multiple_fouls.weight', 'module.embedding_manager.original_embeddings.multiple_fouls.weight'],
+        'try_to_play': ['embedding_manager.original_embeddings.try_to_play.weight', 'module.embedding_manager.original_embeddings.try_to_play.weight'],
+        'touch_ball': ['embedding_manager.original_embeddings.touch_ball.weight', 'module.embedding_manager.original_embeddings.touch_ball.weight'],
+        'handball': ['embedding_manager.original_embeddings.handball.weight', 'module.embedding_manager.original_embeddings.handball.weight'],
+        'handball_offence': ['embedding_manager.original_embeddings.handball_offence.weight', 'module.embedding_manager.original_embeddings.handball_offence.weight']
     }
     
-    for field, weight_key in embedding_keys.items():
-        if weight_key in state_dict:
-            vocab_sizes[field] = state_dict[weight_key].shape[0]
-        else:
-            logger.warning(f"Missing embedding key: {weight_key}")
+    # Try to extract vocab sizes from model state dict
+    for field, possible_keys in embedding_keys.items():
+        found = False
+        for weight_key in possible_keys:
+            if weight_key in state_dict:
+                vocab_sizes[field] = state_dict[weight_key].shape[0]
+                found = True
+                break
+        
+        if not found:
+            logger.warning(f"Could not find embedding for {field} in checkpoint")
+            # Use reasonable defaults based on common vocab sizes
+            default_sizes = {
+                'contact': 3, 'bodypart': 4, 'upper_bodypart': 3, 'lower_bodypart': 4,
+                'multiple_fouls': 2, 'try_to_play': 3, 'touch_ball': 4, 
+                'handball': 3, 'handball_offence': 3
+            }
+            vocab_sizes[field] = default_sizes.get(field, 3)
+            logger.warning(f"Using default vocab size {vocab_sizes[field]} for {field}")
     
     logger.info(f"Extracted vocab sizes from checkpoint: {vocab_sizes}")
     
@@ -189,45 +205,51 @@ def run_benchmark(model, dataloader, device, vocab_sizes):
     
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Processing batches")):
-            # Move data to device
-            for key in batch_data:
-                if isinstance(batch_data[key], torch.Tensor):
-                    batch_data[key] = batch_data[key].to(device, non_blocking=True)
-            
-            # Clamp vocabulary indices to prevent out-of-bounds errors
-            batch_data = clamp_vocab_indices(batch_data, vocab_sizes)
-            
-            # Forward pass
-            sev_logits, act_logits = model(batch_data)
-            
-            # Get action type predictions
-            _, act_pred = torch.max(act_logits, dim=1)
-            
-            # Determine offence and severity
-            has_offence, sev_pred = predict_offence_from_severity(sev_logits, threshold=0.4)
-            
-            # Process each sample in the batch
-            batch_size = sev_logits.size(0)
-            for i in range(batch_size):
-                action_id = str(action_counter)
+            try:
+                # Move data to device
+                for key in batch_data:
+                    if isinstance(batch_data[key], torch.Tensor):
+                        batch_data[key] = batch_data[key].to(device, non_blocking=True)
                 
-                # Get predictions for this sample
-                action_class = ACTION_TYPE_LABELS[act_pred[i].item()]
-                offence = "Offence" if has_offence[i].item() else "No offence"
-                severity = SEVERITY_LABELS[sev_pred[i].item()] if has_offence[i].item() else ""
+                # Clamp vocabulary indices to prevent out-of-bounds errors
+                batch_data = clamp_vocab_indices(batch_data, vocab_sizes)
                 
-                # Store prediction
-                all_predictions[action_id] = {
-                    "Action class": action_class,
-                    "Offence": offence,
-                    "Severity": severity
-                }
+                # Forward pass
+                sev_logits, act_logits = model(batch_data)
                 
-                action_counter += 1
-            
-            # Log progress every 10 batches
-            if (batch_idx + 1) % 10 == 0:
-                logger.info(f"Processed {batch_idx + 1}/{len(dataloader)} batches, {action_counter} actions")
+                # Get action type predictions
+                _, act_pred = torch.max(act_logits, dim=1)
+                
+                # Determine offence and severity
+                has_offence, sev_pred = predict_offence_from_severity(sev_logits, threshold=0.4)
+                
+                # Process each sample in the batch
+                batch_size = sev_logits.size(0)
+                for i in range(batch_size):
+                    action_id = str(action_counter)
+                    
+                    # Get predictions for this sample
+                    action_class = ACTION_TYPE_LABELS[act_pred[i].item()]
+                    offence = "Offence" if has_offence[i].item() else "No offence"
+                    severity = SEVERITY_LABELS[sev_pred[i].item()] if has_offence[i].item() else ""
+                    
+                    # Store prediction
+                    all_predictions[action_id] = {
+                        "Action class": action_class,
+                        "Offence": offence,
+                        "Severity": severity
+                    }
+                    
+                    action_counter += 1
+                
+                # Log progress every 10 batches
+                if (batch_idx + 1) % 10 == 0:
+                    logger.info(f"Processed {batch_idx + 1}/{len(dataloader)} batches, {action_counter} actions")
+                    
+            except Exception as e:
+                logger.error(f"Error processing batch {batch_idx}: {e}")
+                logger.warning("Skipping this batch and continuing...")
+                continue
     
     logger.info(f"Benchmark completed! Processed {action_counter} actions total.")
     return all_predictions
@@ -314,15 +336,23 @@ def main():
             target_height=args.img_height,
             target_width=args.img_width
         )
+        
+        logger.info(f"Test samples: {len(test_dataset)}")
+        
+        if len(test_dataset) == 0:
+            logger.error("Test dataset is empty after loading.")
+            return
+            
     except FileNotFoundError as e:
         logger.error(f"Error loading test dataset: {e}")
+        logger.error(f"Make sure the dataset path is correct: {args.mvfouls_path}")
+        logger.error(f"And that the {args.split} split exists with annotations.json")
         return
-    
-    if len(test_dataset) == 0:
-        logger.error("Test dataset is empty after loading.")
+    except Exception as e:
+        logger.error(f"Unexpected error loading test dataset: {e}")
+        import traceback
+        traceback.print_exc()
         return
-    
-    logger.info(f"Test samples: {len(test_dataset)}")
     
     # Create data loader
     test_loader = DataLoader(
@@ -345,38 +375,51 @@ def main():
     
     # Initialize model
     logger.info(f"Initializing ResNet3D model: {args.backbone_name}")
-    model = MultiTaskMultiViewResNet3D(
-        num_severity=5,
-        num_action_type=9,
-        vocab_sizes=vocab_sizes,
-        backbone_name=args.backbone_name,
-        config=model_config
-    )
+    try:
+        model = MultiTaskMultiViewResNet3D(
+            num_severity=6,  # 6 severity classes: "", 1.0, 2.0, 3.0, 4.0, 5.0
+            num_action_type=10,  # 10 action types: "", Challenge, Dive, Dont know, Elbowing, High leg, Holding, Pushing, Standing tackling, Tackling
+            vocab_sizes=vocab_sizes,
+            backbone_name=args.backbone_name,
+            config=model_config
+        )
+        logger.info("Model initialized successfully")
+        
+    except Exception as e:
+        logger.error(f"Error initializing model: {e}")
+        logger.error("This might be due to vocab size mismatches or unsupported backbone")
+        return
     
     # Load model weights with DataParallel compatibility
-    state_dict = checkpoint['model_state_dict']
-    model_state_dict = model.state_dict()
-    
-    # Handle DataParallel state dict key mismatch
-    model_keys = list(model_state_dict.keys())
-    checkpoint_keys = list(state_dict.keys())
-    
-    if len(model_keys) > 0 and len(checkpoint_keys) > 0:
-        model_has_module = model_keys[0].startswith('module.')
-        checkpoint_has_module = checkpoint_keys[0].startswith('module.')
+    try:
+        state_dict = checkpoint['model_state_dict']
+        model_state_dict = model.state_dict()
         
-        if model_has_module and not checkpoint_has_module:
-            state_dict = {f'module.{k}': v for k, v in state_dict.items()}
-            logger.info("Added 'module.' prefix to checkpoint keys for DataParallel compatibility")
-        elif not model_has_module and checkpoint_has_module:
-            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-            logger.info("Removed 'module.' prefix from checkpoint keys for DataParallel compatibility")
-    
-    model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval()
-    
-    logger.info(f"Model loaded successfully from epoch {epoch}")
+        # Handle DataParallel state dict key mismatch
+        model_keys = list(model_state_dict.keys())
+        checkpoint_keys = list(state_dict.keys())
+        
+        if len(model_keys) > 0 and len(checkpoint_keys) > 0:
+            model_has_module = model_keys[0].startswith('module.')
+            checkpoint_has_module = checkpoint_keys[0].startswith('module.')
+            
+            if model_has_module and not checkpoint_has_module:
+                state_dict = {f'module.{k}': v for k, v in state_dict.items()}
+                logger.info("Added 'module.' prefix to checkpoint keys for DataParallel compatibility")
+            elif not model_has_module and checkpoint_has_module:
+                state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+                logger.info("Removed 'module.' prefix from checkpoint keys for DataParallel compatibility")
+        
+        model.load_state_dict(state_dict)
+        model.to(device)
+        model.eval()
+        
+        logger.info(f"Model loaded successfully from epoch {epoch}")
+        
+    except Exception as e:
+        logger.error(f"Error loading model weights: {e}")
+        logger.error("This might be due to model architecture mismatch or corrupted checkpoint")
+        return
     
     # Run benchmark
     predictions = run_benchmark(model, test_loader, device, vocab_sizes)
