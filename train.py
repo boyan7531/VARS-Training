@@ -214,13 +214,10 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
 
     start_time = time.time()
     
-    # Create progress bar
+    # Clean training without progress bar spam
     total_batches = max_batches if max_batches else len(dataloader)
-    pbar = tqdm(enumerate(dataloader), total=total_batches, desc="Training", 
-                leave=False, ncols=120, 
-                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}')
     
-    for i, batch_data in pbar:
+    for i, batch_data in enumerate(dataloader):
         if max_batches is not None and (i + 1) > max_batches:
             break 
         
@@ -234,9 +231,9 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
 
         optimizer.zero_grad()
 
-        # Mixed precision forward pass
+        # Mixed precision forward pass (fixed deprecation warning)
         if scaler is not None:
-            with autocast():
+            with torch.amp.autocast('cuda'):
                 sev_logits, act_logits = model(batch_data)
                 total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_weights
@@ -278,19 +275,13 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         running_act_f1 += act_f1
         processed_batches += 1
         
-        # Update progress bar with current metrics
-        current_avg_loss = running_loss / (processed_batches * batch_data["clips"].size(0))
-        current_avg_sev_acc = running_sev_acc / processed_batches
-        current_avg_act_acc = running_act_acc / processed_batches
-        
-        pbar.set_postfix({
-            'Loss': f'{current_avg_loss:.3f}',
-            'SevAcc': f'{current_avg_sev_acc:.3f}',
-            'ActAcc': f'{current_avg_act_acc:.3f}',
-            'LR': f'{optimizer.param_groups[0]["lr"]:.1e}'
-        })
-
-    pbar.close()
+        # Only print progress every 25% of batches
+        if (i + 1) % max(1, total_batches // 4) == 0:
+            current_avg_loss = running_loss / (processed_batches * batch_data["clips"].size(0))
+            current_avg_sev_acc = running_sev_acc / processed_batches
+            current_avg_act_acc = running_act_acc / processed_batches
+            progress = (i + 1) / total_batches * 100
+            logger.info(f"  Training Progress: {progress:.0f}% | Loss: {current_avg_loss:.3f} | SevAcc: {current_avg_sev_acc:.3f} | ActAcc: {current_avg_act_acc:.3f}")
     
     num_samples_processed = len(dataloader.dataset) if max_batches is None else processed_batches * dataloader.batch_size 
     epoch_loss = running_loss / num_samples_processed if num_samples_processed > 0 else 0
@@ -314,14 +305,11 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
 
     start_time = time.time()
     
-    # Create progress bar
+    # Clean validation without progress bar spam
     total_batches = max_batches if max_batches else len(dataloader)
-    pbar = tqdm(enumerate(dataloader), total=total_batches, desc="Validation", 
-                leave=False, ncols=120,
-                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}')
     
     with torch.no_grad():
-        for i, batch_data in pbar:
+        for i, batch_data in enumerate(dataloader):
             if max_batches is not None and (i + 1) > max_batches:
                 break
             
@@ -347,19 +335,6 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 5)  # 5 severity classes
             running_act_f1 += calculate_f1_score(act_logits, action_labels, 9)  # 9 action classes
             processed_batches += 1
-            
-            # Update progress bar with current metrics
-            current_avg_loss = running_loss / (processed_batches * batch_data["clips"].size(0))
-            current_avg_sev_acc = running_sev_acc / processed_batches
-            current_avg_act_acc = running_act_acc / processed_batches
-            
-            pbar.set_postfix({
-                'Loss': f'{current_avg_loss:.3f}',
-                'SevAcc': f'{current_avg_sev_acc:.3f}',
-                'ActAcc': f'{current_avg_act_acc:.3f}'
-            })
-
-    pbar.close()
 
     num_samples_processed = len(dataloader.dataset) if max_batches is None else processed_batches * dataloader.batch_size
     epoch_loss = running_loss / num_samples_processed if num_samples_processed > 0 else 0
