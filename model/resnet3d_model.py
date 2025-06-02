@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class ResNet3DBackbone(nn.Module):
     """3D ResNet backbone for video feature extraction."""
     
-    def __init__(self, model_name='resnet3d_18', pretrained=True):
+    def __init__(self, model_name='r2plus1d_18', pretrained=True):
         super().__init__()
         
         # Load pretrained ResNet3D
@@ -38,8 +38,8 @@ class ResNet3DBackbone(nn.Module):
         # Remove final classification layer
         self.backbone.fc = nn.Identity()
         
-        # Add dropout for regularization
-        self.dropout = nn.Dropout(0.3)
+        # Stronger dropout for small dataset (increased from 0.3 to 0.4)
+        self.dropout = nn.Dropout(0.4)
         
     def forward(self, x):
         """
@@ -66,7 +66,7 @@ class MultiTaskMultiViewResNet3D(nn.Module):
         num_severity: int,
         num_action_type: int,
         vocab_sizes: Dict[str, int],
-        backbone_name: str = 'resnet3d_18',
+        backbone_name: str = 'r2plus1d_18',
         config: ModelConfig = None
     ):
         """
@@ -132,18 +132,18 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             # Calculate combined feature dimension
             combined_feature_dim = self.video_feature_dim + self.config.get_total_embedding_dim()
             
-            # Create classification heads with regularization
+            # Create classification heads with stronger regularization for small dataset
             self.severity_head = nn.Sequential(
                 nn.Linear(combined_feature_dim, 256),
                 nn.ReLU(),
-                nn.Dropout(0.5),
+                nn.Dropout(0.6),  # Increased from 0.5 for small dataset
                 nn.Linear(256, self.num_severity)
             )
             
             self.action_type_head = nn.Sequential(
                 nn.Linear(combined_feature_dim, 256), 
                 nn.ReLU(),
-                nn.Dropout(0.5),
+                nn.Dropout(0.6),  # Increased from 0.5 for small dataset
                 nn.Linear(256, self.num_action_type)
             )
             
@@ -231,7 +231,7 @@ class MultiTaskMultiViewResNet3D(nn.Module):
         num_severity: int,
         num_action_type: int,
         vocab_sizes: Dict[str, int],
-        backbone_name: str = 'resnet3d_18',
+        backbone_name: str = 'r2plus1d_18',
         use_attention_aggregation: bool = True,
         **config_kwargs
     ) -> 'MultiTaskMultiViewResNet3D':
