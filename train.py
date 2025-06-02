@@ -83,7 +83,7 @@ def parse_args():
     parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
     parser.add_argument('--mixed_precision', action='store_true', help='Use mixed precision training')
     parser.add_argument('--gradient_clip_norm', type=float, default=1.0, help='Gradient clipping norm')
-    parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
+    parser.add_argument('--early_stopping_patience', type=int, default=6, help='Early stopping patience')
     parser.add_argument('--scheduler', type=str, default='cosine', 
                        choices=['cosine', 'onecycle', 'step', 'exponential', 'reduce_on_plateau', 'none'], 
                        help='Learning rate scheduler type')
@@ -126,7 +126,7 @@ def parse_args():
                        help='Enable gradual fine-tuning with discriminative learning rates')
     parser.add_argument('--phase1_epochs', type=int, default=8, 
                        help='Number of epochs for Phase 1 (head-only training)')
-    parser.add_argument('--phase2_epochs', type=int, default=42, 
+    parser.add_argument('--phase2_epochs', type=int, default=15, 
                        help='Number of epochs for Phase 2 (gradual unfreezing)')
     parser.add_argument('--head_lr', type=float, default=1e-3, 
                        help='Learning rate for classification heads in Phase 1')
