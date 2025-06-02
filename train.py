@@ -65,7 +65,7 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='Weight decay for AdamW')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
-    parser.add_argument('--backbone_name', type=str, default='resnet3d_18', 
+    parser.add_argument('--backbone_name', type=str, default='r2plus1d_18', 
                         choices=['resnet3d_18', 'mc3_18', 'r2plus1d_18', 'resnet3d_50'], 
                         help="ResNet3D backbone variant (r2plus1d_18 recommended for best accuracy)")
     parser.add_argument('--frames_per_clip', type=int, default=16, help='Number of frames per clip')
@@ -146,7 +146,7 @@ def parse_args():
     if args.gradual_finetuning:
         args.total_epochs = args.epochs  # Keep user's original setting
         args.epochs = args.phase1_epochs + args.phase2_epochs  # Set actual training epochs
-        logger.info(f"🎯 Gradual fine-tuning enabled: Phase 1={args.phase1_epochs} epochs, Phase 2={args.phase2_epochs} epochs")
+        logger.info(f"[GRADUAL] Gradual fine-tuning enabled: Phase 1={args.phase1_epochs} epochs, Phase 2={args.phase2_epochs} epochs")
     
     return args
 
@@ -446,7 +446,7 @@ def freeze_backbone(model):
     for param in actual_model.backbone.parameters():
         param.requires_grad = False
     
-    logger.info("🧊 Backbone frozen - only training classification heads")
+    logger.info("[FREEZE] Backbone frozen - only training classification heads")
 
 def unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=2):
     """Gradually unfreeze the last N residual blocks of the backbone."""
@@ -473,7 +473,7 @@ def unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=2):
             param.requires_grad = True
             unfrozen_params += param.numel()
     
-    logger.info(f"🔓 Unfroze last {len(layers_to_unfreeze)} backbone layers ({unfrozen_params:,} parameters)")
+    logger.info(f"[UNFREEZE] Unfroze last {len(layers_to_unfreeze)} backbone layers ({unfrozen_params:,} parameters)")
 
 def setup_discriminative_optimizer(model, head_lr, backbone_lr):
     """Setup optimizer with discriminative learning rates for different model parts."""
@@ -507,7 +507,7 @@ def setup_discriminative_optimizer(model, head_lr, backbone_lr):
             'name': 'backbone'
         })
     
-    logger.info(f"📊 Discriminative LR setup: Heads={head_lr:.1e}, Backbone={backbone_lr:.1e}")
+    logger.info(f"[OPTIM] Discriminative LR setup: Heads={head_lr:.1e}, Backbone={backbone_lr:.1e}")
     return param_groups
 
 def get_phase_info(epoch, phase1_epochs, total_epochs):
@@ -526,7 +526,7 @@ def log_trainable_parameters(model):
     trainable_params = sum(p.numel() for p in actual_model.parameters() if p.requires_grad)
     frozen_params = total_params - trainable_params
     
-    logger.info(f"📊 Parameters: Total={total_params:,}, Trainable={trainable_params:,}, Frozen={frozen_params:,}")
+    logger.info(f"[PARAMS] Total={total_params:,}, Trainable={trainable_params:,}, Frozen={frozen_params:,}")
     return trainable_params, total_params
 
 if __name__ == "__main__":
@@ -700,7 +700,7 @@ if __name__ == "__main__":
             weight_decay=args.weight_decay,
             betas=(0.9, 0.999)
         )
-        logger.info(f"🚀 Phase 1 optimizer initialized with LR={args.head_lr:.1e}")
+        logger.info(f"[PHASE1] Phase 1 optimizer initialized with LR={args.head_lr:.1e}")
     else:
         # Standard training - all parameters trainable
         log_trainable_parameters(model)
@@ -793,9 +793,9 @@ if __name__ == "__main__":
             
             # Transition from Phase 1 to Phase 2
             if epoch == args.phase1_epochs and current_phase == 2:
-                logger.info("🔄 " + "="*60)
-                logger.info("🔄 TRANSITIONING TO PHASE 2: Gradual Unfreezing")
-                logger.info("🔄 " + "="*60)
+                logger.info("[PHASE2] " + "="*60)
+                logger.info("[PHASE2] TRANSITIONING TO PHASE 2: Gradual Unfreezing")
+                logger.info("[PHASE2] " + "="*60)
                 
                 # Unfreeze backbone layers gradually
                 unfreeze_backbone_gradually(model, args.unfreeze_blocks)
@@ -816,8 +816,8 @@ if __name__ == "__main__":
                     # Add other scheduler resets as needed
                 
                 log_trainable_parameters(model)
-                logger.info("🔄 Phase 2 setup complete!")
-                logger.info("🔄 " + "="*60)
+                logger.info("[PHASE2] Phase 2 setup complete!")
+                logger.info("[PHASE2] " + "="*60)
         
         # Training
         train_metrics = train_one_epoch(
@@ -856,12 +856,12 @@ if __name__ == "__main__":
 
         # Check if this is a new best model
         is_new_best = val_combined_acc > best_val_acc
-        best_indicator = " 🌟 NEW BEST!" if is_new_best else ""
+        best_indicator = " [NEW BEST!]" if is_new_best else ""
 
         # Check for learning rate changes
         lr_change_indicator = ""
         if abs(current_lr - prev_lr) > 1e-8:  # If LR changed significantly
-            lr_change_indicator = f" 📉 LR↓"
+            lr_change_indicator = f" [LR DOWN]"
 
         # Phase indicator for gradual fine-tuning
         phase_indicator = ""
@@ -907,11 +907,11 @@ if __name__ == "__main__":
                 
                 save_path = os.path.join(args.save_dir, f'best_model_epoch_{best_epoch}.pth')
                 save_checkpoint(model, optimizer, scheduler, scaler, best_epoch, metrics, save_path)
-                logger.info(f"📁 Best model updated! Accuracy: {best_val_acc:.4f} (+{improvement:.4f}) - Saved to {save_path}")
+                logger.info(f"[SAVE] Best model updated! Accuracy: {best_val_acc:.4f} (+{improvement:.4f}) - Saved to {save_path}")
 
             # Early stopping check
             if early_stopping(current_val_acc, model):
-                logger.info(f"⏹️  Early stopping triggered after {epoch + 1} epochs")
+                logger.info(f"[EARLY_STOP] Early stopping triggered after {epoch + 1} epochs")
                 break
 
             # Save regular checkpoint every 10 epochs
@@ -919,7 +919,7 @@ if __name__ == "__main__":
                 checkpoint_path = os.path.join(args.save_dir, f'checkpoint_epoch_{epoch + 1}.pth')
                 metrics = {'epoch': epoch + 1}
                 save_checkpoint(model, optimizer, scheduler, scaler, epoch + 1, metrics, checkpoint_path)
-                logger.info(f"💾 Checkpoint saved at epoch {epoch + 1}")
+                logger.info(f"[CHECKPOINT] Checkpoint saved at epoch {epoch + 1}")
 
     # Save training history
     if not args.test_run:
@@ -928,12 +928,12 @@ if __name__ == "__main__":
             # Convert numpy types to native Python types for JSON serialization
             history_serializable = {k: [float(x) for x in v] for k, v in history.items()}
             json.dump(history_serializable, f, indent=2)
-        logger.info(f"💾 Training history saved to {history_path}")
+        logger.info(f"[SAVE] Training history saved to {history_path}")
 
     logger.info("=" * 80)
-    logger.info("🎉 Training Finished!")
+    logger.info("[COMPLETE] Training Finished!")
     if not args.test_run:
-        logger.info(f"🏆 Best validation accuracy: {best_val_acc:.4f} at epoch {best_epoch}")
+        logger.info(f"[BEST] Best validation accuracy: {best_val_acc:.4f} at epoch {best_epoch}")
     else:
-        logger.info("✅ Test run completed successfully")
+        logger.info("[TEST] Test run completed successfully")
     logger.info("=" * 80) 

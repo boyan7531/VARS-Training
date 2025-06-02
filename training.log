@@ -20,3 +20,125 @@
 2025-06-02 00:50:33,474 - INFO -   Training Progress: 100% | Loss: 12.098 | SevAcc: 0.500 | ActAcc: 0.000
 2025-06-02 00:52:21,965 - INFO - ================================================================================
 2025-06-02 00:52:21,983 - INFO - ================================================================================
+2025-06-02 17:36:55,936 - INFO - ============================================================
+2025-06-02 17:36:55,937 - INFO - PERFORMING TEST RUN (1 Epoch, 2 Batches)
+2025-06-02 17:36:55,937 - INFO - Model checkpoints will NOT be saved.
+2025-06-02 17:36:55,938 - INFO - ============================================================
+2025-06-02 17:36:55,999 - INFO - Using device: cpu
+2025-06-02 17:36:56,000 - INFO - Using single GPU training.
+2025-06-02 17:36:56,002 - INFO - Loading datasets...
+2025-06-02 17:36:56,435 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 17:36:56,436 - INFO - Initializing ResNet3D model: resnet3d_18
+2025-06-02 17:36:57,239 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 17:36:57,240 - INFO - Initialized MultiTaskMultiViewResNet3D with resnet3d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 17:36:57,262 - INFO - Starting Training
+2025-06-02 17:36:57,262 - INFO - Configuration: Epochs=1, Batch Size=8, LR=0.0002, Backbone=resnet3d_18
+2025-06-02 17:36:57,263 - INFO - Gradual Fine-tuning: Phase1=8e@1.0e-03, Phase2=15e@1.0e-05
+2025-06-02 17:36:57,263 - INFO - Learning Rate Scheduler: CosineAnnealing (T_max=1, eta_min=2.0e-06)
+2025-06-02 17:36:57,264 - INFO - Dataset: Train=2916, Val=411
+2025-06-02 17:36:57,264 - INFO - ================================================================================
+2025-06-02 17:36:57,266 - WARNING - Could not get model info: 'VideoAugmentation' object has no attribute 'get'
+2025-06-02 17:36:57,267 - INFO - Model initialized - Total parameters: 33,626,601
+2025-06-02 17:39:22,412 - INFO - ============================================================
+2025-06-02 17:39:22,412 - INFO - PERFORMING TEST RUN (1 Epoch, 2 Batches)
+2025-06-02 17:39:22,412 - INFO - Model checkpoints will NOT be saved.
+2025-06-02 17:39:22,413 - INFO - ============================================================
+2025-06-02 17:39:22,417 - INFO - Using device: cpu
+2025-06-02 17:39:22,417 - INFO - Using single GPU training.
+2025-06-02 17:39:22,418 - INFO - Loading datasets...
+2025-06-02 17:39:22,663 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 17:39:22,663 - INFO - Initializing ResNet3D model: resnet3d_18
+2025-06-02 17:39:23,215 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 17:39:23,216 - INFO - Initialized MultiTaskMultiViewResNet3D with resnet3d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 17:39:23,219 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 17:39:23,221 - INFO - [PARAMS] Total=33,626,601, Trainable=460,329, Frozen=33,166,272
+2025-06-02 17:39:23,222 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-02 17:39:23,223 - INFO - Starting Training
+2025-06-02 17:39:23,223 - INFO - Configuration: Epochs=1, Batch Size=8, LR=0.0002, Backbone=resnet3d_18
+2025-06-02 17:39:23,224 - INFO - Gradual Fine-tuning: Phase1=8e@1.0e-03, Phase2=15e@1.0e-05
+2025-06-02 17:39:23,225 - INFO - Learning Rate Scheduler: CosineAnnealing (T_max=1, eta_min=2.0e-06)
+2025-06-02 17:39:23,225 - INFO - Dataset: Train=2916, Val=411
+2025-06-02 17:39:23,226 - INFO - ================================================================================
+2025-06-02 17:39:23,228 - INFO - Model initialized - Total parameters: 33,626,601
+2025-06-02 17:39:23,229 - INFO - Combined feature dimension: 760
+2025-06-02 17:41:30,490 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=8 epochs, Phase 2=15 epochs
+2025-06-02 17:41:30,490 - INFO - ============================================================
+2025-06-02 17:41:30,490 - INFO - PERFORMING TEST RUN (1 Epoch, 2 Batches)
+2025-06-02 17:41:30,491 - INFO - Model checkpoints will NOT be saved.
+2025-06-02 17:41:30,491 - INFO - ============================================================
+2025-06-02 17:41:30,493 - INFO - Using device: cpu
+2025-06-02 17:41:30,494 - INFO - Using single GPU training.
+2025-06-02 17:41:30,495 - INFO - Loading datasets...
+2025-06-02 17:41:30,717 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 17:41:30,718 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 17:41:31,263 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 17:41:31,263 - INFO - Initialized MultiTaskMultiViewResNet3D with r2plus1d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 17:41:31,266 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 17:41:31,268 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
+2025-06-02 17:41:31,269 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-02 17:41:31,269 - INFO - Starting Training
+2025-06-02 17:41:31,270 - INFO - Configuration: Epochs=1, Batch Size=2, LR=0.0002, Backbone=r2plus1d_18
+2025-06-02 17:41:31,270 - INFO - Gradual Fine-tuning: Phase1=8e@1.0e-03, Phase2=15e@1.0e-05
+2025-06-02 17:41:31,271 - INFO - Learning Rate Scheduler: CosineAnnealing (T_max=1, eta_min=2.0e-06)
+2025-06-02 17:41:31,271 - INFO - Dataset: Train=2916, Val=411
+2025-06-02 17:41:31,272 - INFO - ================================================================================
+2025-06-02 17:41:31,274 - INFO - Model initialized - Total parameters: 31,760,454
+2025-06-02 17:41:31,274 - INFO - Combined feature dimension: 760
+2025-06-02 17:43:35,553 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=8 epochs, Phase 2=15 epochs
+2025-06-02 17:43:35,554 - INFO - ============================================================
+2025-06-02 17:43:35,554 - INFO - PERFORMING TEST RUN (1 Epoch, 2 Batches)
+2025-06-02 17:43:35,555 - INFO - Model checkpoints will NOT be saved.
+2025-06-02 17:43:35,555 - INFO - ============================================================
+2025-06-02 17:43:35,559 - INFO - Using device: cpu
+2025-06-02 17:43:35,560 - INFO - Using single GPU training.
+2025-06-02 17:43:35,561 - INFO - Loading datasets...
+2025-06-02 17:43:35,888 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 17:43:35,888 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 17:43:36,687 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 17:43:36,688 - INFO - Initialized MultiTaskMultiViewResNet3D with r2plus1d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 17:43:36,694 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 17:43:36,697 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
+2025-06-02 17:43:36,699 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-02 17:43:36,700 - INFO - Starting Training
+2025-06-02 17:43:36,701 - INFO - Configuration: Epochs=1, Batch Size=2, LR=0.0002, Backbone=r2plus1d_18
+2025-06-02 17:43:36,701 - INFO - Gradual Fine-tuning: Phase1=8e@1.0e-03, Phase2=15e@1.0e-05
+2025-06-02 17:43:36,702 - INFO - Learning Rate Scheduler: CosineAnnealing (T_max=1, eta_min=2.0e-06)
+2025-06-02 17:43:36,702 - INFO - Dataset: Train=2916, Val=411
+2025-06-02 17:43:36,703 - INFO - ================================================================================
+2025-06-02 17:43:36,707 - INFO - Model initialized - Total parameters: 31,760,454
+2025-06-02 17:43:36,708 - INFO - Combined feature dimension: 760
+2025-06-02 17:44:25,907 - INFO -   Training Progress: 50% | Loss: 10.674 | SevAcc: 0.500 | ActAcc: 0.000
+2025-06-02 17:44:52,932 - INFO -   Training Progress: 100% | Loss: 11.055 | SevAcc: 0.250 | ActAcc: 0.250
+2025-06-02 17:46:11,684 - INFO - ================================================================================
+2025-06-02 17:46:11,685 - INFO - [COMPLETE] Training Finished!
+2025-06-02 17:46:11,686 - INFO - [TEST] Test run completed successfully
+2025-06-02 17:46:11,686 - INFO - ================================================================================
+2025-06-02 17:46:48,751 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=8 epochs, Phase 2=15 epochs
+2025-06-02 17:46:48,752 - INFO - ============================================================
+2025-06-02 17:46:48,752 - INFO - PERFORMING TEST RUN (1 Epoch, 1 Batches)
+2025-06-02 17:46:48,753 - INFO - Model checkpoints will NOT be saved.
+2025-06-02 17:46:48,753 - INFO - ============================================================
+2025-06-02 17:46:48,757 - INFO - Using device: cpu
+2025-06-02 17:46:48,757 - INFO - Using single GPU training.
+2025-06-02 17:46:48,758 - INFO - Loading datasets...
+2025-06-02 17:46:49,067 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 17:46:49,067 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 17:46:49,670 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 17:46:49,671 - INFO - Initialized MultiTaskMultiViewResNet3D with r2plus1d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 17:46:49,676 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 17:46:49,678 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
+2025-06-02 17:46:49,680 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-02 17:46:49,681 - INFO - Starting Training
+2025-06-02 17:46:49,681 - INFO - Configuration: Epochs=1, Batch Size=1, LR=0.0002, Backbone=r2plus1d_18
+2025-06-02 17:46:49,682 - INFO - Gradual Fine-tuning: Phase1=8e@1.0e-03, Phase2=15e@1.0e-05
+2025-06-02 17:46:49,682 - INFO - Learning Rate Scheduler: CosineAnnealing (T_max=1, eta_min=2.0e-06)
+2025-06-02 17:46:49,683 - INFO - Dataset: Train=2916, Val=411
+2025-06-02 17:46:49,683 - INFO - ================================================================================
+2025-06-02 17:46:49,687 - INFO - Model initialized - Total parameters: 31,760,454
+2025-06-02 17:46:49,687 - INFO - Combined feature dimension: 760
+2025-06-02 17:47:07,736 - INFO -   Training Progress: 100% | Loss: 11.235 | SevAcc: 0.000 | ActAcc: 0.000
+2025-06-02 17:47:31,260 - INFO - Epoch  1/1 [41.6s] [P1] | Train: Loss=11.235, Acc=0.000 | Val: Loss=12.247, Acc=0.000 | LR=2.0e-06
+2025-06-02 17:47:31,261 - INFO - ================================================================================
+2025-06-02 17:47:31,262 - INFO - [COMPLETE] Training Finished!
+2025-06-02 17:47:31,262 - INFO - [TEST] Test run completed successfully
+2025-06-02 17:47:31,263 - INFO - ================================================================================

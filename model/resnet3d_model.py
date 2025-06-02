@@ -46,6 +46,7 @@ class VideoAugmentation(nn.Module):
             return clips
             
         batch_size = clips.size(0)
+        # Create a copy to avoid in-place modifications
         augmented_clips = clips.clone()
         
         for i in range(batch_size):
@@ -58,187 +59,139 @@ class VideoAugmentation(nn.Module):
             # Apply augmentations with adaptive intensity
             if clips.dim() == 6:  # [B, N, C, T, H, W] - multi-view
                 for view in range(clips.size(1)):
-                    augmented_clips[i, view] = self._apply_augmentations(
-                        clips[i, view], aug_intensity
-                    )
+                    original_clip = clips[i, view].clone()
+                    augmented_clip = self._apply_augmentations(original_clip, aug_intensity)
+                    # Ensure dimensions match before assignment
+                    if augmented_clip.shape == original_clip.shape:
+                        augmented_clips[i, view] = augmented_clip
+                    else:
+                        # If dimensions don't match, resize to match original
+                        C, T, H, W = original_clip.shape
+                        augmented_clips[i, view] = torch.nn.functional.interpolate(
+                            augmented_clip.view(C*T, H, W).unsqueeze(0),
+                            size=(H, W), mode='bilinear', align_corners=False
+                        ).squeeze(0).view(C, T, H, W)
             else:  # [B, C, T, H, W] - single view
-                augmented_clips[i] = self._apply_augmentations(clips[i], aug_intensity)
+                original_clip = clips[i].clone()
+                augmented_clip = self._apply_augmentations(original_clip, aug_intensity)
+                # Ensure dimensions match before assignment
+                if augmented_clip.shape == original_clip.shape:
+                    augmented_clips[i] = augmented_clip
+                else:
+                    # If dimensions don't match, resize to match original
+                    C, T, H, W = original_clip.shape
+                    augmented_clips[i] = torch.nn.functional.interpolate(
+                        augmented_clip.view(C*T, H, W).unsqueeze(0),
+                        size=(H, W), mode='bilinear', align_corners=False
+                    ).squeeze(0).view(C, T, H, W)
                 
         return augmented_clips
     
     def _apply_augmentations(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
         """Apply individual augmentations to a single clip."""
+        # Store original dimensions
+        original_shape = clip.shape
+        
         # Adjust probabilities based on intensity
         spatial_prob = min(0.9, self.spatial_prob * intensity)
         temporal_prob = min(0.8, self.temporal_prob * intensity)
         intensity_prob = min(0.7, self.intensity_prob * intensity)
         
-        # Temporal augmentations
-        if random.random() < temporal_prob:
-            clip = self._temporal_augment(clip, intensity)
+        # Apply lighter augmentations to avoid dimension issues
+        
+        # Temporal augmentations (safer ones)
+        if random.random() < temporal_prob * 0.5:  # Reduced probability
+            clip = self._safe_temporal_augment(clip, intensity)
             
-        # Spatial augmentations  
-        if random.random() < spatial_prob:
-            clip = self._spatial_augment(clip, intensity)
+        # Spatial augmentations (safer ones)
+        if random.random() < spatial_prob * 0.5:  # Reduced probability
+            clip = self._safe_spatial_augment(clip, intensity)
             
-        # Intensity/color augmentations
+        # Intensity/color augmentations (these are safe)
         if random.random() < intensity_prob:
             clip = self._intensity_augment(clip, intensity)
+        
+        # Ensure output has same shape as input
+        if clip.shape != original_shape:
+            C, T, H, W = original_shape
+            clip = torch.nn.functional.interpolate(
+                clip.view(C*T, -1, clip.shape[-1]).unsqueeze(0),
+                size=(H, W), mode='bilinear', align_corners=False
+            ).squeeze(0).view(C, T, H, W)
             
         return clip
     
-    def _temporal_augment(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
-        """Apply temporal augmentations."""
+    def _safe_temporal_augment(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
+        """Apply safe temporal augmentations that preserve dimensions."""
         C, T, H, W = clip.shape
         
-        # Random temporal cropping (keep at least 80% of frames)
-        if random.random() < 0.4 * intensity:
-            min_frames = max(int(T * 0.8), T - 8)
-            new_T = random.randint(min_frames, T)
-            start_idx = random.randint(0, T - new_T)
-            clip = clip[:, start_idx:start_idx + new_T]
-            
-            # Interpolate back to original temporal size
-            clip = F.resize(clip.permute(1, 0, 2, 3), (T, H, W)).permute(1, 0, 2, 3)
-        
-        # Temporal reversal (for minority classes)
-        if random.random() < 0.2 * intensity:
-            clip = torch.flip(clip, [1])  # Flip temporal dimension
-            
-        # Frame dropping and duplication
+        # Temporal reversal (safe)
         if random.random() < 0.3 * intensity:
-            # Randomly drop 1-2 frames and duplicate others
-            drop_frames = random.randint(1, min(2, T // 4))
-            keep_indices = list(range(T))
-            for _ in range(drop_frames):
-                if len(keep_indices) > T // 2:
-                    keep_indices.remove(random.choice(keep_indices))
-            
-            # Add duplicates to maintain temporal size
-            while len(keep_indices) < T:
-                keep_indices.append(random.choice(keep_indices))
-                
-            keep_indices.sort()
-            clip = clip[:, keep_indices[:T]]
+            clip = torch.flip(clip, [1])  # Flip temporal dimension
+        
+        # Frame shuffling (safe - maintains frame count)
+        if random.random() < 0.2 * intensity:
+            # Shuffle middle frames only, keep first and last
+            if T > 4:
+                middle_indices = list(range(1, T-1))
+                random.shuffle(middle_indices)
+                new_indices = [0] + middle_indices + [T-1]
+                clip = clip[:, new_indices]
         
         return clip
     
-    def _spatial_augment(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
-        """Apply spatial augmentations."""
+    def _safe_spatial_augment(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
+        """Apply safe spatial augmentations that preserve dimensions."""
         C, T, H, W = clip.shape
         
-        # Random horizontal flip
+        # Random horizontal flip (safe)
         if random.random() < 0.5:
             clip = torch.flip(clip, [3])  # Flip width dimension
         
-        # Random rotation (more aggressive for minority classes)
-        if random.random() < 0.3 * intensity:
-            angle = random.uniform(-10 * intensity, 10 * intensity)
-            clip = self._rotate_clip(clip, angle)
-        
-        # Random scaling and cropping
-        if random.random() < 0.6 * intensity:
-            scale_factor = random.uniform(0.85, 1.15)
-            clip = self._scale_and_crop(clip, scale_factor)
-        
-        # Random erasing (more aggressive for minority classes)
-        if random.random() < 0.25 * intensity:
-            clip = self._random_erase(clip, intensity)
+        # Small random cropping (safe - maintains output size)
+        if random.random() < 0.4 * intensity:
+            # Crop a slightly larger region and resize back
+            crop_ratio = random.uniform(0.9, 1.0)  # Very conservative cropping
+            crop_h = max(int(H * crop_ratio), H - 4)  # At most 4 pixels off
+            crop_w = max(int(W * crop_ratio), W - 4)
             
+            if crop_h < H or crop_w < W:
+                top = random.randint(0, max(0, H - crop_h))
+                left = random.randint(0, max(0, W - crop_w))
+                
+                # Crop and resize back
+                cropped = clip[:, :, top:top+crop_h, left:left+crop_w]
+                # Resize back to original size frame by frame
+                resized_frames = []
+                for t in range(T):
+                    frame = cropped[:, t]  # [C, H, W]
+                    resized_frame = torch.nn.functional.interpolate(
+                        frame.unsqueeze(0), size=(H, W), mode='bilinear', align_corners=False
+                    ).squeeze(0)
+                    resized_frames.append(resized_frame)
+                clip = torch.stack(resized_frames, dim=1)
+        
         return clip
     
     def _intensity_augment(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
-        """Apply intensity and color augmentations."""
+        """Apply intensity and color augmentations (these are always safe)."""
         # Brightness adjustment
         if random.random() < 0.5:
-            brightness_factor = random.uniform(0.7, 1.3)
+            brightness_factor = random.uniform(0.8, 1.2)  # More conservative
             clip = torch.clamp(clip * brightness_factor, 0, 1)
         
         # Contrast adjustment  
         if random.random() < 0.5:
-            contrast_factor = random.uniform(0.8, 1.2)
+            contrast_factor = random.uniform(0.9, 1.1)  # More conservative
             mean = clip.mean(dim=[2, 3], keepdim=True)
             clip = torch.clamp((clip - mean) * contrast_factor + mean, 0, 1)
         
-        # Saturation adjustment (if RGB)
-        if clip.size(0) == 3 and random.random() < 0.4:
-            # Convert to grayscale and blend
-            gray = 0.299 * clip[0] + 0.587 * clip[1] + 0.114 * clip[2]
-            saturation_factor = random.uniform(0.5, 1.5)
-            clip = torch.clamp(
-                clip * saturation_factor + gray.unsqueeze(0) * (1 - saturation_factor), 
-                0, 1
-            )
-            
         # Gaussian noise (subtle)
         if random.random() < 0.3 * intensity:
-            noise_std = 0.01 * intensity
+            noise_std = 0.005 * intensity  # Reduced noise
             noise = torch.randn_like(clip) * noise_std
             clip = torch.clamp(clip + noise, 0, 1)
             
-        return clip
-    
-    def _rotate_clip(self, clip: torch.Tensor, angle: float) -> torch.Tensor:
-        """Rotate entire video clip."""
-        C, T, H, W = clip.shape
-        rotated_frames = []
-        
-        for t in range(T):
-            frame = clip[:, t]  # [C, H, W]
-            # Convert to PIL format, rotate, convert back
-            frame_pil = transforms.ToPILImage()(frame)
-            rotated_pil = transforms.functional.rotate(frame_pil, angle)
-            rotated_tensor = transforms.ToTensor()(rotated_pil)
-            rotated_frames.append(rotated_tensor)
-            
-        return torch.stack(rotated_frames, dim=1)
-    
-    def _scale_and_crop(self, clip: torch.Tensor, scale_factor: float) -> torch.Tensor:
-        """Scale and randomly crop video clip."""
-        C, T, H, W = clip.shape
-        
-        # Resize with scale factor
-        new_H, new_W = int(H * scale_factor), int(W * scale_factor)
-        scaled_clip = F.resize(clip.permute(1, 0, 2, 3), (new_H, new_W)).permute(1, 0, 2, 3)
-        
-        # Random crop back to original size
-        if scale_factor > 1.0:
-            # Crop from larger image
-            crop_H, crop_W = H, W
-            start_H = random.randint(0, new_H - crop_H)
-            start_W = random.randint(0, new_W - crop_W)
-            clip = scaled_clip[:, :, start_H:start_H + crop_H, start_W:start_W + crop_W]
-        else:
-            # Pad smaller image
-            pad_H = (H - new_H) // 2
-            pad_W = (W - new_W) // 2
-            clip = F.pad(scaled_clip, [pad_W, pad_W, pad_H, pad_H])
-            
-        return clip
-    
-    def _random_erase(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
-        """Apply random erasing to video clip."""
-        C, T, H, W = clip.shape
-        
-        # Erase parameters (more aggressive for minority classes)
-        erase_prob = 0.3 * intensity
-        area_ratio = random.uniform(0.02, 0.1 * intensity)
-        aspect_ratio = random.uniform(0.3, 3.3)
-        
-        if random.random() < erase_prob:
-            area = H * W * area_ratio
-            h = int(round(np.sqrt(area * aspect_ratio)))
-            w = int(round(np.sqrt(area / aspect_ratio)))
-            
-            if h < H and w < W:
-                x1 = random.randint(0, H - h)
-                y1 = random.randint(0, W - w)
-                
-                # Apply to all frames
-                clip[:, :, x1:x1 + h, y1:y1 + w] = torch.randn_like(
-                    clip[:, :, x1:x1 + h, y1:y1 + w]
-                ) * 0.1
-                
         return clip
 
 class ResNet3DBackbone(nn.Module):
@@ -548,6 +501,11 @@ class MultiTaskMultiViewResNet3D(nn.Module):
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         
+        # Safely get severity weights
+        severity_weights = None
+        if hasattr(self, 'video_augmentation') and hasattr(self.video_augmentation, 'severity_weights'):
+            severity_weights = self.video_augmentation.severity_weights
+        
         return {
             'backbone_name': self.backbone_name,
             'video_feature_dim': self.video_feature_dim,
@@ -557,5 +515,5 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             'num_severity_classes': self.num_severity,
             'num_action_type_classes': self.num_action_type,
             'augmentation_enabled': self.use_augmentation,
-            'severity_weights': getattr(self, 'video_augmentation', {}).get('severity_weights', None) if hasattr(self, 'video_augmentation') else None
+            'severity_weights': severity_weights
         } 
