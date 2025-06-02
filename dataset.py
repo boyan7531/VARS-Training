@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import random
 from collections import defaultdict
+import numpy as np
 
 # Define label mappings based on actual dataset annotations
 SEVERITY_LABELS = {
@@ -70,6 +71,260 @@ INV_TOUCH_BALL_VALUES = {v: k for k, v in TOUCH_BALL_VALUES.items()}
 INV_HANDBALL_VALUES = {v: k for k, v in HANDBALL_VALUES.items()}
 INV_HANDBALL_OFFENCE_VALUES = {v: k for k, v in HANDBALL_OFFENCE_VALUES.items()}
 
+# ================================
+# COMPREHENSIVE VIDEO AUGMENTATION CLASSES FOR CLASS IMBALANCE
+# ================================
+
+class TemporalJitter(torch.nn.Module):
+    """Randomly jitter temporal sampling to create variations"""
+    def __init__(self, max_jitter=2):
+        super().__init__()
+        self.max_jitter = max_jitter
+    
+    def forward(self, clip):
+        C, T, H, W = clip.shape
+        if T <= self.max_jitter * 2:
+            return clip
+        
+        # Randomly shift start position by up to max_jitter frames
+        jitter = random.randint(-self.max_jitter, self.max_jitter)
+        start_idx = max(0, min(jitter, T - T))  # Ensure we don't go out of bounds
+        end_idx = min(T, T + jitter)
+        
+        if start_idx >= end_idx:
+            return clip
+        
+        # If we have fewer frames than original, pad with repetition
+        jittered_clip = clip[:, start_idx:end_idx, :, :]
+        if jittered_clip.shape[1] < T:
+            # Repeat last frame to maintain temporal dimension
+            padding_needed = T - jittered_clip.shape[1]
+            last_frame = jittered_clip[:, -1:, :, :].repeat(1, padding_needed, 1, 1)
+            jittered_clip = torch.cat([jittered_clip, last_frame], dim=1)
+        
+        return jittered_clip
+
+class RandomTemporalReverse(torch.nn.Module):
+    """Randomly reverse the temporal order of frames"""
+    def __init__(self, prob=0.3):
+        super().__init__()
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() < self.prob:
+            return torch.flip(clip, dims=[1])  # Flip temporal dimension
+        return clip
+
+class RandomFrameDropout(torch.nn.Module):
+    """Randomly drop frames and repeat others to maintain temporal dimension"""
+    def __init__(self, dropout_prob=0.1, max_consecutive=2):
+        super().__init__()
+        self.dropout_prob = dropout_prob
+        self.max_consecutive = max_consecutive
+    
+    def forward(self, clip):
+        C, T, H, W = clip.shape
+        if T <= 4:  # Don't apply to very short clips
+            return clip
+        
+        # Create dropout mask
+        keep_mask = torch.rand(T) > self.dropout_prob
+        
+        # Ensure we keep at least half the frames
+        if keep_mask.sum() < T // 2:
+            return clip
+        
+        # Get indices of frames to keep
+        keep_indices = torch.where(keep_mask)[0]
+        
+        # Create new clip by sampling kept frames
+        new_clip = clip[:, keep_indices, :, :]
+        
+        # If we dropped frames, repeat some to maintain temporal dimension
+        while new_clip.shape[1] < T:
+            # Randomly repeat one of the existing frames
+            repeat_idx = random.randint(0, new_clip.shape[1] - 1)
+            repeat_frame = new_clip[:, repeat_idx:repeat_idx+1, :, :]
+            new_clip = torch.cat([new_clip, repeat_frame], dim=1)
+        
+        # Trim to exact length if we overshot
+        new_clip = new_clip[:, :T, :, :]
+        return new_clip
+
+class RandomBrightnessContrast(torch.nn.Module):
+    """Apply random brightness and contrast changes per frame"""
+    def __init__(self, brightness_range=0.2, contrast_range=0.2, prob=0.7):
+        super().__init__()
+        self.brightness_range = brightness_range
+        self.contrast_range = contrast_range
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+        
+        C, T, H, W = clip.shape
+        
+        # Apply different brightness/contrast to each frame for more variation
+        for t in range(T):
+            if random.random() < 0.8:  # 80% chance per frame
+                # Random brightness adjustment
+                brightness_factor = 1.0 + random.uniform(-self.brightness_range, self.brightness_range)
+                clip[:, t, :, :] = torch.clamp(clip[:, t, :, :] * brightness_factor, 0, 1)
+                
+                # Random contrast adjustment
+                contrast_factor = 1.0 + random.uniform(-self.contrast_range, self.contrast_range)
+                mean = clip[:, t, :, :].mean(dim=(1, 2), keepdim=True)
+                clip[:, t, :, :] = torch.clamp(mean + contrast_factor * (clip[:, t, :, :] - mean), 0, 1)
+        
+        return clip
+
+class RandomSpatialCrop(torch.nn.Module):
+    """Random spatial cropping with automatic resize back to original size"""
+    def __init__(self, crop_scale_range=(0.8, 1.0), prob=0.6):
+        super().__init__()
+        self.crop_scale_range = crop_scale_range
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+        
+        C, T, H, W = clip.shape
+        
+        # Random crop scale
+        crop_scale = random.uniform(*self.crop_scale_range)
+        crop_h = int(H * crop_scale)
+        crop_w = int(W * crop_scale)
+        
+        # Random crop position
+        top = random.randint(0, H - crop_h)
+        left = random.randint(0, W - crop_w)
+        
+        # Crop all frames
+        cropped_clip = clip[:, :, top:top+crop_h, left:left+crop_w]
+        
+        # Resize back to original size
+        resized_clip = torch.nn.functional.interpolate(
+            cropped_clip.view(C, T*crop_h, crop_w).unsqueeze(0),
+            size=(T*H, W),
+            mode='bilinear',
+            align_corners=False
+        ).squeeze(0).view(C, T, H, W)
+        
+        return resized_clip
+
+class RandomHorizontalFlip(torch.nn.Module):
+    """Horizontal flip for sports videos"""
+    def __init__(self, prob=0.5):
+        super().__init__()
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() < self.prob:
+            return torch.flip(clip, dims=[3])  # Flip width dimension
+        return clip
+
+class RandomGaussianNoise(torch.nn.Module):
+    """Add random Gaussian noise"""
+    def __init__(self, std_range=(0.01, 0.05), prob=0.4):
+        super().__init__()
+        self.std_range = std_range
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+        
+        noise_std = random.uniform(*self.std_range)
+        noise = torch.randn_like(clip) * noise_std
+        return torch.clamp(clip + noise, 0, 1)
+
+class SeverityAwareAugmentation(torch.nn.Module):
+    """Apply stronger augmentation to minority severity classes"""
+    def __init__(self, severity_label, heavy_aug_classes=[2, 3, 4, 5]):
+        super().__init__()
+        self.severity_label = severity_label
+        self.heavy_aug_classes = heavy_aug_classes
+        
+        # Light augmentation for majority class (severity 1.0)
+        self.light_aug = transforms.Compose([
+            RandomHorizontalFlip(prob=0.3),
+            RandomBrightnessContrast(brightness_range=0.1, contrast_range=0.1, prob=0.3),
+        ])
+        
+        # Heavy augmentation for minority classes (severity 2.0+)
+        self.heavy_aug = transforms.Compose([
+            RandomHorizontalFlip(prob=0.6),
+            RandomTemporalReverse(prob=0.4),
+            RandomFrameDropout(dropout_prob=0.15, max_consecutive=2),
+            TemporalJitter(max_jitter=2),
+            RandomBrightnessContrast(brightness_range=0.25, contrast_range=0.25, prob=0.8),
+            RandomSpatialCrop(crop_scale_range=(0.75, 1.0), prob=0.7),
+            RandomGaussianNoise(std_range=(0.01, 0.04), prob=0.5),
+        ])
+    
+    def forward(self, clip):
+        if self.severity_label in self.heavy_aug_classes:
+            return self.heavy_aug(clip)
+        else:
+            return self.light_aug(clip)
+
+class ClassBalancedSampler(torch.utils.data.Sampler):
+    """Custom sampler that balances severity classes by oversampling minority classes"""
+    def __init__(self, dataset, oversample_factor=3.0):
+        self.dataset = dataset
+        self.oversample_factor = oversample_factor
+        
+        # Count samples per severity class
+        self.class_counts = defaultdict(int)
+        self.class_indices = defaultdict(list)
+        
+        for idx, action in enumerate(dataset.actions):
+            severity_label = action['label_severity']
+            self.class_counts[severity_label] += 1
+            self.class_indices[severity_label].append(idx)
+        
+        # Calculate sampling weights
+        max_count = max(self.class_counts.values())
+        self.sampling_weights = {}
+        
+        for class_id, count in self.class_counts.items():
+            if class_id == 1:  # Majority class (severity 1.0)
+                self.sampling_weights[class_id] = 1.0
+            else:  # Minority classes (severity 2.0+)
+                self.sampling_weights[class_id] = min(oversample_factor, max_count / count)
+        
+        print(f"Class distribution: {dict(self.class_counts)}")
+        print(f"Sampling weights: {self.sampling_weights}")
+        
+        # Calculate total samples per epoch
+        self.samples_per_epoch = 0
+        for class_id, count in self.class_counts.items():
+            self.samples_per_epoch += int(count * self.sampling_weights[class_id])
+    
+    def __iter__(self):
+        indices = []
+        
+        for class_id, class_indices in self.class_indices.items():
+            weight = self.sampling_weights[class_id]
+            num_samples = int(len(class_indices) * weight)
+            
+            # Oversample by randomly selecting with replacement
+            if weight > 1.0:
+                sampled_indices = random.choices(class_indices, k=num_samples)
+            else:
+                sampled_indices = class_indices[:num_samples]
+            
+            indices.extend(sampled_indices)
+        
+        # Shuffle all indices
+        random.shuffle(indices)
+        return iter(indices)
+    
+    def __len__(self):
+        return self.samples_per_epoch
+
 class SoccerNetMVFoulDataset(Dataset):
     def __init__(self,
                  dataset_path: str, 
@@ -84,7 +339,8 @@ class SoccerNetMVFoulDataset(Dataset):
                  views_indices: list[int] = None,
                  transform=None,
                  target_height: int = 224,
-                 target_width: int = 224):
+                 target_width: int = 224,
+                 use_severity_aware_aug: bool = True):
         """
         Args:
             dataset_path (str): Path to the root of the SoccerNet MVFoul dataset (e.g., /path/to/SoccerNet_data/mvfouls).
