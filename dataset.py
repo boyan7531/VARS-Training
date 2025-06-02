@@ -8,6 +8,14 @@ import random
 from collections import defaultdict
 import numpy as np
 
+# Optional import for advanced augmentations
+try:
+    from scipy.ndimage import gaussian_filter
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    print("Warning: scipy not available. Some advanced augmentations will use fallback implementations.")
+
 # Define label mappings based on actual dataset annotations
 SEVERITY_LABELS = {
     "": 0,           # Empty/unknown severity
@@ -950,3 +958,184 @@ def variable_views_collate_fn(batch):
         batched_data["view_mask"] = view_mask
     
     return batched_data
+
+# Add more extreme augmentations for very small datasets
+class RandomRotation(torch.nn.Module):
+    """Apply small random rotations to frames"""
+    def __init__(self, max_angle=10, prob=0.4):
+        super().__init__()
+        self.max_angle = max_angle
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+        
+        C, T, H, W = clip.shape
+        angle = random.uniform(-self.max_angle, self.max_angle)
+        
+        # Apply rotation to each frame
+        rotated_frames = []
+        for t in range(T):
+            frame = clip[:, t]  # [C, H, W]
+            # Convert to PIL format for rotation, then back to tensor
+            frame_pil = transforms.ToPILImage()(frame)
+            rotated_pil = transforms.functional.rotate(frame_pil, angle)
+            rotated_tensor = transforms.ToTensor()(rotated_pil)
+            rotated_frames.append(rotated_tensor)
+        
+        return torch.stack(rotated_frames, dim=1)
+
+class RandomElasticDeformation(torch.nn.Module):
+    """Apply subtle elastic deformations for more data variety"""
+    def __init__(self, alpha=50, sigma=5, prob=0.3):
+        super().__init__()
+        self.alpha = alpha
+        self.sigma = sigma
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+        
+        # Check if scipy is available for proper implementation
+        if not SCIPY_AVAILABLE:
+            # Fallback: apply simple random noise instead of elastic deformation
+            C, T, H, W = clip.shape
+            noise = torch.randn_like(clip) * 0.01  # Small amount of noise
+            return torch.clamp(clip + noise, 0, 1)
+        
+        # Simple implementation using random displacement fields
+        C, T, H, W = clip.shape
+        
+        # Create random displacement field
+        dx = np.random.randn(H, W) * self.alpha
+        dy = np.random.randn(H, W) * self.alpha
+        
+        # Smooth the displacement field
+        dx = gaussian_filter(dx, self.sigma)
+        dy = gaussian_filter(dy, self.sigma)
+        
+        # Apply to each frame
+        deformed_frames = []
+        for t in range(T):
+            frame = clip[:, t].numpy()  # [C, H, W]
+            
+            # Create coordinate grids
+            x, y = np.meshgrid(np.arange(W), np.arange(H))
+            x_new = np.clip(x + dx, 0, W-1).astype(np.int32)
+            y_new = np.clip(y + dy, 0, H-1).astype(np.int32)
+            
+            # Apply deformation to each channel
+            deformed_frame = np.zeros_like(frame)
+            for c in range(C):
+                deformed_frame[c] = frame[c][y_new, x_new]
+            
+            deformed_frames.append(torch.from_numpy(deformed_frame))
+        
+        return torch.stack(deformed_frames, dim=1)
+
+class RandomMixup(torch.nn.Module):
+    """Apply mixup augmentation between random frames within the same clip"""
+    def __init__(self, alpha=0.2, prob=0.3):
+        super().__init__()
+        self.alpha = alpha
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+        
+        C, T, H, W = clip.shape
+        if T < 2:
+            return clip
+        
+        # Select two random frames
+        idx1, idx2 = random.sample(range(T), 2)
+        
+        # Generate mixup coefficient
+        lam = np.random.beta(self.alpha, self.alpha)
+        
+        # Apply mixup
+        mixed_clip = clip.clone()
+        mixed_frame = lam * clip[:, idx1] + (1 - lam) * clip[:, idx2]
+        
+        # Replace one of the frames with the mixed version
+        mixed_clip[:, idx1] = mixed_frame
+        
+        return mixed_clip
+
+class RandomCutout(torch.nn.Module):
+    """Randomly mask out rectangular regions"""
+    def __init__(self, max_holes=3, max_height=20, max_width=20, prob=0.4):
+        super().__init__()
+        self.max_holes = max_holes
+        self.max_height = max_height
+        self.max_width = max_width
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+        
+        C, T, H, W = clip.shape
+        cutout_clip = clip.clone()
+        
+        # Apply to random subset of frames
+        num_frames_to_affect = random.randint(1, max(1, T // 2))
+        frames_to_affect = random.sample(range(T), num_frames_to_affect)
+        
+        for t in frames_to_affect:
+            num_holes = random.randint(1, self.max_holes)
+            
+            for _ in range(num_holes):
+                # Random hole size
+                hole_height = random.randint(1, min(self.max_height, H // 4))
+                hole_width = random.randint(1, min(self.max_width, W // 4))
+                
+                # Random position
+                y = random.randint(0, H - hole_height)
+                x = random.randint(0, W - hole_width)
+                
+                # Apply cutout (set to random noise instead of zeros for more variation)
+                cutout_clip[:, t, y:y+hole_height, x:x+hole_width] = torch.randn(C, hole_height, hole_width) * 0.1
+        
+        return cutout_clip
+
+class RandomTimeWarp(torch.nn.Module):
+    """Apply time warping by changing frame sampling"""
+    def __init__(self, warp_factor=0.2, prob=0.3):
+        super().__init__()
+        self.warp_factor = warp_factor
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+        
+        C, T, H, W = clip.shape
+        if T <= 4:  # Don't warp very short clips
+            return clip
+        
+        # Create non-uniform time sampling
+        warp = random.uniform(-self.warp_factor, self.warp_factor)
+        
+        # Generate warped indices
+        original_indices = torch.linspace(0, T-1, T)
+        center = T // 2
+        
+        # Apply warping around center
+        warped_indices = original_indices.clone()
+        for i in range(T):
+            distance_from_center = abs(i - center) / center
+            warp_amount = warp * distance_from_center
+            warped_indices[i] = torch.clamp(
+                original_indices[i] + warp_amount * (i - center),
+                0, T-1
+            )
+        
+        # Sample frames according to warped indices
+        warped_indices = warped_indices.long()
+        warped_clip = clip[:, warped_indices]
+        
+        return warped_clip

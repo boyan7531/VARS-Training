@@ -1,4 +1,47 @@
 # train.py
+"""
+Enhanced Multi-Task Multi-View ResNet3D Training Script with Aggressive Data Augmentation
+
+AUGMENTATION MODES FOR SMALL DATASETS:
+=====================================
+
+1. STANDARD MODE (default):
+   - Basic augmentations for medium/large datasets
+   - Use when you have >1000 training samples
+
+2. AGGRESSIVE MODE (--aggressive_augmentation):
+   - Enhanced augmentation pipeline for small datasets
+   - Enabled by default, suitable for 200-1000 samples
+   - Includes temporal jitter, frame dropout, spatial crops, color variation
+
+3. EXTREME MODE (--extreme_augmentation):
+   - Maximum augmentation for very small datasets (<200 samples)
+   - Includes all aggressive augmentations PLUS:
+     * Time warping and inter-frame mixup
+     * Random rotations and cutout
+     * More aggressive parameters
+   
+USAGE EXAMPLES:
+==============
+
+# For tiny datasets (<100 samples):
+python train.py --extreme_augmentation --oversample_factor 6.0 --label_smoothing 0.15
+
+# For small datasets (100-500 samples):
+python train.py --aggressive_augmentation --oversample_factor 4.0 --label_smoothing 0.1
+
+# For medium datasets (500+ samples):
+python train.py --aggressive_augmentation false
+
+TUNABLE PARAMETERS:
+==================
+--temporal_jitter_strength: Frame jitter amount (default: 3)
+--dropout_prob: Frame dropout probability (default: 0.2)
+--spatial_crop_strength: Min crop scale, lower=more aggressive (default: 0.7)
+--color_aug_strength: Color variation strength (default: 0.3)
+--noise_strength: Max Gaussian noise std (default: 0.06)
+--oversample_factor: Minority class oversampling (default: 4.0)
+"""
 
 import torch
 import torch.nn as nn
@@ -19,7 +62,13 @@ import random
 from tqdm import tqdm
 
 # Imports from our other files
-from dataset import SoccerNetMVFoulDataset, variable_views_collate_fn
+from dataset import (
+    SoccerNetMVFoulDataset, variable_views_collate_fn,
+    TemporalJitter, RandomTemporalReverse, RandomFrameDropout,
+    RandomBrightnessContrast, RandomSpatialCrop, RandomHorizontalFlip,
+    RandomGaussianNoise, SeverityAwareAugmentation, ClassBalancedSampler,
+    RandomRotation, RandomMixup, RandomCutout, RandomTimeWarp
+)
 from model import MultiTaskMultiViewResNet3D, ModelConfig
 
 # Import transforms directly
@@ -113,9 +162,29 @@ def parse_args():
     
     # Multi-scale and advanced training options for higher accuracy
     parser.add_argument('--multi_scale', action='store_true', help='Enable multi-scale training for better accuracy')
-    parser.add_argument('--label_smoothing', type=float, default=0.0, help='Label smoothing factor (0.1 recommended)')
+    parser.add_argument('--label_smoothing', type=float, default=0.1, help='Label smoothing factor (0.1 recommended for small datasets)')
     parser.add_argument('--dropout_rate', type=float, default=0.1, help='Dropout rate for regularization')
     parser.add_argument('--lr_warmup', action='store_true', help='Enable learning rate warmup')
+    
+    # ENHANCED AUGMENTATION OPTIONS FOR SMALL DATASETS
+    parser.add_argument('--use_class_balanced_sampler', action='store_true', default=True,
+                       help='Use class-balanced sampler to oversample minority classes')
+    parser.add_argument('--oversample_factor', type=float, default=4.0,
+                       help='Factor by which to oversample minority classes (higher = more aggressive)')
+    parser.add_argument('--aggressive_augmentation', action='store_true', default=True,
+                       help='Enable aggressive augmentation pipeline for small datasets')
+    parser.add_argument('--extreme_augmentation', action='store_true', default=False,
+                       help='Enable EXTREME augmentation with all techniques (use for very small datasets)')
+    parser.add_argument('--temporal_jitter_strength', type=int, default=3,
+                       help='Max temporal jitter in frames (higher = more temporal variation)')
+    parser.add_argument('--dropout_prob', type=float, default=0.2,
+                       help='Frame dropout probability (higher = more aggressive temporal dropout)')
+    parser.add_argument('--spatial_crop_strength', type=float, default=0.7,
+                       help='Minimum crop scale (lower = more aggressive spatial crops)')
+    parser.add_argument('--color_aug_strength', type=float, default=0.3,
+                       help='Color augmentation strength (higher = more variation)')
+    parser.add_argument('--noise_strength', type=float, default=0.06,
+                       help='Maximum Gaussian noise standard deviation')
     
     # Advanced optimization
     parser.add_argument('--optimizer', type=str, default='adamw', choices=['adamw', 'sgd', 'adam'], help='Optimizer type')
@@ -175,7 +244,7 @@ def calculate_f1_score(outputs, labels, num_classes):
     _, predicted = torch.max(outputs.data, 1)
     return f1_score(labels.cpu().numpy(), predicted.cpu().numpy(), average='weighted', zero_division=0)
 
-def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, aux_weight=0.5):
+def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, aux_weight=0.5, label_smoothing=0.0):
     """
     Calculate weighted multi-task loss with proper balancing between main and auxiliary tasks.
     
@@ -185,18 +254,19 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, a
         batch_data: Batch data containing labels
         main_weights: [severity_weight, action_weight] for main tasks
         aux_weight: Weight for auxiliary tasks (currently not implemented)
+        label_smoothing: Label smoothing factor for regularization (helps with small datasets)
     
     Returns:
         total_loss, loss_sev, loss_act
     """
-    # Main task losses with weighting
-    loss_sev = nn.CrossEntropyLoss()(sev_logits, batch_data["label_severity"]) * main_weights[0]
-    loss_act = nn.CrossEntropyLoss()(act_logits, batch_data["label_type"]) * main_weights[1]
+    # Main task losses with weighting and label smoothing for small dataset regularization
+    loss_sev = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(sev_logits, batch_data["label_severity"]) * main_weights[0]
+    loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
     
     # Future: Add auxiliary task losses here
     # aux_losses = []
     # if "contact_logits" in outputs:
-    #     aux_losses.append(nn.CrossEntropyLoss()(outputs["contact_logits"], batch_data["contact_idx"]) * aux_weight)
+    #     aux_losses.append(nn.CrossEntropyLoss(label_smoothing=label_smoothing)(outputs["contact_logits"], batch_data["contact_idx"]) * aux_weight)
     # ... add other auxiliary tasks
     
     total_loss = loss_sev + loss_act  # + sum(aux_losses)
@@ -235,7 +305,7 @@ class EarlyStopping:
             self.best_weights = model.state_dict().copy()
 
 def train_one_epoch(model, dataloader, criterion_severity, criterion_action, optimizer, device, 
-                   scaler=None, max_batches=None, loss_weights=[1.0, 1.0], gradient_clip_norm=1.0):
+                   scaler=None, max_batches=None, loss_weights=[1.0, 1.0], gradient_clip_norm=1.0, label_smoothing=0.0):
     model.train()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -268,7 +338,7 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
             with torch.amp.autocast('cuda'):
                 sev_logits, act_logits = model(batch_data)
                 total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                    sev_logits, act_logits, batch_data, loss_weights
+                    sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing
                 )
 
             scaler.scale(total_loss).backward()
@@ -283,7 +353,7 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         else:
             sev_logits, act_logits = model(batch_data)
             total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                sev_logits, act_logits, batch_data, loss_weights
+                sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing
             )
 
             total_loss.backward()
@@ -326,7 +396,7 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
     return epoch_loss, epoch_sev_acc, epoch_act_acc, epoch_sev_f1, epoch_act_f1
 
 def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, device, 
-                      max_batches=None, loss_weights=[1.0, 1.0]):
+                      max_batches=None, loss_weights=[1.0, 1.0], label_smoothing=0.0):
     model.eval()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -356,7 +426,7 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             sev_logits, act_logits = model(batch_data)
             
             total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                sev_logits, act_logits, batch_data, loss_weights
+                sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing
             )
 
             running_loss += total_loss.item() * batch_data["clips"].size(0)
@@ -574,21 +644,95 @@ if __name__ == "__main__":
     if scaler:
         logger.info("Using mixed precision training")
 
-    # Enhanced transforms with aggressive augmentation for better accuracy
-    train_transform = Compose([
-        ConvertToFloatAndScale(),
-        VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ShortSideScale(size=int(args.img_height * 1.2)),  # Larger scale for more crop variety
-        PerFrameCenterCrop((args.img_height, args.img_width)),  # Rectangular crop for ResNet3D
-        # Add more augmentation here if needed
+    # Enhanced transforms with AGGRESSIVE/EXTREME augmentation for small dataset
+    # Multiple augmentation stages for maximum data variety
+    augmentation_stages = [ConvertToFloatAndScale()]
+    
+    # STAGE 1: Aggressive temporal augmentations (before normalization)
+    augmentation_stages.extend([
+        TemporalJitter(max_jitter=args.temporal_jitter_strength),
+        RandomTemporalReverse(prob=0.5 if args.extreme_augmentation else (0.4 if args.aggressive_augmentation else 0.2)),
+        RandomFrameDropout(
+            dropout_prob=args.dropout_prob * (1.5 if args.extreme_augmentation else 1.0),
+            max_consecutive=min(4, args.temporal_jitter_strength + 1)
+        ),
     ])
     
-    # Deterministic validation transforms (no augmentation)
+    # STAGE 1.5: EXTREME temporal augmentations (only in extreme mode)
+    if args.extreme_augmentation:
+        augmentation_stages.extend([
+            RandomTimeWarp(warp_factor=0.3, prob=0.4),  # More aggressive time warping
+            RandomMixup(alpha=0.3, prob=0.4),  # Inter-frame mixing
+        ])
+    
+    # STAGE 2: Aggressive spatial augmentations
+    augmentation_stages.extend([
+        RandomSpatialCrop(
+            crop_scale_range=(args.spatial_crop_strength * (0.9 if args.extreme_augmentation else 1.0), 1.0),
+            prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
+        ),
+        RandomHorizontalFlip(prob=0.7 if args.extreme_augmentation else (0.6 if args.aggressive_augmentation else 0.5)),
+    ])
+    
+    # STAGE 2.5: EXTREME spatial augmentations (only in extreme mode)
+    if args.extreme_augmentation:
+        augmentation_stages.extend([
+            RandomRotation(max_angle=8, prob=0.5),  # Small rotations
+            RandomCutout(max_holes=2, max_height=15, max_width=15, prob=0.5),  # Cutout augmentation
+        ])
+    
+    # STAGE 3: Color/intensity augmentations (before normalization)
+    augmentation_stages.extend([
+        RandomBrightnessContrast(
+            brightness_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+            contrast_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+            prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
+        ),
+        RandomGaussianNoise(
+            std_range=(0.01, args.noise_strength * (1.3 if args.extreme_augmentation else 1.0)),
+            prob=0.6 if args.extreme_augmentation else (0.5 if args.aggressive_augmentation else 0.3)
+        ),
+    ])
+    
+    # STAGE 4: Standard preprocessing
+    augmentation_stages.extend([
+        VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ShortSideScale(size=int(args.img_height * (1.5 if args.extreme_augmentation else (1.4 if args.aggressive_augmentation else 1.2)))),
+        PerFrameCenterCrop((args.img_height, args.img_width)),
+    ])
+    
+    # Create the final transform
+    train_transform = Compose(augmentation_stages)
+    
+    # Log augmentation settings
+    if args.extreme_augmentation:
+        logger.info("🔥 EXTREME AUGMENTATION MODE ENABLED - Maximum data variety for tiny datasets!")
+        logger.info(f"   - Temporal jitter: ±{args.temporal_jitter_strength} frames")
+        logger.info(f"   - Frame dropout: {args.dropout_prob*1.5*100:.1f}% probability")
+        logger.info(f"   - Time warping: 30% probability with 0.3 factor")
+        logger.info(f"   - Inter-frame mixup: 40% probability")
+        logger.info(f"   - Spatial crops: {args.spatial_crop_strength*0.9}-1.0 scale range")
+        logger.info(f"   - Random rotation: ±8° with 50% probability")
+        logger.info(f"   - Random cutout: 2 holes, 50% probability")
+        logger.info(f"   - Color variation: ±{args.color_aug_strength*1.2*100:.1f}%")
+        logger.info(f"   - Gaussian noise: up to {args.noise_strength*1.3:.3f} std")
+        logger.info(f"   - Scale factor: {1.5}x for maximum crop variety")
+    elif args.aggressive_augmentation:
+        logger.info("🚀 AGGRESSIVE AUGMENTATION MODE ENABLED for small dataset!")
+        logger.info(f"   - Temporal jitter: ±{args.temporal_jitter_strength} frames")
+        logger.info(f"   - Frame dropout: {args.dropout_prob*100:.1f}% probability")
+        logger.info(f"   - Spatial crops: {args.spatial_crop_strength}-1.0 scale range")
+        logger.info(f"   - Color variation: ±{args.color_aug_strength*100:.1f}%")
+        logger.info(f"   - Gaussian noise: up to {args.noise_strength:.3f} std")
+    else:
+        logger.info("📊 Standard augmentation mode")
+    
+    # Standard validation transforms (NO augmentation for consistent evaluation)
     val_transform = Compose([
         ConvertToFloatAndScale(),
         VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ShortSideScale(size=args.img_height),
-        PerFrameCenterCrop((args.img_height, args.img_width))  # Rectangular crop for ResNet3D
+        PerFrameCenterCrop((args.img_height, args.img_width))
     ])
 
     # Load datasets
@@ -627,16 +771,41 @@ if __name__ == "__main__":
         logger.error("One or both datasets are empty after loading.")
         exit(1)
 
-    # Create data loaders
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=args.batch_size, 
-        shuffle=True, 
-        num_workers=args.num_workers,
-        pin_memory=True,
-        persistent_workers=args.num_workers > 0,
-        collate_fn=variable_views_collate_fn
-    )
+    # Create data loaders with class balancing for small datasets
+    logger.info("Creating data loaders...")
+    
+    # Setup training loader with optional class balancing
+    if args.use_class_balanced_sampler and not args.test_run:
+        logger.info("🎯 Using ClassBalancedSampler to address class imbalance!")
+        train_sampler = ClassBalancedSampler(
+            train_dataset, 
+            oversample_factor=args.oversample_factor
+        )
+        
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=args.batch_size, 
+            sampler=train_sampler,  # Use custom sampler
+            num_workers=args.num_workers,
+            pin_memory=True,
+            persistent_workers=args.num_workers > 0,
+            collate_fn=variable_views_collate_fn
+        )
+        
+        logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority classes")
+        logger.info(f"   - Effective training samples per epoch: {len(train_sampler)}")
+        
+    else:
+        # Standard random sampling
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=args.batch_size, 
+            shuffle=True, 
+            num_workers=args.num_workers,
+            pin_memory=True,
+            persistent_workers=args.num_workers > 0,
+            collate_fn=variable_views_collate_fn
+        )
     
     val_loader = DataLoader(
         val_dataset, 
@@ -767,6 +936,19 @@ if __name__ == "__main__":
         logger.info(f"Gradual Fine-tuning: Phase1={args.phase1_epochs}e@{args.head_lr:.1e}, Phase2={args.phase2_epochs}e@{args.backbone_lr:.1e}")
     logger.info(f"Learning Rate Scheduler: {scheduler_info}")
     logger.info(f"Dataset: Train={len(train_dataset)}, Val={len(val_dataset)}")
+    
+    # Dataset size recommendations
+    if len(train_dataset) < 100:
+        logger.info("💡 RECOMMENDATION: Your dataset is very small (<100 samples)!")
+        logger.info("   Consider using --extreme_augmentation for maximum data variety")
+        logger.info("   Also try: --oversample_factor 6.0 --label_smoothing 0.15")
+    elif len(train_dataset) < 500:
+        logger.info("💡 RECOMMENDATION: Your dataset is small (<500 samples)!")
+        logger.info("   Current aggressive augmentation should help")
+        logger.info("   Consider: --oversample_factor 4.0 --label_smoothing 0.1")
+    elif len(train_dataset) < 1000:
+        logger.info("💡 RECOMMENDATION: Medium-sized dataset - current settings should work well")
+    
     logger.info("=" * 80)
 
     # Log model info - handle DataParallel wrapper
@@ -823,7 +1005,7 @@ if __name__ == "__main__":
         train_metrics = train_one_epoch(
             model, train_loader, criterion_severity, criterion_action, optimizer, device,
             scaler=scaler, max_batches=num_batches_to_run, 
-            loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm
+            loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm, label_smoothing=args.label_smoothing
         )
         
         train_loss, train_sev_acc, train_act_acc, train_sev_f1, train_act_f1 = train_metrics
@@ -831,7 +1013,7 @@ if __name__ == "__main__":
         # Validation
         val_metrics = validate_one_epoch(
             model, val_loader, criterion_severity, criterion_action, device,
-            max_batches=num_batches_to_run, loss_weights=args.main_task_weights
+            max_batches=num_batches_to_run, loss_weights=args.main_task_weights, label_smoothing=args.label_smoothing
         )
         
         val_loss, val_sev_acc, val_act_acc, val_sev_f1, val_act_f1 = val_metrics

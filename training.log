@@ -142,3 +142,110 @@
 2025-06-02 17:47:31,262 - INFO - [COMPLETE] Training Finished!
 2025-06-02 17:47:31,262 - INFO - [TEST] Test run completed successfully
 2025-06-02 17:47:31,263 - INFO - ================================================================================
+2025-06-02 17:50:18,585 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=8 epochs, Phase 2=15 epochs
+2025-06-02 17:50:18,589 - INFO - Using device: cpu
+2025-06-02 17:50:18,589 - INFO - Using single GPU training.
+2025-06-02 17:50:18,590 - INFO - Loading datasets...
+2025-06-02 17:50:18,981 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 17:50:18,981 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 17:50:19,656 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 17:50:19,657 - INFO - Initialized MultiTaskMultiViewResNet3D with r2plus1d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 17:50:19,660 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 17:50:19,662 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
+2025-06-02 17:50:19,664 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-02 17:50:19,664 - INFO - Starting Training
+2025-06-02 17:50:19,665 - INFO - Configuration: Epochs=23, Batch Size=32, LR=0.0004, Backbone=r2plus1d_18
+2025-06-02 17:50:19,666 - INFO - Gradual Fine-tuning: Phase1=8e@1.0e-03, Phase2=15e@1.0e-05
+2025-06-02 17:50:19,667 - INFO - Learning Rate Scheduler: CosineAnnealing (T_max=23, eta_min=4.0e-06)
+2025-06-02 17:50:19,668 - INFO - Dataset: Train=2916, Val=411
+2025-06-02 17:50:19,668 - INFO - ================================================================================
+2025-06-02 17:50:19,673 - INFO - Model initialized - Total parameters: 31,760,454
+2025-06-02 17:50:19,673 - INFO - Combined feature dimension: 760
+2025-06-02 18:39:01,544 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=10 epochs, Phase 2=25 epochs
+2025-06-02 18:39:01,547 - INFO - Using device: cpu
+2025-06-02 18:39:01,548 - INFO - Using single GPU training.
+2025-06-02 18:39:01,548 - INFO - Loading datasets...
+2025-06-02 18:39:01,797 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 18:39:01,797 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 18:39:02,389 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 18:39:02,390 - INFO - Initialized MultiTaskMultiViewResNet3D with r2plus1d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 18:39:02,392 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 18:39:02,394 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
+2025-06-02 18:39:02,395 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-02 18:39:02,396 - INFO - Starting Training
+2025-06-02 18:39:02,396 - INFO - Configuration: Epochs=35, Batch Size=16, LR=0.0004, Backbone=r2plus1d_18
+2025-06-02 18:39:02,397 - INFO - Gradual Fine-tuning: Phase1=10e@1.0e-03, Phase2=25e@1.0e-05
+2025-06-02 18:39:02,398 - INFO - Learning Rate Scheduler: CosineAnnealing (T_max=35, eta_min=4.0e-06)
+2025-06-02 18:39:02,399 - INFO - Dataset: Train=2916, Val=411
+2025-06-02 18:39:02,399 - INFO - ================================================================================
+2025-06-02 18:39:02,403 - INFO - Model initialized - Total parameters: 31,760,454
+2025-06-02 18:39:02,404 - INFO - Combined feature dimension: 760
+2025-06-02 18:44:07,484 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=10 epochs, Phase 2=25 epochs
+2025-06-02 18:44:07,589 - INFO - Using device: cpu
+2025-06-02 18:44:07,609 - INFO - Using single GPU training.
+2025-06-02 18:44:07,613 - INFO - Loading datasets...
+2025-06-02 18:44:07,930 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 18:44:07,930 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 19:28:05,000 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=10 epochs, Phase 2=25 epochs
+2025-06-02 19:28:05,005 - INFO - Using device: cpu
+2025-06-02 19:28:05,006 - INFO - Using single GPU training.
+2025-06-02 19:28:05,008 - INFO - Loading datasets...
+2025-06-02 19:28:05,389 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 19:28:05,389 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 19:28:06,041 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 19:28:06,042 - INFO - Initialized MultiTaskMultiViewResNet3D with r2plus1d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 19:28:06,045 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 19:28:06,047 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
+2025-06-02 19:28:06,050 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-02 19:28:06,051 - INFO - Starting Training
+2025-06-02 19:28:06,052 - INFO - Configuration: Epochs=35, Batch Size=12, LR=0.0004, Backbone=r2plus1d_18
+2025-06-02 19:28:06,053 - INFO - Gradual Fine-tuning: Phase1=10e@1.0e-03, Phase2=25e@1.0e-05
+2025-06-02 19:28:06,053 - INFO - Learning Rate Scheduler: CosineAnnealing (T_max=35, eta_min=4.0e-06)
+2025-06-02 19:28:06,054 - INFO - Dataset: Train=2916, Val=411
+2025-06-02 19:28:06,054 - INFO - ================================================================================
+2025-06-02 19:28:06,058 - INFO - Model initialized - Total parameters: 31,760,454
+2025-06-02 19:28:06,059 - INFO - Combined feature dimension: 760
+2025-06-02 19:28:52,812 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=10 epochs, Phase 2=25 epochs
+2025-06-02 19:28:52,818 - INFO - Using device: cpu
+2025-06-02 19:28:52,819 - INFO - Using single GPU training.
+2025-06-02 19:28:52,820 - INFO - Loading datasets...
+2025-06-02 19:28:53,194 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 19:28:53,194 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 19:28:53,812 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 19:28:53,812 - INFO - Initialized MultiTaskMultiViewResNet3D with r2plus1d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 19:28:53,817 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 19:28:53,820 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
+2025-06-02 19:28:53,822 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-02 19:32:12,921 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=0 epochs, Phase 2=35 epochs
+2025-06-02 19:32:12,925 - INFO - Using device: cpu
+2025-06-02 19:32:12,926 - INFO - Using single GPU training.
+2025-06-02 19:32:12,927 - INFO - Loading datasets...
+2025-06-02 19:32:13,288 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 19:32:13,289 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 19:32:13,892 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 19:32:13,893 - INFO - Initialized MultiTaskMultiViewResNet3D with r2plus1d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 19:32:13,898 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 19:32:13,900 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
+2025-06-02 19:32:13,902 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-02 20:23:28,746 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=10 epochs, Phase 2=25 epochs
+2025-06-02 20:23:28,752 - INFO - Using device: cpu
+2025-06-02 20:23:28,753 - INFO - Using single GPU training.
+2025-06-02 20:23:28,754 - INFO - Loading datasets...
+2025-06-02 20:23:29,143 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 20:23:29,144 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 20:23:29,748 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 20:23:29,749 - INFO - Initialized MultiTaskMultiViewResNet3D with r2plus1d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 20:23:29,752 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 20:23:29,754 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
+2025-06-02 20:23:29,756 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-02 20:31:28,956 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=10 epochs, Phase 2=25 epochs
+2025-06-02 20:31:28,961 - INFO - Using device: cpu
+2025-06-02 20:31:28,962 - INFO - Using single GPU training.
+2025-06-02 20:31:28,964 - INFO - Loading datasets...
+2025-06-02 20:31:29,351 - INFO - Training samples: 2916, Validation samples: 411
+2025-06-02 20:31:29,352 - INFO - Initializing ResNet3D model: r2plus1d_18
+2025-06-02 20:31:30,083 - INFO - ResNet3D components initialized successfully. Combined feature dim: 760
+2025-06-02 20:31:30,084 - INFO - Initialized MultiTaskMultiViewResNet3D with r2plus1d_18, 6 severity classes and 10 action type classes. Augmentation: enabled
+2025-06-02 20:31:30,089 - INFO - [FREEZE] Backbone frozen - only training classification heads
+2025-06-02 20:31:30,092 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
+2025-06-02 20:31:30,095 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
