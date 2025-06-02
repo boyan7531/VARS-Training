@@ -171,6 +171,8 @@ def parse_args():
                        help='Use class-balanced sampler to oversample minority classes')
     parser.add_argument('--oversample_factor', type=float, default=4.0,
                        help='Factor by which to oversample minority classes (higher = more aggressive)')
+    parser.add_argument('--use_class_weighted_loss', action='store_true', default=True,
+                       help='Use class-weighted loss to give higher weight to minority severity classes')
     parser.add_argument('--aggressive_augmentation', action='store_true', default=True,
                        help='Enable aggressive augmentation pipeline for small datasets')
     parser.add_argument('--extreme_augmentation', action='store_true', default=False,
@@ -244,7 +246,30 @@ def calculate_f1_score(outputs, labels, num_classes):
     _, predicted = torch.max(outputs.data, 1)
     return f1_score(labels.cpu().numpy(), predicted.cpu().numpy(), average='weighted', zero_division=0)
 
-def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, aux_weight=0.5, label_smoothing=0.0):
+def calculate_class_weights(dataset, num_classes, device):
+    """Calculate inverse frequency weights for class balancing in loss function."""
+    class_counts = torch.zeros(num_classes)
+    
+    for action in dataset.actions:
+        severity_label = action['label_severity']
+        if 0 <= severity_label < num_classes:
+            class_counts[severity_label] += 1
+    
+    # Avoid division by zero
+    class_counts[class_counts == 0] = 1
+    
+    # Calculate inverse frequency weights
+    total_samples = class_counts.sum()
+    class_weights = total_samples / (num_classes * class_counts)
+    
+    # Normalize weights to have minimum weight of 1.0
+    class_weights = class_weights / class_weights.min()
+    
+    logger.info(f"Calculated class weights for severity: {class_weights.tolist()}")
+    return class_weights.to(device)
+
+def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, aux_weight=0.5, 
+                           label_smoothing=0.0, severity_class_weights=None):
     """
     Calculate weighted multi-task loss with proper balancing between main and auxiliary tasks.
     
@@ -255,12 +280,17 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, a
         main_weights: [severity_weight, action_weight] for main tasks
         aux_weight: Weight for auxiliary tasks (currently not implemented)
         label_smoothing: Label smoothing factor for regularization (helps with small datasets)
+        severity_class_weights: Optional class weights for severity loss to handle imbalance
     
     Returns:
         total_loss, loss_sev, loss_act
     """
-    # Main task losses with weighting and label smoothing for small dataset regularization
-    loss_sev = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(sev_logits, batch_data["label_severity"]) * main_weights[0]
+    # Main task losses with weighting, label smoothing, and class weights for severe imbalance
+    loss_sev = nn.CrossEntropyLoss(
+        label_smoothing=label_smoothing, 
+        weight=severity_class_weights
+    )(sev_logits, batch_data["label_severity"]) * main_weights[0]
+    
     loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
     
     # Future: Add auxiliary task losses here
@@ -305,7 +335,8 @@ class EarlyStopping:
             self.best_weights = model.state_dict().copy()
 
 def train_one_epoch(model, dataloader, criterion_severity, criterion_action, optimizer, device, 
-                   scaler=None, max_batches=None, loss_weights=[1.0, 1.0], gradient_clip_norm=1.0, label_smoothing=0.0):
+                   scaler=None, max_batches=None, loss_weights=[1.0, 1.0], gradient_clip_norm=1.0, 
+                   label_smoothing=0.0, severity_class_weights=None):
     model.train()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -338,7 +369,7 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
             with torch.amp.autocast('cuda'):
                 sev_logits, act_logits = model(batch_data)
                 total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                    sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing
+                    sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing, severity_class_weights=severity_class_weights
                 )
 
             scaler.scale(total_loss).backward()
@@ -353,7 +384,7 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         else:
             sev_logits, act_logits = model(batch_data)
             total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing
+                sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing, severity_class_weights=severity_class_weights
             )
 
             total_loss.backward()
@@ -396,7 +427,8 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
     return epoch_loss, epoch_sev_acc, epoch_act_acc, epoch_sev_f1, epoch_act_f1
 
 def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, device, 
-                      max_batches=None, loss_weights=[1.0, 1.0], label_smoothing=0.0):
+                      max_batches=None, loss_weights=[1.0, 1.0], label_smoothing=0.0, 
+                      severity_class_weights=None):
     model.eval()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -426,7 +458,7 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             sev_logits, act_logits = model(batch_data)
             
             total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing
+                sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing, severity_class_weights=severity_class_weights
             )
 
             running_loss += total_loss.item() * batch_data["clips"].size(0)
@@ -819,6 +851,12 @@ if __name__ == "__main__":
     
     logger.info(f"Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}")
 
+    # Calculate class weights for severe imbalance handling
+    severity_class_weights = None
+    if args.use_class_weighted_loss:
+        severity_class_weights = calculate_class_weights(train_dataset, 6, device)  # 6 severity classes
+        logger.info("🎯 Using class-weighted loss for severity to handle imbalance!")
+    
     # Create vocabulary sizes dictionary for the model
     vocab_sizes = {
         'contact': train_dataset.num_contact_classes,
@@ -962,7 +1000,7 @@ if __name__ == "__main__":
         logger.warning(f"Could not get model info: {e}")
         logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Loss functions
+    # Loss functions (kept for compatibility, but class weights are handled in calculate_multitask_loss)
     criterion_severity = nn.CrossEntropyLoss()
     criterion_action = nn.CrossEntropyLoss()
 
@@ -1005,7 +1043,8 @@ if __name__ == "__main__":
         train_metrics = train_one_epoch(
             model, train_loader, criterion_severity, criterion_action, optimizer, device,
             scaler=scaler, max_batches=num_batches_to_run, 
-            loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm, label_smoothing=args.label_smoothing
+            loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm, label_smoothing=args.label_smoothing,
+            severity_class_weights=severity_class_weights
         )
         
         train_loss, train_sev_acc, train_act_acc, train_sev_f1, train_act_f1 = train_metrics
@@ -1013,7 +1052,8 @@ if __name__ == "__main__":
         # Validation
         val_metrics = validate_one_epoch(
             model, val_loader, criterion_severity, criterion_action, device,
-            max_batches=num_batches_to_run, loss_weights=args.main_task_weights, label_smoothing=args.label_smoothing
+            max_batches=num_batches_to_run, loss_weights=args.main_task_weights, label_smoothing=args.label_smoothing,
+            severity_class_weights=severity_class_weights
         )
         
         val_loss, val_sev_acc, val_act_acc, val_sev_f1, val_act_f1 = val_metrics
