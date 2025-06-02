@@ -121,12 +121,32 @@ def parse_args():
     parser.add_argument('--optimizer', type=str, default='adamw', choices=['adamw', 'sgd', 'adam'], help='Optimizer type')
     parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum')
     
+    # Gradual fine-tuning options
+    parser.add_argument('--gradual_finetuning', action='store_true', default=True, 
+                       help='Enable gradual fine-tuning with discriminative learning rates')
+    parser.add_argument('--phase1_epochs', type=int, default=8, 
+                       help='Number of epochs for Phase 1 (head-only training)')
+    parser.add_argument('--phase2_epochs', type=int, default=42, 
+                       help='Number of epochs for Phase 2 (gradual unfreezing)')
+    parser.add_argument('--head_lr', type=float, default=1e-3, 
+                       help='Learning rate for classification heads in Phase 1')
+    parser.add_argument('--backbone_lr', type=float, default=1e-5, 
+                       help='Learning rate for unfrozen backbone layers in Phase 2')
+    parser.add_argument('--unfreeze_blocks', type=int, default=2, 
+                       help='Number of final residual blocks to unfreeze in Phase 2')
+    
     args = parser.parse_args()
     
     # Construct the specific mvfouls path from the root
     if not args.dataset_root:
         raise ValueError("Please provide the --dataset_root argument.")
     args.mvfouls_path = str(Path(args.dataset_root) / "mvfouls")
+    
+    # Adjust total epochs for gradual fine-tuning
+    if args.gradual_finetuning:
+        args.total_epochs = args.epochs  # Keep user's original setting
+        args.epochs = args.phase1_epochs + args.phase2_epochs  # Set actual training epochs
+        logger.info(f"🎯 Gradual fine-tuning enabled: Phase 1={args.phase1_epochs} epochs, Phase 2={args.phase2_epochs} epochs")
     
     return args
 
@@ -418,6 +438,96 @@ def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None
     logger.info(f"Checkpoint loaded from {filepath}")
     return checkpoint['epoch'], checkpoint.get('metrics', {})
 
+def freeze_backbone(model):
+    """Freeze all backbone parameters."""
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    for param in actual_model.backbone.parameters():
+        param.requires_grad = False
+    
+    logger.info("🧊 Backbone frozen - only training classification heads")
+
+def unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=2):
+    """Gradually unfreeze the last N residual blocks of the backbone."""
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    # Get the ResNet3D backbone
+    backbone = actual_model.backbone.backbone
+    
+    # For ResNet architectures, we want to unfreeze the last few layers
+    # ResNet3D structure: conv1, bn1, relu, maxpool, layer1, layer2, layer3, layer4, avgpool
+    layers_to_unfreeze = []
+    
+    if hasattr(backbone, 'layer4'):
+        layers_to_unfreeze.append(backbone.layer4)
+    if hasattr(backbone, 'layer3') and num_blocks_to_unfreeze > 1:
+        layers_to_unfreeze.append(backbone.layer3)
+    if hasattr(backbone, 'layer2') and num_blocks_to_unfreeze > 2:
+        layers_to_unfreeze.append(backbone.layer2)
+    
+    unfrozen_params = 0
+    for layer in layers_to_unfreeze:
+        for param in layer.parameters():
+            param.requires_grad = True
+            unfrozen_params += param.numel()
+    
+    logger.info(f"🔓 Unfroze last {len(layers_to_unfreeze)} backbone layers ({unfrozen_params:,} parameters)")
+
+def setup_discriminative_optimizer(model, head_lr, backbone_lr):
+    """Setup optimizer with discriminative learning rates for different model parts."""
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    param_groups = []
+    
+    # Classification heads with higher learning rate
+    head_params = []
+    head_params.extend(actual_model.severity_head.parameters())
+    head_params.extend(actual_model.action_type_head.parameters())
+    
+    # Add embedding and aggregation parameters to head group (they're task-specific)
+    head_params.extend(actual_model.embedding_manager.parameters())
+    head_params.extend(actual_model.view_aggregator.parameters())
+    
+    param_groups.append({
+        'params': head_params,
+        'lr': head_lr,
+        'name': 'heads'
+    })
+    
+    # Backbone parameters with lower learning rate (only unfrozen ones)
+    backbone_params = [p for p in actual_model.backbone.parameters() if p.requires_grad]
+    
+    if backbone_params:
+        param_groups.append({
+            'params': backbone_params,
+            'lr': backbone_lr,
+            'name': 'backbone'
+        })
+    
+    logger.info(f"📊 Discriminative LR setup: Heads={head_lr:.1e}, Backbone={backbone_lr:.1e}")
+    return param_groups
+
+def get_phase_info(epoch, phase1_epochs, total_epochs):
+    """Determine current training phase."""
+    if epoch < phase1_epochs:
+        return 1, f"Phase 1: Head-only training"
+    else:
+        return 2, f"Phase 2: Gradual unfreezing"
+
+def log_trainable_parameters(model):
+    """Log the number of trainable parameters."""
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    total_params = sum(p.numel() for p in actual_model.parameters())
+    trainable_params = sum(p.numel() for p in actual_model.parameters() if p.requires_grad)
+    frozen_params = total_params - trainable_params
+    
+    logger.info(f"📊 Parameters: Total={total_params:,}, Trainable={trainable_params:,}, Frozen={frozen_params:,}")
+    return trainable_params, total_params
 
 if __name__ == "__main__":
     args = parse_args()
@@ -577,27 +687,29 @@ if __name__ == "__main__":
         model = nn.DataParallel(model)
         logger.info(f"Model wrapped with DataParallel for {num_gpus} GPUs")
 
-    # Log model info - handle DataParallel wrapper
-    try:
-        # Get the actual model (unwrap DataParallel if needed)
-        actual_model = model.module if hasattr(model, 'module') else model
-        model_info = actual_model.get_model_info()
-        logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-        logger.info(f"Combined feature dimension: {model_info['video_feature_dim'] + model_info['total_embedding_dim']}")
-    except Exception as e:
-        logger.warning(f"Could not get model info: {e}")
-        logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-    # Loss functions and optimizer
-    criterion_severity = nn.CrossEntropyLoss()
-    criterion_action = nn.CrossEntropyLoss()
-    
-    optimizer = optim.AdamW(
-        model.parameters(), 
-        lr=args.lr, 
-        weight_decay=args.weight_decay,
-        betas=(0.9, 0.999)
-    )
+    # Gradual fine-tuning setup
+    if args.gradual_finetuning:
+        # Start with backbone frozen (Phase 1)
+        freeze_backbone(model)
+        log_trainable_parameters(model)
+        
+        # Setup optimizer for Phase 1 (heads only)
+        optimizer = optim.AdamW(
+            [p for p in model.parameters() if p.requires_grad], 
+            lr=args.head_lr, 
+            weight_decay=args.weight_decay,
+            betas=(0.9, 0.999)
+        )
+        logger.info(f"🚀 Phase 1 optimizer initialized with LR={args.head_lr:.1e}")
+    else:
+        # Standard training - all parameters trainable
+        log_trainable_parameters(model)
+        optimizer = optim.AdamW(
+            model.parameters(), 
+            lr=args.lr, 
+            weight_decay=args.weight_decay,
+            betas=(0.9, 0.999)
+        )
 
     # Learning rate scheduler
     scheduler = None
@@ -651,12 +763,61 @@ if __name__ == "__main__":
 
     logger.info("Starting Training")
     logger.info(f"Configuration: Epochs={args.epochs}, Batch Size={args.batch_size}, LR={args.lr}, Backbone={args.backbone_name}")
+    if args.gradual_finetuning:
+        logger.info(f"Gradual Fine-tuning: Phase1={args.phase1_epochs}e@{args.head_lr:.1e}, Phase2={args.phase2_epochs}e@{args.backbone_lr:.1e}")
     logger.info(f"Learning Rate Scheduler: {scheduler_info}")
     logger.info(f"Dataset: Train={len(train_dataset)}, Val={len(val_dataset)}")
     logger.info("=" * 80)
 
+    # Log model info - handle DataParallel wrapper
+    try:
+        # Get the actual model (unwrap DataParallel if needed)
+        actual_model = model.module if hasattr(model, 'module') else model
+        model_info = actual_model.get_model_info()
+        logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+        logger.info(f"Combined feature dimension: {model_info['video_feature_dim'] + model_info['total_embedding_dim']}")
+    except Exception as e:
+        logger.warning(f"Could not get model info: {e}")
+        logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    # Loss functions
+    criterion_severity = nn.CrossEntropyLoss()
+    criterion_action = nn.CrossEntropyLoss()
+
     for epoch in range(start_epoch, args.epochs):
         epoch_start_time = time.time()
+        
+        # Gradual fine-tuning phase management
+        if args.gradual_finetuning:
+            current_phase, phase_description = get_phase_info(epoch, args.phase1_epochs, args.epochs)
+            
+            # Transition from Phase 1 to Phase 2
+            if epoch == args.phase1_epochs and current_phase == 2:
+                logger.info("🔄 " + "="*60)
+                logger.info("🔄 TRANSITIONING TO PHASE 2: Gradual Unfreezing")
+                logger.info("🔄 " + "="*60)
+                
+                # Unfreeze backbone layers gradually
+                unfreeze_backbone_gradually(model, args.unfreeze_blocks)
+                
+                # Setup discriminative learning rates
+                param_groups = setup_discriminative_optimizer(model, args.head_lr, args.backbone_lr)
+                
+                # Recreate optimizer with new parameter groups
+                optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
+                
+                # Reset scheduler for Phase 2 if using one
+                if scheduler is not None:
+                    remaining_epochs = args.epochs - epoch
+                    if args.scheduler == 'cosine':
+                        scheduler = CosineAnnealingLR(optimizer, T_max=remaining_epochs, eta_min=args.backbone_lr * 0.01)
+                    elif args.scheduler == 'step':
+                        scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
+                    # Add other scheduler resets as needed
+                
+                log_trainable_parameters(model)
+                logger.info("🔄 Phase 2 setup complete!")
+                logger.info("🔄 " + "="*60)
         
         # Training
         train_metrics = train_one_epoch(
@@ -702,8 +863,14 @@ if __name__ == "__main__":
         if abs(current_lr - prev_lr) > 1e-8:  # If LR changed significantly
             lr_change_indicator = f" 📉 LR↓"
 
+        # Phase indicator for gradual fine-tuning
+        phase_indicator = ""
+        if args.gradual_finetuning:
+            current_phase, _ = get_phase_info(epoch, args.phase1_epochs, args.epochs)
+            phase_indicator = f" [P{current_phase}]"
+
         # Compact epoch summary
-        logger.info(f"Epoch {epoch+1:2d}/{args.epochs} [{epoch_time:.1f}s] "
+        logger.info(f"Epoch {epoch+1:2d}/{args.epochs} [{epoch_time:.1f}s]{phase_indicator} "
                    f"| Train: Loss={train_loss:.3f}, Acc={train_combined_acc:.3f} "
                    f"| Val: Loss={val_loss:.3f}, Acc={val_combined_acc:.3f} "
                    f"| LR={current_lr:.1e}{lr_change_indicator}{best_indicator}")
