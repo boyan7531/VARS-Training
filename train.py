@@ -178,6 +178,8 @@ def parse_args():
     
     # Advanced training options
     parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
+    parser.add_argument('--resume_best_acc', type=float, default=None, 
+                       help='Manually override best validation accuracy when resuming (useful for checkpoint issues)')
     parser.add_argument('--mixed_precision', action='store_true', help='Use mixed precision training')
     parser.add_argument('--gradient_clip_norm', type=float, default=1.0, help='Gradient clipping norm')
     parser.add_argument('--early_stopping_patience', type=int, default=6, help='Early stopping patience')
@@ -219,8 +221,6 @@ def parse_args():
                        help='Use class-balanced sampler to oversample minority classes')
     parser.add_argument('--oversample_factor', type=float, default=4.0,
                        help='Factor by which to oversample minority classes (higher = more aggressive)')
-    parser.add_argument('--use_class_weighted_loss', action='store_true', default=True,
-                       help='Use class-weighted loss to give higher weight to minority severity classes')
     parser.add_argument('--aggressive_augmentation', action='store_true', default=True,
                        help='Enable aggressive augmentation pipeline for small datasets')
     parser.add_argument('--extreme_augmentation', action='store_true', default=False,
@@ -1148,15 +1148,36 @@ if __name__ == "__main__":
     if args.resume:
         start_epoch, loaded_metrics = load_checkpoint(args.resume, model, optimizer, scheduler, scaler)
         
-        # Restore best validation accuracy from checkpoint
+        # Restore best validation accuracy from checkpoint with better fallback logic
         if 'best_val_acc' in loaded_metrics:
             best_val_acc = loaded_metrics['best_val_acc']
+            best_epoch = loaded_metrics.get('best_epoch', loaded_metrics.get('epoch', start_epoch))
+            logger.info(f"✅ Restored best validation accuracy: {best_val_acc:.4f} from epoch {best_epoch}")
+        elif 'val_sev_acc' in loaded_metrics and 'val_act_acc' in loaded_metrics:
+            # Fallback: Calculate combined accuracy from individual metrics if available
+            restored_sev_acc = loaded_metrics['val_sev_acc']
+            restored_act_acc = loaded_metrics['val_act_acc']
+            best_val_acc = (restored_sev_acc + restored_act_acc) / 2
             best_epoch = loaded_metrics.get('epoch', start_epoch)
-            logger.info(f"Restored best validation accuracy: {best_val_acc:.4f} from epoch {best_epoch}")
+            logger.info(f"📊 Calculated best validation accuracy from checkpoint metrics: {best_val_acc:.4f} (sev: {restored_sev_acc:.3f}, act: {restored_act_acc:.3f})")
+            logger.info(f"   - Using epoch {best_epoch} as best epoch")
         else:
-            logger.warning("No best_val_acc found in checkpoint metrics - starting fresh tracking")
+            logger.warning("⚠️  No validation accuracy found in checkpoint - will start fresh tracking")
+            logger.warning("   - This might happen with older checkpoint formats")
+            best_val_acc = 0.0
+            best_epoch = -1
         
-        logger.info(f"Resuming training from epoch {start_epoch}")
+        # Manual override if specified
+        if args.resume_best_acc is not None:
+            original_best = best_val_acc
+            best_val_acc = args.resume_best_acc
+            logger.info(f"🔧 MANUAL OVERRIDE: Best accuracy set to {best_val_acc:.4f} (was {original_best:.4f})")
+        
+        logger.info(f"🔄 Resuming training from epoch {start_epoch}")
+        if best_val_acc > 0:
+            logger.info(f"🎯 Current best to beat: {best_val_acc:.4f}")
+        else:
+            logger.info(f"🆕 Starting fresh best accuracy tracking")
 
     # Training history
     history = defaultdict(list)
@@ -1312,6 +1333,7 @@ if __name__ == "__main__":
                 metrics = {
                     'epoch': best_epoch,
                     'best_val_acc': best_val_acc,
+                    'best_epoch': best_epoch,  # Explicitly save best_epoch for clarity
                     'train_loss': train_loss,
                     'val_loss': val_loss,
                     'train_sev_acc': train_sev_acc,
@@ -1329,12 +1351,22 @@ if __name__ == "__main__":
                 logger.info(f"[EARLY_STOP] Early stopping triggered after {epoch + 1} epochs")
                 break
 
-            # Save regular checkpoint every 10 epochs
+            # Save regular checkpoint every 10 epochs - INCLUDE BEST ACCURACY INFO
             if (epoch + 1) % 10 == 0:
                 checkpoint_path = os.path.join(args.save_dir, f'checkpoint_epoch_{epoch + 1}.pth')
-                metrics = {'epoch': epoch + 1}
+                metrics = {
+                    'epoch': epoch + 1,
+                    'best_val_acc': best_val_acc,  # Always include current best
+                    'best_epoch': best_epoch,      # Always include best epoch
+                    'current_train_loss': train_loss,
+                    'current_val_loss': val_loss,
+                    'current_train_sev_acc': train_sev_acc,
+                    'current_train_act_acc': train_act_acc,
+                    'current_val_sev_acc': val_sev_acc,
+                    'current_val_act_acc': val_act_acc
+                }
                 save_checkpoint(model, optimizer, scheduler, scaler, epoch + 1, metrics, checkpoint_path)
-                logger.info(f"[CHECKPOINT] Checkpoint saved at epoch {epoch + 1}")
+                logger.info(f"[CHECKPOINT] Checkpoint saved at epoch {epoch + 1} (best so far: {best_val_acc:.4f})")
 
     # Save training history
     if not args.test_run:
