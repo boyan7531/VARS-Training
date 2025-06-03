@@ -1,6 +1,53 @@
 # train.py
 """
-Enhanced Multi-Task Multi-View ResNet3D Training Script with Aggressive Data Augmentation
+Enhanced Multi-Task Multi-View ResNet3D Training Script with SAFE Class Imbalance Handling
+
+CLASS IMBALANCE STRATEGIES (SAFE OPTIONS):
+=========================================
+
+⚠️  PROBLEM: Severe class imbalance can cause training instability with extreme loss weights!
+
+RECOMMENDED SOLUTIONS (from most stable to least):
+
+1. 🥇 FOCAL LOSS (MOST STABLE):
+   --use_focal_loss --focal_gamma 2.0
+   - Automatically focuses on hard examples
+   - No extreme weight ratios
+   - Very stable training
+
+2. 🥈 CAPPED CLASS WEIGHTS (STABLE):
+   --class_weighting_strategy balanced_capped --max_weight_ratio 10.0
+   - Limits maximum weight ratio (prevents instability)
+   - Default: 10x max ratio (recommended)
+
+3. 🥉 GENTLE WEIGHTING (VERY STABLE):
+   --class_weighting_strategy sqrt  # or 'log' for even gentler
+   - Gentler than inverse frequency
+   - Much safer than raw inverse weights
+
+4. 🚫 AVOID: Uncapped inverse frequency weighting (can cause 400x weight ratios!)
+
+USAGE EXAMPLES:
+==============
+
+# Most stable - Focal Loss (RECOMMENDED for severe imbalance):
+python train.py --use_focal_loss --focal_gamma 2.0
+
+# Safe class weights with capping:
+python train.py --class_weighting_strategy balanced_capped --max_weight_ratio 5.0
+
+# Very gentle weighting:
+python train.py --class_weighting_strategy sqrt
+
+# Disable class weighting entirely:
+python train.py --class_weighting_strategy none
+
+PARAMETERS:
+==========
+--class_weighting_strategy: 'balanced_capped', 'sqrt', 'log', 'effective_number', 'none'
+--max_weight_ratio: Maximum ratio between highest/lowest weight (default: 10.0)
+--use_focal_loss: Use Focal Loss instead of weighted CrossEntropyLoss
+--focal_gamma: Focal Loss focusing parameter (2.0 recommended)
 
 AUGMENTATION MODES FOR SMALL DATASETS:
 =====================================
@@ -60,6 +107,7 @@ from collections import defaultdict
 import numpy as np
 import random
 from tqdm import tqdm
+import torch.nn.functional as F
 
 # Imports from our other files
 from dataset import (
@@ -206,6 +254,19 @@ def parse_args():
     parser.add_argument('--unfreeze_blocks', type=int, default=2, 
                        help='Number of final residual blocks to unfreeze in Phase 2')
     
+    # New class weighting options
+    parser.add_argument('--use_class_weighted_loss', action='store_true', default=True,
+                       help='Use class-weighted loss to give higher weight to minority severity classes')
+    parser.add_argument('--class_weighting_strategy', type=str, default='balanced_capped',
+                       choices=['none', 'balanced_capped', 'sqrt', 'log', 'effective_number'],
+                       help='Strategy for calculating class weights (balanced_capped recommended for stability)')
+    parser.add_argument('--max_weight_ratio', type=float, default=10.0,
+                       help='Maximum ratio between highest and lowest class weight (prevents training instability)')
+    parser.add_argument('--use_focal_loss', action='store_true', default=False,
+                       help='Use Focal Loss instead of class-weighted CrossEntropyLoss (often more stable)')
+    parser.add_argument('--focal_gamma', type=float, default=2.0,
+                       help='Focal Loss gamma parameter (higher = more focus on hard examples)')
+    
     args = parser.parse_args()
     
     # Construct the specific mvfouls path from the root
@@ -246,8 +307,25 @@ def calculate_f1_score(outputs, labels, num_classes):
     _, predicted = torch.max(outputs.data, 1)
     return f1_score(labels.cpu().numpy(), predicted.cpu().numpy(), average='weighted', zero_division=0)
 
-def calculate_class_weights(dataset, num_classes, device):
-    """Calculate inverse frequency weights for class balancing in loss function."""
+def calculate_class_weights(dataset, num_classes, device, weighting_strategy='balanced_capped', max_weight_ratio=10.0):
+    """
+    Calculate class weights for loss balancing with multiple safe strategies.
+    
+    Args:
+        dataset: Training dataset
+        num_classes: Number of classes
+        device: Device to put weights on
+        weighting_strategy: Strategy for calculating weights
+            - 'none': No weighting (all weights = 1.0)
+            - 'balanced_capped': Inverse frequency with capped ratios (RECOMMENDED)
+            - 'sqrt': Square root of inverse frequency (gentler)
+            - 'log': Logarithmic weighting (very gentle)
+            - 'effective_number': Uses effective number of samples
+        max_weight_ratio: Maximum ratio between highest and lowest weight
+    
+    Returns:
+        class_weights tensor
+    """
     class_counts = torch.zeros(num_classes)
     
     for action in dataset.actions:
@@ -258,20 +336,72 @@ def calculate_class_weights(dataset, num_classes, device):
     # Avoid division by zero
     class_counts[class_counts == 0] = 1
     
-    # Calculate inverse frequency weights
-    total_samples = class_counts.sum()
-    class_weights = total_samples / (num_classes * class_counts)
+    if weighting_strategy == 'none':
+        class_weights = torch.ones(num_classes)
+        logger.info("Using no class weighting (all weights = 1.0)")
+        
+    elif weighting_strategy == 'balanced_capped':
+        # Inverse frequency with capping - MUCH SAFER!
+        total_samples = class_counts.sum()
+        class_weights = total_samples / (num_classes * class_counts)
+        
+        # Cap the weights to prevent extreme ratios
+        max_weight = class_weights.min() * max_weight_ratio
+        class_weights = torch.clamp(class_weights, max=max_weight)
+        
+        # Normalize so minimum weight is 1.0
+        class_weights = class_weights / class_weights.min()
+        
+        logger.info(f"Balanced capped weighting (max ratio: {max_weight_ratio})")
+        
+    elif weighting_strategy == 'sqrt':
+        # Square root weighting - gentler than inverse frequency
+        total_samples = class_counts.sum()
+        class_weights = torch.sqrt(total_samples / (num_classes * class_counts))
+        class_weights = class_weights / class_weights.min()
+        
+        logger.info("Square root weighting (gentler)")
+        
+    elif weighting_strategy == 'log':
+        # Logarithmic weighting - very gentle
+        total_samples = class_counts.sum()
+        raw_weights = total_samples / (num_classes * class_counts)
+        class_weights = torch.log(raw_weights + 1)  # +1 to avoid log(0)
+        class_weights = class_weights / class_weights.min()
+        
+        logger.info("Logarithmic weighting (very gentle)")
+        
+    elif weighting_strategy == 'effective_number':
+        # Effective number of samples - sophisticated approach
+        beta = 0.999  # Hyperparameter
+        effective_num = 1.0 - torch.pow(beta, class_counts.float())
+        class_weights = (1.0 - beta) / effective_num
+        class_weights = class_weights / class_weights.min()
+        
+        logger.info(f"Effective number weighting (beta={beta})")
+        
+    else:
+        raise ValueError(f"Unknown weighting strategy: {weighting_strategy}")
     
-    # Normalize weights to have minimum weight of 1.0
-    class_weights = class_weights / class_weights.min()
+    # Log class distribution and weights
+    logger.info("Class distribution and weights:")
+    for i in range(num_classes):
+        if class_counts[i] > 0:
+            logger.info(f"  Class {i}: {int(class_counts[i])} samples → Weight: {class_weights[i]:.2f}")
     
-    logger.info(f"Calculated class weights for severity: {class_weights.tolist()}")
+    max_ratio = (class_weights.max() / class_weights.min()).item()
+    logger.info(f"Weight ratio (max/min): {max_ratio:.1f}")
+    
+    if max_ratio > 50:
+        logger.warning(f"⚠️  Large weight ratio ({max_ratio:.1f}) may cause training instability!")
+        logger.warning("   Consider using 'sqrt' or 'log' weighting strategy")
+    
     return class_weights.to(device)
 
 def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, aux_weight=0.5, 
-                           label_smoothing=0.0, severity_class_weights=None):
+                           label_smoothing=0.0, severity_class_weights=None, use_focal_loss=False, focal_gamma=2.0):
     """
-    Calculate weighted multi-task loss with proper balancing between main and auxiliary tasks.
+    Calculate weighted multi-task loss with multiple loss function options.
     
     Args:
         sev_logits: Severity classification logits
@@ -279,27 +409,36 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, a
         batch_data: Batch data containing labels
         main_weights: [severity_weight, action_weight] for main tasks
         aux_weight: Weight for auxiliary tasks (currently not implemented)
-        label_smoothing: Label smoothing factor for regularization (helps with small datasets)
-        severity_class_weights: Optional class weights for severity loss to handle imbalance
+        label_smoothing: Label smoothing factor for regularization
+        severity_class_weights: Optional class weights for severity loss
+        use_focal_loss: Whether to use Focal Loss instead of CrossEntropyLoss
+        focal_gamma: Focal Loss gamma parameter
     
     Returns:
         total_loss, loss_sev, loss_act
     """
-    # Main task losses with weighting, label smoothing, and class weights for severe imbalance
-    loss_sev = nn.CrossEntropyLoss(
-        label_smoothing=label_smoothing, 
-        weight=severity_class_weights
-    )(sev_logits, batch_data["label_severity"]) * main_weights[0]
+    if use_focal_loss:
+        # Use Focal Loss - often more stable for class imbalance
+        focal_criterion = FocalLoss(
+            alpha=severity_class_weights,
+            gamma=focal_gamma,
+            label_smoothing=label_smoothing
+        )
+        loss_sev = focal_criterion(sev_logits, batch_data["label_severity"]) * main_weights[0]
+        
+        # Use standard CrossEntropyLoss for action type (usually more balanced)
+        loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
+        
+    else:
+        # Use class-weighted CrossEntropyLoss
+        loss_sev = nn.CrossEntropyLoss(
+            label_smoothing=label_smoothing, 
+            weight=severity_class_weights
+        )(sev_logits, batch_data["label_severity"]) * main_weights[0]
+        
+        loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
     
-    loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
-    
-    # Future: Add auxiliary task losses here
-    # aux_losses = []
-    # if "contact_logits" in outputs:
-    #     aux_losses.append(nn.CrossEntropyLoss(label_smoothing=label_smoothing)(outputs["contact_logits"], batch_data["contact_idx"]) * aux_weight)
-    # ... add other auxiliary tasks
-    
-    total_loss = loss_sev + loss_act  # + sum(aux_losses)
+    total_loss = loss_sev + loss_act
     
     return total_loss, loss_sev, loss_act
 
@@ -336,7 +475,7 @@ class EarlyStopping:
 
 def train_one_epoch(model, dataloader, criterion_severity, criterion_action, optimizer, device, 
                    scaler=None, max_batches=None, loss_weights=[1.0, 1.0], gradient_clip_norm=1.0, 
-                   label_smoothing=0.0, severity_class_weights=None):
+                   label_smoothing=0.0, severity_class_weights=None, use_focal_loss=False, focal_gamma=2.0):
     model.train()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -369,7 +508,9 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
             with torch.amp.autocast('cuda'):
                 sev_logits, act_logits = model(batch_data)
                 total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                    sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing, severity_class_weights=severity_class_weights
+                    sev_logits, act_logits, batch_data, loss_weights, 
+                    label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
+                    use_focal_loss=use_focal_loss, focal_gamma=focal_gamma
                 )
 
             scaler.scale(total_loss).backward()
@@ -384,7 +525,9 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         else:
             sev_logits, act_logits = model(batch_data)
             total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing, severity_class_weights=severity_class_weights
+                sev_logits, act_logits, batch_data, loss_weights, 
+                label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
+                use_focal_loss=use_focal_loss, focal_gamma=focal_gamma
             )
 
             total_loss.backward()
@@ -428,7 +571,7 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
 
 def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, device, 
                       max_batches=None, loss_weights=[1.0, 1.0], label_smoothing=0.0, 
-                      severity_class_weights=None):
+                      severity_class_weights=None, use_focal_loss=False, focal_gamma=2.0):
     model.eval()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -458,7 +601,9 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             sev_logits, act_logits = model(batch_data)
             
             total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                sev_logits, act_logits, batch_data, loss_weights, label_smoothing=label_smoothing, severity_class_weights=severity_class_weights
+                sev_logits, act_logits, batch_data, loss_weights, 
+                label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
+                use_focal_loss=use_focal_loss, focal_gamma=focal_gamma
             )
 
             running_loss += total_loss.item() * batch_data["clips"].size(0)
@@ -630,6 +775,43 @@ def log_trainable_parameters(model):
     
     logger.info(f"[PARAMS] Total={total_params:,}, Trainable={trainable_params:,}, Frozen={frozen_params:,}")
     return trainable_params, total_params
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for addressing class imbalance - often more stable than class weighting.
+    
+    Focal Loss = -α(1-pt)^γ * log(pt)
+    where pt is the model's confidence for the correct class.
+    
+    Benefits over class weighting:
+    - Automatically focuses on hard examples
+    - No extreme weight ratios
+    - More stable training dynamics
+    """
+    def __init__(self, alpha=None, gamma=2.0, reduction='mean', label_smoothing=0.0):
+        super().__init__()
+        self.alpha = alpha  # Class balancing weights (optional)
+        self.gamma = gamma  # Focusing parameter
+        self.reduction = reduction
+        self.label_smoothing = label_smoothing
+        
+    def forward(self, inputs, targets):
+        # Standard cross entropy with label smoothing
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, 
+                                reduction='none', label_smoothing=self.label_smoothing)
+        
+        # Calculate pt (model confidence for correct class)
+        pt = torch.exp(-ce_loss)
+        
+        # Apply focal term: (1-pt)^gamma
+        focal_loss = (1 - pt) ** self.gamma * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
 
 if __name__ == "__main__":
     args = parse_args()
@@ -854,9 +1036,20 @@ if __name__ == "__main__":
     # Calculate class weights for severe imbalance handling
     severity_class_weights = None
     if args.use_class_weighted_loss:
-        severity_class_weights = calculate_class_weights(train_dataset, 6, device)  # 6 severity classes
-        logger.info("🎯 Using class-weighted loss for severity to handle imbalance!")
-    
+        if args.use_focal_loss:
+            logger.info("🎯 Using Focal Loss for severity class imbalance handling!")
+            logger.info(f"   - Focal gamma: {args.focal_gamma} (higher = more focus on hard examples)")
+            severity_class_weights = calculate_class_weights(train_dataset, 6, device, args.class_weighting_strategy, args.max_weight_ratio)
+            logger.info("   - Class weights will be used as alpha parameter in Focal Loss")
+        else:
+            logger.info("🎯 Using class-weighted CrossEntropyLoss for severity imbalance!")
+            logger.info(f"   - Weighting strategy: {args.class_weighting_strategy}")
+            logger.info(f"   - Max weight ratio: {args.max_weight_ratio}")
+            severity_class_weights = calculate_class_weights(train_dataset, 6, device, args.class_weighting_strategy, args.max_weight_ratio)
+    else:
+        logger.info("📊 Using standard CrossEntropyLoss (no class balancing)")
+        logger.info("   - Consider enabling --use_class_weighted_loss for imbalanced datasets")
+
     # Create vocabulary sizes dictionary for the model
     vocab_sizes = {
         'contact': train_dataset.num_contact_classes,
@@ -1044,7 +1237,7 @@ if __name__ == "__main__":
             model, train_loader, criterion_severity, criterion_action, optimizer, device,
             scaler=scaler, max_batches=num_batches_to_run, 
             loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm, label_smoothing=args.label_smoothing,
-            severity_class_weights=severity_class_weights
+            severity_class_weights=severity_class_weights, use_focal_loss=args.use_focal_loss, focal_gamma=args.focal_gamma
         )
         
         train_loss, train_sev_acc, train_act_acc, train_sev_f1, train_act_f1 = train_metrics
@@ -1053,7 +1246,7 @@ if __name__ == "__main__":
         val_metrics = validate_one_epoch(
             model, val_loader, criterion_severity, criterion_action, device,
             max_batches=num_batches_to_run, loss_weights=args.main_task_weights, label_smoothing=args.label_smoothing,
-            severity_class_weights=severity_class_weights
+            severity_class_weights=severity_class_weights, use_focal_loss=args.use_focal_loss, focal_gamma=args.focal_gamma
         )
         
         val_loss, val_sev_acc, val_act_acc, val_sev_f1, val_act_f1 = val_metrics
