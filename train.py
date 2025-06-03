@@ -551,6 +551,10 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         running_act_f1 += act_f1
         processed_batches += 1
         
+        # Periodic memory cleanup during training
+        if i % 20 == 0:
+            cleanup_memory()
+        
         # Only print progress every 25% of batches
         if (i + 1) % max(1, total_batches // 4) == 0:
             current_avg_loss = running_loss / (processed_batches * batch_data["clips"].size(0))
@@ -568,6 +572,12 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
     
     epoch_time = time.time() - start_time
     return epoch_loss, epoch_sev_acc, epoch_act_acc, epoch_sev_f1, epoch_act_f1
+
+def cleanup_memory():
+    """Clean up GPU memory to prevent accumulation."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, device, 
                       max_batches=None, loss_weights=[1.0, 1.0], label_smoothing=0.0, 
@@ -611,9 +621,16 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             act_acc = calculate_accuracy(act_logits, action_labels)
             running_sev_acc += sev_acc
             running_act_acc += act_acc
-            running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 5)  # 5 severity classes
+            running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 5)
             running_act_f1 += calculate_f1_score(act_logits, action_labels, 9)  # 9 action classes
             processed_batches += 1
+            
+            # Clean up batch data explicitly
+            del batch_data, sev_logits, act_logits, total_loss
+            
+            # Periodic memory cleanup during validation
+            if i % 10 == 0:
+                cleanup_memory()
 
     num_samples_processed = len(dataloader.dataset) if max_batches is None else processed_batches * dataloader.batch_size
     epoch_loss = running_loss / num_samples_processed if num_samples_processed > 0 else 0
@@ -621,6 +638,9 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
     epoch_act_acc = running_act_acc / processed_batches if processed_batches > 0 else 0
     epoch_sev_f1 = running_sev_f1 / processed_batches if processed_batches > 0 else 0
     epoch_act_f1 = running_act_f1 / processed_batches if processed_batches > 0 else 0
+    
+    # Critical: Clean up memory after validation
+    cleanup_memory()
     
     epoch_time = time.time() - start_time
     return epoch_loss, epoch_sev_acc, epoch_act_acc, epoch_sev_f1, epoch_act_f1
@@ -1271,6 +1291,10 @@ if __name__ == "__main__":
         )
         
         val_loss, val_sev_acc, val_act_acc, val_sev_f1, val_act_f1 = val_metrics
+        
+        # Critical: Reset model to training mode and clean memory
+        model.train()
+        cleanup_memory()
 
         # Update learning rate
         if scheduler is not None:
