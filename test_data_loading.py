@@ -15,7 +15,28 @@ project_root = Path(__file__).parent
 sys.path.append(str(project_root))
 
 from dataset import SoccerNetMVFoulDataset, variable_views_collate_fn
-from transforms import *
+from torchvision.transforms import Compose, CenterCrop
+from pytorchvideo.transforms import ShortSideScale, Normalize as VideoNormalize
+
+# Define transforms locally (same as in train.py)
+class ConvertToFloatAndScale(torch.nn.Module):
+    """Converts a uint8 video tensor (C, T, H, W) from [0, 255] to float32 [0, 1]."""
+    def __call__(self, clip_cthw_uint8):
+        if clip_cthw_uint8.dtype != torch.uint8:
+            return clip_cthw_uint8
+        return clip_cthw_uint8.float() / 255.0
+
+class PerFrameCenterCrop(torch.nn.Module):
+    """Applies CenterCrop to each frame of a (C, T, H, W) video tensor."""
+    def __init__(self, size):
+        super().__init__()
+        self.cropper = CenterCrop(size)
+
+    def forward(self, clip_cthw):
+        clip_tchw = clip_cthw.permute(1, 0, 2, 3)
+        cropped_frames = [self.cropper(frame) for frame in clip_tchw]
+        cropped_clip_tchw = torch.stack(cropped_frames)
+        return cropped_clip_tchw.permute(1, 0, 2, 3)
 
 def test_dataloader_performance(num_workers, prefetch_factor=None, dataset_path="/workspace/VARS-Training/mvfouls"):
     """Test DataLoader performance with different configurations."""

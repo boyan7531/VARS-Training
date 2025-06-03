@@ -249,3 +249,13 @@
 2025-06-02 20:31:30,089 - INFO - [FREEZE] Backbone frozen - only training classification heads
 2025-06-02 20:31:30,092 - INFO - [PARAMS] Total=31,760,454, Trainable=460,329, Frozen=31,300,125
 2025-06-02 20:31:30,095 - INFO - [PHASE1] Phase 1 optimizer initialized with LR=1.0e-03
+2025-06-04 00:21:52,438 - INFO - [GRADUAL] Gradual fine-tuning enabled: Phase 1=8 epochs, Phase 2=15 epochs
+2025-06-04 00:21:52,508 - INFO - Using device: cpu
+2025-06-04 00:21:52,510 - INFO - Using single GPU training.
+2025-06-04 00:21:52,517 - INFO -    - Temporal jitter: ±3 frames
+2025-06-04 00:21:52,518 - INFO -    - Frame dropout: 20.0% probability
+2025-06-04 00:21:52,519 - INFO -    - Spatial crops: 0.7-1.0 scale range
+2025-06-04 00:21:52,519 - INFO -    - Color variation: ±30.0%
+2025-06-04 00:21:52,520 - INFO -    - Gaussian noise: up to 0.060 std
+2025-06-04 00:21:52,521 - INFO - Loading datasets...
+2025-06-04 00:21:52,523 - ERROR - Error loading dataset: Annotation file not found: \workspace\VARS-Training\mvfouls\train\annotations.json. Please ensure it exists or use SoccerNet's tools to generate/locate it.
