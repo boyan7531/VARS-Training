@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""
+Test script to profile data loading performance and verify optimizations.
+"""
+
+import time
+import torch
+from torch.utils.data import DataLoader
+import multiprocessing as mp
+from pathlib import Path
+import sys
+
+# Add the project root to Python path
+project_root = Path(__file__).parent
+sys.path.append(str(project_root))
+
+from dataset import SoccerNetMVFoulDataset, variable_views_collate_fn
+from transforms import *
+
+def test_dataloader_performance(num_workers, prefetch_factor=None, dataset_path="/workspace/VARS-Training/mvfouls"):
+    """Test DataLoader performance with different configurations."""
+    
+    print(f"\n🧪 Testing DataLoader: workers={num_workers}, prefetch={prefetch_factor}")
+    
+    # Simple transforms
+    transform = Compose([
+        ConvertToFloatAndScale(),
+        VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ShortSideScale(size=224),
+        PerFrameCenterCrop((224, 224))
+    ])
+    
+    # Create dataset
+    dataset = SoccerNetMVFoulDataset(
+        dataset_path=dataset_path,
+        split='train',
+        frames_per_clip=8,
+        target_fps=2,
+        max_views_to_load=2,  # Limit views for faster testing
+        transform=transform,
+        target_height=224,
+        target_width=224
+    )
+    
+    # Create DataLoader
+    dataloader = DataLoader(
+        dataset,
+        batch_size=4,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        collate_fn=variable_views_collate_fn
+    )
+    
+    print(f"   Dataset size: {len(dataset)} samples")
+    print(f"   Batches to test: {min(10, len(dataloader))}")
+    
+    # Time data loading
+    start_time = time.time()
+    batch_times = []
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    for i, batch in enumerate(dataloader):
+        if i >= 10:  # Test only first 10 batches
+            break
+            
+        batch_start = time.time()
+        
+        # Simulate GPU transfer
+        clips = batch['clips'].to(device, non_blocking=True)
+        
+        batch_end = time.time()
+        batch_time = batch_end - batch_start
+        batch_times.append(batch_time)
+        
+        print(f"   Batch {i+1}: {batch_time:.3f}s, Shape: {clips.shape}")
+    
+    total_time = time.time() - start_time
+    avg_batch_time = sum(batch_times) / len(batch_times) if batch_times else 0
+    
+    print(f"   Total time: {total_time:.2f}s")
+    print(f"   Avg batch time: {avg_batch_time:.3f}s")
+    print(f"   Batches/sec: {len(batch_times)/total_time:.2f}")
+    
+    return avg_batch_time
+
+def main():
+    """Test different DataLoader configurations."""
+    
+    # Set up multiprocessing
+    try:
+        if mp.get_start_method(allow_none=True) is None:
+            mp.set_start_method('spawn', force=True)
+            print("🔧 Set multiprocessing start method to 'spawn'")
+    except RuntimeError as e:
+        print(f"⚠️ Could not set multiprocessing method: {e}")
+    
+    print("🚀 DataLoader Performance Test")
+    print("=" * 50)
+    
+    # Test configurations
+    configs = [
+        (0, None),      # Synchronous
+        (2, 2),         # 2 workers, prefetch 2
+        (2, 4),         # 2 workers, prefetch 4
+        (4, 4),         # 4 workers, prefetch 4
+    ]
+    
+    results = {}
+    
+    for num_workers, prefetch_factor in configs:
+        try:
+            avg_time = test_dataloader_performance(num_workers, prefetch_factor)
+            results[(num_workers, prefetch_factor)] = avg_time
+        except Exception as e:
+            print(f"❌ Failed with workers={num_workers}, prefetch={prefetch_factor}: {e}")
+            results[(num_workers, prefetch_factor)] = float('inf')
+    
+    print("\n📊 RESULTS SUMMARY")
+    print("=" * 50)
+    
+    # Find best configuration
+    best_config = min(results.items(), key=lambda x: x[1])
+    
+    for (workers, prefetch), avg_time in sorted(results.items()):
+        is_best = (workers, prefetch) == best_config[0]
+        status = "🏆 BEST" if is_best else ""
+        print(f"Workers: {workers:2d}, Prefetch: {prefetch or 'N/A':>3} → {avg_time:.3f}s/batch {status}")
+    
+    print(f"\n🎯 Recommended: workers={best_config[0][0]}, prefetch_factor={best_config[0][1]}")
+    
+    # Check if GPU utilization improved
+    if best_config[1] < results.get((0, None), float('inf')) * 0.8:
+        print("✅ Async data loading provides significant speedup!")
+    else:
+        print("⚠️ Async data loading may not help much - check for other bottlenecks")
+
+if __name__ == "__main__":
+    main() 

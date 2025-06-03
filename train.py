@@ -108,6 +108,7 @@ import numpy as np
 import random
 from tqdm import tqdm
 import torch.nn.functional as F
+import multiprocessing as mp
 
 # Imports from our other files
 from dataset import (
@@ -834,6 +835,16 @@ class FocalLoss(nn.Module):
             return focal_loss
 
 if __name__ == "__main__":
+    # Configure multiprocessing for DataLoader workers
+    try:
+        # Use 'spawn' method to avoid process spawning issues on vast.ai/cloud platforms
+        if mp.get_start_method(allow_none=True) is None:
+            mp.set_start_method('spawn', force=True)
+            logger.info("🔧 Set multiprocessing start method to 'spawn' for stability")
+    except RuntimeError as e:
+        logger.warning(f"Could not set multiprocessing method: {e}")
+        # Continue anyway - this isn't critical
+    
     args = parse_args()
     
     # Test run setup
@@ -1023,6 +1034,8 @@ if __name__ == "__main__":
             num_workers=args.num_workers,
             pin_memory=True,
             persistent_workers=args.num_workers > 0,
+            prefetch_factor=4 if args.num_workers > 0 else None,  # Async prefetch when workers > 0
+            drop_last=True,  # Better for training stability
             collate_fn=variable_views_collate_fn
         )
         
@@ -1038,6 +1051,8 @@ if __name__ == "__main__":
             num_workers=args.num_workers,
             pin_memory=True,
             persistent_workers=args.num_workers > 0,
+            prefetch_factor=4 if args.num_workers > 0 else None,  # Async prefetch when workers > 0
+            drop_last=True,  # Better for training stability
             collate_fn=variable_views_collate_fn
         )
     
@@ -1045,11 +1060,24 @@ if __name__ == "__main__":
         val_dataset, 
         batch_size=args.batch_size,
         shuffle=False, 
-        num_workers=args.num_workers,
+        num_workers=min(args.num_workers, 2),  # Use fewer workers for validation
         pin_memory=True,
-        persistent_workers=args.num_workers > 0,
+        persistent_workers=min(args.num_workers, 2) > 0,
+        prefetch_factor=2 if min(args.num_workers, 2) > 0 else None,  # Less aggressive prefetch for validation
         collate_fn=variable_views_collate_fn
     )
+    
+    # Log data loading optimization details
+    if args.num_workers > 0:
+        logger.info(f"🚀 Async data loading enabled:")
+        logger.info(f"   - Training workers: {args.num_workers} (prefetch_factor=4)")
+        logger.info(f"   - Validation workers: {min(args.num_workers, 2)} (prefetch_factor=2)")
+        logger.info(f"   - Pin memory: True (faster CPU->GPU transfers)")
+        logger.info(f"   - Persistent workers: True (avoid respawning overhead)")
+    else:
+        logger.info(f"⚠️  Synchronous data loading (num_workers=0)")
+        logger.info(f"   - This may cause GPU starvation and low utilization")
+        logger.info(f"   - Consider setting num_workers >= 2 for better performance")
     
     logger.info(f"Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}")
 
