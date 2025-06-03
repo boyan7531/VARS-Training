@@ -297,13 +297,23 @@ class ClassBalancedSampler(torch.utils.data.Sampler):
             self.class_indices[severity_label].append(idx)
         
         # Calculate sampling weights
-        max_count = max(self.class_counts.values())
+        max_count = 1
+        if self.class_counts: # Ensure class_counts is not empty
+            max_count = max(self.class_counts.values())
+        
         self.sampling_weights = {}
         
         for class_id, count in self.class_counts.items():
-            if class_id == 1:  # Majority class (severity 1.0)
+            if count == 0: # Avoid division by zero if a class has no samples (should not happen with defaultdict)
+                self.sampling_weights[class_id] = 0
+                continue
+
+            # Example: if severity 1.0 is majority, its label might be 1.
+            # Adjust this condition based on your actual majority class label.
+            # Assuming SEVERITY_LABELS maps "1.0" to 1, and this is majority.
+            if class_id == SEVERITY_LABELS.get("1.0", 1):  # Majority class
                 self.sampling_weights[class_id] = 1.0
-            else:  # Minority classes (severity 2.0+)
+            else:  # Minority classes
                 self.sampling_weights[class_id] = min(oversample_factor, max_count / count)
         
         print(f"Class distribution: {dict(self.class_counts)}")
@@ -312,7 +322,8 @@ class ClassBalancedSampler(torch.utils.data.Sampler):
         # Calculate total samples per epoch
         self.samples_per_epoch = 0
         for class_id, count in self.class_counts.items():
-            self.samples_per_epoch += int(count * self.sampling_weights[class_id])
+            if class_id in self.sampling_weights: # Ensure class_id has a weight
+                 self.samples_per_epoch += int(count * self.sampling_weights[class_id])
     
     def __iter__(self):
         indices = []
@@ -384,7 +395,7 @@ class SoccerNetMVFoulDataset(Dataset):
         self.annotation_path = self.split_dir / annotation_file_name
 
         self.frames_per_clip = frames_per_clip
-        self.target_fps = target_fps
+        self.target_fps = float(target_fps) # Ensure target_fps is float for division
         self.start_frame = start_frame
         self.end_frame = end_frame
 
@@ -712,76 +723,110 @@ class SoccerNetMVFoulDataset(Dataset):
     def __len__(self):
         return len(self.actions)
 
+    def _get_video_fps(self, video_path_str: str, default_fps: float) -> float:
+        """Helper function to robustly get video FPS."""
+        try:
+            ts_data = read_video_timestamps(video_path_str, pts=[]) # Pass pts=[] to read metadata
+            
+            video_fps = None
+            if len(ts_data) == 3 and isinstance(ts_data[2], dict): # (video_pts, audio_pts, meta)
+                video_fps = ts_data[2].get('video_fps')
+            elif len(ts_data) >= 2: # Check for (video_pts, video_fps) or (video_pts, audio_pts, video_fps, audio_fps)
+                # Heuristic: video_fps is often the last numeric fps-like value if meta is not present
+                if isinstance(ts_data[-1], (float, int)) and 5 < ts_data[-1] < 120: # Plausible FPS range
+                    video_fps = ts_data[-1]
+                # Or if (video_pts, video_fps) structure
+                elif len(ts_data) == 2 and isinstance(ts_data[1], (float, int)) and 5 < ts_data[1] < 120 :
+                    video_fps = ts_data[1]
+                # Or if (vpts, apts, vfps, afps)
+                elif len(ts_data) == 4 and isinstance(ts_data[2], (float, int)) and 5 < ts_data[2] < 120:
+                     video_fps = ts_data[2]
+
+
+            if video_fps is not None and video_fps > 0:
+                return float(video_fps)
+            # print(f"Warning: Could not determine FPS for {video_path_str} from metadata. Using default {default_fps}.")
+            return float(default_fps)
+        except Exception as e:
+            # print(f"Error getting FPS for {video_path_str}: {e}. Using default {default_fps}.")
+            return float(default_fps)
+
     def _get_video_clip(self, video_path_str: str, action_info: dict):
         video_path = self.split_dir / video_path_str
         if not video_path.exists():
             # print(f"Warning: Video file {video_path} not found for action {action_info['action_id']}. Skipping this view.")
             return None
 
-        # --- Determine Original FPS (for informational purposes or if needed by transforms later) ---
-        original_fps = action_info.get("original_fps_from_annotation") 
-        if original_fps is None: 
-            try:
-                _, _, meta = read_video_timestamps(str(video_path), pts=[]) 
-                original_fps = meta.get('video_fps')
-                if original_fps is None or original_fps <= 0:
-                    # print(f"Warning: Could not read valid FPS from metadata for {video_path} (got {original_fps}). Defaulting to None.")
-                    original_fps = None # No reliable FPS found
-            except Exception as e:
-                # print(f"Warning: Could not read metadata for {video_path} due to {e}. Defaulting to None.")
-                original_fps = None 
+        # --- Determine Original FPS ---
+        original_fps_annotated = action_info.get("original_fps_from_annotation")
+        if original_fps_annotated is not None and float(original_fps_annotated) > 0:
+            original_fps = float(original_fps_annotated)
+        else:
+            original_fps = self._get_video_fps(str(video_path), self.target_fps)
         
-        # --- Load entire video first to get total frame count and extract specific range ---
+        if original_fps <= 0: # Should be caught by _get_video_fps default, but defensive
+            # print(f"Warning: Invalid original_fps ({original_fps}) for {video_path}. Using target_fps {self.target_fps}.")
+            original_fps = self.target_fps
+
+        # Calculate start and end times in seconds for read_video
+        # self.start_frame and self.end_frame are 0-indexed inclusive
+        start_time_sec = self.start_frame / original_fps
+        # To include self.end_frame, read_video's end_pts should be the start of the (self.end_frame + 1)-th frame.
+        # read_video loads [start_pts, end_pts)
+        end_time_sec = (self.end_frame + 1) / original_fps
+        
+        if start_time_sec >= end_time_sec:
+            # print(f"Warning: Calculated start_time_sec {start_time_sec} >= end_time_sec {end_time_sec} for {video_path}. Attempting to load small segment around start.")
+            # Attempt to load a small segment if times are problematic, e.g., 1 second or frames_per_clip duration
+            num_frames_to_load_for_segment = self.frames_per_clip # Or a fixed number like 30 if FPS is low
+            end_time_sec = start_time_sec + (num_frames_to_load_for_segment / original_fps)
+
+
+        vframes_segment = None
         try:
-            # print(f"Attempting to read entire video {video_path}")
-            vframes, aframes, info = read_video(str(video_path), pts_unit='sec', output_format="TCHW")
+            vframes_segment, aframes, info = read_video(
+                str(video_path),
+                start_pts=start_time_sec,
+                end_pts=end_time_sec,
+                pts_unit='sec',
+                output_format="TCHW"
+            )
         except RuntimeError as e:
-            # print(f"Error reading video {video_path}: {e}. Skipping this view for action {action_info['action_id']}.")
+            # print(f"Error reading video segment {video_path} ({start_time_sec:.2f}s to {end_time_sec:.2f}s): {e}. Skipping view.")
+            return None
+        except Exception as e_gen: # Catch other potential exceptions from read_video
+            # print(f"Generic error reading video segment {video_path}: {e_gen}. Skipping view.")
             return None
 
-        if vframes.size(0) == 0:
-            # print(f"Warning: No frames read from {video_path} for specified time range. Skipping view.")
-            return None
 
-        total_frames = vframes.size(0)
+        if vframes_segment is None or vframes_segment.size(0) == 0:
+            # print(f"Warning: No frames read from {video_path} for specified time range [{start_time_sec:.2f}s, {end_time_sec:.2f}s]. Skipping view.")
+            return None
         
-        # --- Extract specific frame range (foul-centered) ---
-        # Ensure frame indices are within video bounds
-        start_idx = max(0, min(self.start_frame, total_frames - 1))
-        end_idx = max(start_idx, min(self.end_frame, total_frames - 1))
-        
-        if start_idx >= total_frames:
-            print(f"Warning: start_frame {self.start_frame} >= total_frames {total_frames} for {video_path}. Using last frame.")
-            start_idx = total_frames - 1
-            end_idx = total_frames - 1
-        
-        if end_idx >= total_frames:
-            print(f"Warning: end_frame {self.end_frame} >= total_frames {total_frames} for {video_path}. Adjusting to {total_frames - 1}.")
-            end_idx = total_frames - 1
-        
-        # Extract the frame range
-        extracted_frames = vframes[start_idx:end_idx + 1]  # +1 because end is inclusive
-        num_extracted_frames = extracted_frames.size(0)
-        
-        if num_extracted_frames == 0:
-            print(f"Warning: No frames extracted from range {start_idx}-{end_idx} for {video_path}. Using single frame.")
-            extracted_frames = vframes[start_idx:start_idx + 1]
-            num_extracted_frames = 1
+        num_extracted_frames = vframes_segment.size(0)
         
         # --- Sample to desired frames_per_clip if different from extracted range ---
         if num_extracted_frames < self.frames_per_clip:
-            # If we have fewer frames than needed, repeat the last frame
-            print(f"Warning: Extracted only {num_extracted_frames} frames from range {start_idx}-{end_idx} for {video_path}, but need {self.frames_per_clip}. Padding with last frame.")
+            # print(f"Warning: Extracted only {num_extracted_frames} frames from {video_path} (target {self.frames_per_clip}). Padding with last frame.")
             padding_needed = self.frames_per_clip - num_extracted_frames
-            last_frame = extracted_frames[-1:].repeat(padding_needed, 1, 1, 1)
-            sampled_frames = torch.cat([extracted_frames, last_frame], dim=0)
+            if num_extracted_frames > 0: # Ensure there's at least one frame to repeat
+                last_frame = vframes_segment[-1:].repeat(padding_needed, 1, 1, 1)
+                sampled_frames = torch.cat([vframes_segment, last_frame], dim=0)
+            else: # This case means vframes_segment was empty after all.
+                # print(f"Error: num_extracted_frames is 0 before padding for {video_path}. Cannot proceed.")
+                return None 
         elif num_extracted_frames > self.frames_per_clip:
             # If we have more frames than needed, subsample uniformly
             indices = torch.linspace(0, num_extracted_frames - 1, self.frames_per_clip).long()
-            sampled_frames = torch.index_select(extracted_frames, 0, indices)
+            sampled_frames = torch.index_select(vframes_segment, 0, indices)
         else:
             # Perfect match
-            sampled_frames = extracted_frames
+            sampled_frames = vframes_segment
+
+        # Ensure sampled_frames is not None and has the correct first dimension
+        if sampled_frames is None or sampled_frames.size(0) != self.frames_per_clip:
+             # print(f"Error: Frame sampling failed for {video_path}. Expected {self.frames_per_clip} frames, got {sampled_frames.size(0) if sampled_frames is not None else 'None'}.")
+             return None
 
         clip = sampled_frames.permute(1, 0, 2, 3) # (C, T, H, W) -> (C, frames_per_clip, H, W)
         return clip
