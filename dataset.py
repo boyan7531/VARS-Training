@@ -201,9 +201,9 @@ class RandomSpatialCrop(torch.nn.Module):
         C, T, H, W = clip.shape
         
         # Random crop scale
-        crop_scale = random.uniform(*self.crop_scale_range)
-        crop_h = int(H * crop_scale)
-        crop_w = int(W * crop_scale)
+        scale = random.uniform(*self.crop_scale_range)
+        crop_h = int(H * scale)
+        crop_w = int(W * scale)
         
         # Random crop position
         top = random.randint(0, H - crop_h)
@@ -212,13 +212,16 @@ class RandomSpatialCrop(torch.nn.Module):
         # Crop all frames
         cropped_clip = clip[:, :, top:top+crop_h, left:left+crop_w]
         
+        # Ensure tensor is contiguous before reshaping
+        cropped_clip = cropped_clip.contiguous()
+        
         # Resize back to original size
         resized_clip = torch.nn.functional.interpolate(
-            cropped_clip.view(C, T*crop_h, crop_w).unsqueeze(0),
+            cropped_clip.reshape(C, T*crop_h, crop_w).unsqueeze(0),
             size=(T*H, W),
             mode='bilinear',
             align_corners=False
-        ).squeeze(0).view(C, T, H, W)
+        ).squeeze(0).reshape(C, T, H, W)
         
         return resized_clip
 
