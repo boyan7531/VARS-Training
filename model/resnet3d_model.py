@@ -458,11 +458,38 @@ class MultiTaskMultiViewResNet3D(nn.Module):
         Returns:
             Configured MultiTaskMultiViewResNet3D instance
         """
-        # Create configuration
-        config = ModelConfig(
-            use_attention_aggregation=use_attention_aggregation,
-            **config_kwargs
-        )
+        final_model_config: ModelConfig
+        
+        # Check if a ModelConfig instance was passed directly via config_kwargs
+        passed_config_instance = None
+        if 'config' in config_kwargs and isinstance(config_kwargs['config'], ModelConfig):
+            passed_config_instance = config_kwargs.pop('config') # Use and remove it from kwargs
+
+        if passed_config_instance is not None:
+            final_model_config = passed_config_instance
+            # If use_attention_aggregation in create_model's signature differs from the one in the passed config,
+            # the one from the passed config object will implicitly be used.
+            # We can add a log if they differ and other config_kwargs are present, as they'd be ignored.
+            if final_model_config.use_attention_aggregation != use_attention_aggregation:
+                logger.info(
+                    f"Using 'use_attention_aggregation={final_model_config.use_attention_aggregation}' "
+                    f"from provided ModelConfig object, not the default/passed "
+                    f"'use_attention_aggregation={use_attention_aggregation}' in create_model signature."
+                )
+            if config_kwargs: # If any kwargs remain after popping 'config'
+                logger.warning(
+                    f"A ModelConfig object was passed directly. Other keyword arguments "
+                    f"{list(config_kwargs.keys())} also present in create_model call are being ignored "
+                    f"for ModelConfig creation, as the provided ModelConfig object is used directly."
+                )
+        else:
+            # No ModelConfig instance was passed, so create one using
+            # use_attention_aggregation from the signature and any other relevant config_kwargs.
+            # At this point, config_kwargs should not contain 'config'.
+            final_model_config = ModelConfig(
+                use_attention_aggregation=use_attention_aggregation,
+                **config_kwargs 
+            )
         
         # Default severity weights for class imbalance (higher weights for minority classes)
         if severity_weights is None:
@@ -480,7 +507,7 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             num_action_type=num_action_type,
             vocab_sizes=vocab_sizes,
             backbone_name=backbone_name,
-            config=config,
+            config=final_model_config, # Use the resolved config
             use_augmentation=use_augmentation,
             severity_weights=severity_weights
         )
