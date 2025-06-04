@@ -268,6 +268,10 @@ def parse_args():
     parser.add_argument('--focal_gamma', type=float, default=2.0,
                        help='Focal Loss gamma parameter (higher = more focus on hard examples)')
     
+    # New argument to control in-model augmentation
+    parser.add_argument('--disable_in_model_augmentation', action='store_true', default=False,
+                       help='Disable VideoAugmentation applied inside the model forward pass (for bottleneck testing)')
+    
     args = parser.parse_args()
     
     # Construct the specific mvfouls path from the root
@@ -1121,12 +1125,13 @@ if __name__ == "__main__":
 
     # Initialize model with proper configuration
     logger.info(f"Initializing ResNet3D model: {args.backbone_name}")
-    model = MultiTaskMultiViewResNet3D(
+    model = MultiTaskMultiViewResNet3D.create_model(
         num_severity=6,  # 6 severity classes: "", 1.0, 2.0, 3.0, 4.0, 5.0
         num_action_type=10,  # 10 action types: "", Challenge, Dive, Dont know, Elbowing, High leg, Holding, Pushing, Standing tackling, Tackling
         vocab_sizes=vocab_sizes,
         backbone_name=args.backbone_name,
-        config=model_config
+        config=model_config,
+        use_augmentation=(not args.disable_in_model_augmentation) # Control in-model augmentation
     )
     model.to(device)
     
