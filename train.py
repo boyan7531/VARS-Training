@@ -183,7 +183,8 @@ def parse_args():
                        help='Manually override best validation accuracy when resuming (useful for checkpoint issues)')
     parser.add_argument('--mixed_precision', action='store_true', help='Use mixed precision training')
     parser.add_argument('--gradient_clip_norm', type=float, default=1.0, help='Gradient clipping norm')
-    parser.add_argument('--early_stopping_patience', type=int, default=6, help='Early stopping patience')
+    parser.add_argument('--early_stopping_patience', type=int, default=None,
+                       help='Patience for early stopping (epochs with no improvement).')
     parser.add_argument('--scheduler', type=str, default='cosine', 
                        choices=['cosine', 'onecycle', 'step', 'exponential', 'reduce_on_plateau', 'none'], 
                        help='Learning rate scheduler type')
@@ -252,8 +253,20 @@ def parse_args():
                        help='Learning rate for classification heads in Phase 1')
     parser.add_argument('--backbone_lr', type=float, default=1e-5, 
                        help='Learning rate for unfrozen backbone layers in Phase 2')
-    parser.add_argument('--unfreeze_blocks', type=int, default=2, 
+    parser.add_argument('--unfreeze_blocks', type=int, default=3,  # Changed default from 2 to 3
                        help='Number of final residual blocks to unfreeze in Phase 2')
+    
+    # New arguments for more granular Phase 2 LR control
+    parser.add_argument('--phase2_backbone_lr_scale_factor', type=float, default=1.0,
+                       help='Scale factor for args.backbone_lr in Phase 2 (e.g., 2.0 for 2x base backbone_lr)')
+    parser.add_argument('--phase2_head_lr_ratio', type=float, default=5.0,
+                       help='Ratio for Phase 2 head LR relative to Phase 2 backbone LR (e.g., head_lr = p2_backbone_lr * ratio)')
+    
+    # New arguments for Phase 1 ReduceLROnPlateau scheduler
+    parser.add_argument('--phase1_plateau_patience', type=int, default=3,
+                       help='Patience for ReduceLROnPlateau scheduler in Phase 1 (gradual fine-tuning only).')
+    parser.add_argument('--phase1_plateau_factor', type=float, default=0.2,
+                       help='Factor for ReduceLROnPlateau scheduler in Phase 1 (gradual fine-tuning only).')
     
     # New class weighting options
     parser.add_argument('--use_class_weighted_loss', action='store_true', default=True,
@@ -288,6 +301,17 @@ def parse_args():
         args.total_epochs = args.epochs  # Keep user's original setting
         args.epochs = args.phase1_epochs + args.phase2_epochs  # Set actual training epochs
         logger.info(f"[GRADUAL] Gradual fine-tuning enabled: Phase 1={args.phase1_epochs} epochs, Phase 2={args.phase2_epochs} epochs")
+    
+    # Set default early stopping patience based on gradual fine-tuning
+    if args.early_stopping_patience is None:
+        if args.gradual_finetuning:
+            args.early_stopping_patience = args.phase1_epochs + args.phase2_epochs // 2 # e.g., 8 + 15//2 = 8+7 = 15
+            logger.info(f"💡 Default early stopping patience set to {args.early_stopping_patience} for gradual fine-tuning.")
+        else:
+            args.early_stopping_patience = 10 # Default for standard training
+            logger.info(f"💡 Default early stopping patience set to {args.early_stopping_patience} for standard training.")
+    else:
+        logger.info(f"💡 User-defined early stopping patience: {args.early_stopping_patience}")
     
     return args
 
@@ -904,10 +928,12 @@ if __name__ == "__main__":
     else:
         logger.info("Using single GPU training.")
 
-    # Mixed precision setup
-    scaler = GradScaler() if args.mixed_precision and device.type == 'cuda' else None
-    if scaler:
-        logger.info("Using mixed precision training")
+    # Initialize GradScaler for mixed-precision training
+    # Old: scaler = GradScaler() if args.mixed_precision and device.type == 'cuda' else None
+    # Updated to new syntax and explicitly using torch.amp
+    scaler = torch.amp.GradScaler('cuda') if args.mixed_precision and device.type == 'cuda' else None
+
+    logger.info(f"Using mixed precision training" if scaler else "Not using mixed precision training")
 
     # Enhanced transforms with AGGRESSIVE/EXTREME augmentation for small dataset
     # Multiple augmentation stages for maximum data variety
@@ -1192,29 +1218,42 @@ if __name__ == "__main__":
 
     # Learning rate scheduler
     scheduler = None
+    phase1_scheduler = None # Specific scheduler for Phase 1 of gradual fine-tuning
     scheduler_info = "None"
-    if args.scheduler == 'cosine':
-        scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
-        scheduler_info = f"CosineAnnealing (T_max={args.epochs}, eta_min={args.lr * 0.01:.1e})"
-    elif args.scheduler == 'onecycle':
-        steps_per_epoch = len(train_loader)
-        scheduler = OneCycleLR(
-            optimizer, 
-            max_lr=args.lr,
-            epochs=args.epochs,
-            steps_per_epoch=steps_per_epoch,
-            pct_start=args.warmup_epochs / args.epochs
-        )
-        scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, warmup_epochs={args.warmup_epochs})"
-    elif args.scheduler == 'step':
-        scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
-        scheduler_info = f"StepLR (step_size={args.step_size}, gamma={args.gamma})"
-    elif args.scheduler == 'exponential':
-        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.gamma)
-        scheduler_info = f"ExponentialLR (gamma={args.gamma})"
-    elif args.scheduler == 'reduce_on_plateau':
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=args.gamma, patience=args.plateau_patience, min_lr=args.min_lr)
-        scheduler_info = f"ReduceLROnPlateau (mode=max, factor={args.gamma}, patience={args.plateau_patience}, min_lr={args.min_lr:.1e})"
+
+    if args.gradual_finetuning:
+        # Phase 1 will use ReduceLROnPlateau
+        phase1_scheduler = ReduceLROnPlateau(optimizer, mode='max', 
+                                            factor=args.phase1_plateau_factor, 
+                                            patience=args.phase1_plateau_patience, 
+                                            min_lr=args.min_lr, verbose=True)
+        scheduler_info = f"Phase 1: ReduceLROnPlateau (patience={args.phase1_plateau_patience}, factor={args.phase1_plateau_factor})"
+        # Main scheduler (for Phase 2) will be initialized later
+    else:
+        # Standard (non-gradual) training: initialize the main scheduler now
+        if args.scheduler == 'cosine':
+            scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
+            scheduler_info = f"CosineAnnealing (T_max={args.epochs}, eta_min={args.lr * 0.01:.1e})"
+        elif args.scheduler == 'onecycle':
+            steps_per_epoch = len(train_loader)
+            scheduler = OneCycleLR(
+                optimizer, 
+                max_lr=args.lr,
+                epochs=args.epochs,
+                steps_per_epoch=steps_per_epoch,
+                pct_start=args.warmup_epochs / args.epochs if args.epochs > 0 else 0.1
+            )
+            scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, warmup_epochs={args.warmup_epochs})"
+        elif args.scheduler == 'step':
+            scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
+            scheduler_info = f"StepLR (step_size={args.step_size}, gamma={args.gamma})"
+        elif args.scheduler == 'exponential':
+            scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.gamma)
+            scheduler_info = f"ExponentialLR (gamma={args.gamma})"
+        elif args.scheduler == 'reduce_on_plateau':
+            scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=args.gamma, 
+                                        patience=args.plateau_patience, min_lr=args.min_lr, verbose=True)
+            scheduler_info = f"ReduceLROnPlateau (mode=max, factor={args.gamma}, patience={args.plateau_patience}, min_lr={args.min_lr:.1e})"
 
     # Early stopping
     early_stopping = EarlyStopping(patience=args.early_stopping_patience)
@@ -1313,21 +1352,47 @@ if __name__ == "__main__":
                 # Unfreeze backbone layers gradually
                 unfreeze_backbone_gradually(model, args.unfreeze_blocks)
                 
-                # Setup discriminative learning rates
-                param_groups = setup_discriminative_optimizer(model, args.head_lr, args.backbone_lr)
+                # Setup discriminative learning rates for Phase 2
+                actual_phase2_backbone_lr = args.backbone_lr * args.phase2_backbone_lr_scale_factor
+                phase2_head_lr = actual_phase2_backbone_lr * args.phase2_head_lr_ratio
+                
+                param_groups = setup_discriminative_optimizer(model, phase2_head_lr, actual_phase2_backbone_lr)
+                logger.info(f"[PHASE2_LR_SETUP] Phase 2 LRs: Backbone={actual_phase2_backbone_lr:.1e}, Head={phase2_head_lr:.1e}")
                 
                 # Recreate optimizer with new parameter groups
                 optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
                 
-                # Reset scheduler for Phase 2 if using one
-                if scheduler is not None:
-                    remaining_epochs = args.epochs - epoch
-                    if args.scheduler == 'cosine':
-                        scheduler = CosineAnnealingLR(optimizer, T_max=remaining_epochs, eta_min=args.backbone_lr * 0.01)
-                    elif args.scheduler == 'step':
-                        scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
-                    # Add other scheduler resets as needed
-                
+                # Initialize main scheduler for Phase 2
+                remaining_epochs = args.epochs - epoch
+                if args.scheduler == 'cosine':
+                    scheduler = CosineAnnealingLR(optimizer, T_max=remaining_epochs, eta_min=actual_phase2_backbone_lr * 0.01)
+                    scheduler_info = f"Phase 2: CosineAnnealing (T_max={remaining_epochs}, eta_min={actual_phase2_backbone_lr * 0.01:.1e})"
+                elif args.scheduler == 'onecycle':
+                    steps_per_epoch_phase2 = len(train_loader)
+                    scheduler = OneCycleLR(
+                        optimizer,
+                        max_lr=[pg['lr'] for pg in param_groups],
+                        epochs=remaining_epochs,
+                        steps_per_epoch=steps_per_epoch_phase2,
+                        pct_start=(args.warmup_epochs / remaining_epochs) if remaining_epochs > 0 and args.warmup_epochs < remaining_epochs else 0.1
+                    )
+                    scheduler_info = f"Phase 2: OneCycle (max_lr_config, warmup_epochs_scaled)"
+                elif args.scheduler == 'step':
+                    scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
+                    scheduler_info = f"Phase 2: StepLR (step_size={args.step_size}, gamma={args.gamma})"
+                elif args.scheduler == 'exponential':
+                    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.gamma)
+                    scheduler_info = f"Phase 2: ExponentialLR (gamma={args.gamma})"
+                elif args.scheduler == 'reduce_on_plateau':
+                    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=args.gamma,
+                                                patience=args.plateau_patience, min_lr=args.min_lr, verbose=True)
+                    scheduler_info = f"Phase 2: ReduceLROnPlateau (main_args)"
+                else:
+                    scheduler = None # No scheduler for phase 2 if 'none' or unknown
+                    scheduler_info = "Phase 2: None"
+                logger.info(f"[PHASE2_SCHEDULER] Initialized: {scheduler_info}")
+                phase1_scheduler = None # Ensure Phase 1 scheduler is no longer used
+                 
                 log_trainable_parameters(model)
                 logger.info("[PHASE2] Phase 2 setup complete!")
                 logger.info("[PHASE2] " + "="*60)
@@ -1357,15 +1422,18 @@ if __name__ == "__main__":
 
         # Update learning rate
         if scheduler is not None:
-            if isinstance(scheduler, OneCycleLR):
-                # OneCycleLR updates per batch, handled in training loop if needed
-                pass
-            elif isinstance(scheduler, ReduceLROnPlateau):
-                # ReduceLROnPlateau monitors validation accuracy (mode='max')
-                scheduler.step(val_act_acc)
-            else:
-                scheduler.step()
+            # Determine current phase for scheduler step
+            current_phase_for_scheduler, _ = get_phase_info(epoch, args.phase1_epochs, args.epochs)
 
+            if args.gradual_finetuning and current_phase_for_scheduler == 1 and phase1_scheduler is not None:
+                phase1_scheduler.step(val_combined_acc)
+                # logger.info(f"Stepped Phase 1 ReduceLROnPlateau scheduler with val_acc: {val_combined_acc:.4f}")
+            elif scheduler is not None: # Handles Phase 2 or non-gradual training
+                if isinstance(scheduler, ReduceLROnPlateau):
+                    scheduler.step(val_combined_acc)
+                elif not isinstance(scheduler, OneCycleLR): # OneCycleLR steps per batch
+                    scheduler.step()
+            
         # Calculate epoch time and combined metrics
         epoch_time = time.time() - epoch_start_time
         current_lr = optimizer.param_groups[0]['lr']
