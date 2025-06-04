@@ -272,6 +272,10 @@ def parse_args():
     parser.add_argument('--disable_in_model_augmentation', action='store_true', default=False,
                        help='Disable VideoAugmentation applied inside the model forward pass (for bottleneck testing)')
     
+    # New argument for memory cleanup interval
+    parser.add_argument('--memory_cleanup_interval', type=int, default=20,
+                       help='Interval (in batches) for calling memory cleanup. 0 or negative to disable in train/val loops.')
+    
     args = parser.parse_args()
     
     # Construct the specific mvfouls path from the root
@@ -557,7 +561,7 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         processed_batches += 1
         
         # Periodic memory cleanup during training
-        if i % 20 == 0:
+        if args.memory_cleanup_interval > 0 and (i + 1) % args.memory_cleanup_interval == 0:
             cleanup_memory()
         
         # Only print progress every 25% of batches
@@ -613,13 +617,25 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             severity_labels = batch_data["label_severity"]
             action_labels = batch_data["label_type"]
 
-            sev_logits, act_logits = model(batch_data)
-            
-            total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                sev_logits, act_logits, batch_data, loss_weights, 
-                label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
-                use_focal_loss=use_focal_loss, focal_gamma=focal_gamma
-            )
+            # Apply autocast for consistency with training if using CUDA and mixed precision is enabled for training
+            # We infer mixed precision enablement from whether scaler was used in train,
+            # or more directly, if args.mixed_precision is True (assuming args is accessible or passed)
+            # For simplicity here, we'll check device type.
+            if device.type == 'cuda': # Assuming mixed precision is used if cuda is available and training uses it.
+                with torch.amp.autocast('cuda'): # Enable AMP for the forward pass
+                    sev_logits, act_logits = model(batch_data)
+                    total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
+                        sev_logits, act_logits, batch_data, loss_weights, 
+                        label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
+                        use_focal_loss=use_focal_loss, focal_gamma=focal_gamma
+                    )
+            else: # CPU or other device, or if mixed precision is explicitly disabled for validation
+                sev_logits, act_logits = model(batch_data)
+                total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
+                    sev_logits, act_logits, batch_data, loss_weights, 
+                    label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
+                    use_focal_loss=use_focal_loss, focal_gamma=focal_gamma
+                )
 
             running_loss += total_loss.item() * batch_data["clips"].size(0)
             sev_acc = calculate_accuracy(sev_logits, severity_labels)
@@ -634,7 +650,7 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             del batch_data, sev_logits, act_logits, total_loss
             
             # Periodic memory cleanup during validation
-            if i % 10 == 0:
+            if args.memory_cleanup_interval > 0 and (i + 1) % args.memory_cleanup_interval == 0:
                 cleanup_memory()
 
     num_samples_processed = len(dataloader.dataset) if max_batches is None else processed_batches * dataloader.batch_size
@@ -1060,14 +1076,24 @@ if __name__ == "__main__":
             collate_fn=variable_views_collate_fn
         )
     
+    # Determine number of workers for validation DataLoader
+    if args.num_workers == 0:
+        val_num_workers = 0
+    elif args.num_workers == 1:
+        val_num_workers = 1
+    elif args.num_workers < 4: # Handles 2 or 3
+        val_num_workers = 2
+    else: # args.num_workers >= 4
+        val_num_workers = args.num_workers // 2
+        
     val_loader = DataLoader(
         val_dataset, 
         batch_size=args.batch_size,
         shuffle=False, 
-        num_workers=min(args.num_workers, 2),  # Use fewer workers for validation
+        num_workers=val_num_workers,
         pin_memory=True,
-        persistent_workers=min(args.num_workers, 2) > 0,
-        prefetch_factor=2 if min(args.num_workers, 2) > 0 else None,  # Less aggressive prefetch for validation
+        persistent_workers=val_num_workers > 0,
+        prefetch_factor=2 if val_num_workers > 0 else None,
         collate_fn=variable_views_collate_fn
     )
     
@@ -1075,7 +1101,7 @@ if __name__ == "__main__":
     if args.num_workers > 0:
         logger.info(f"🚀 Async data loading enabled:")
         logger.info(f"   - Training workers: {args.num_workers} (prefetch_factor=4)")
-        logger.info(f"   - Validation workers: {min(args.num_workers, 2)} (prefetch_factor=2)")
+        logger.info(f"   - Validation workers: {val_num_workers} (prefetch_factor=2)")
         logger.info(f"   - Pin memory: True (faster CPU->GPU transfers)")
         logger.info(f"   - Persistent workers: True (avoid respawning overhead)")
     else:
