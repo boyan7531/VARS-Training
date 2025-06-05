@@ -21,9 +21,10 @@ class VideoAugmentation(nn.Module):
     Applies various temporal and spatial augmentations during training.
     """
     
-    def __init__(self, severity_weights: Dict[float, float] = None, training: bool = True):
+    def __init__(self, severity_weights: Dict[float, float] = None, training: bool = True, enabled: bool = True):
         super().__init__()
         self.training = training
+        self.enabled = enabled  # Global enable/disable flag for debugging
         self.severity_weights = severity_weights or {1.0: 1.0, 2.0: 3.0, 3.0: 5.0, 4.0: 7.0}
         
         # Spatial augmentation parameters
@@ -42,7 +43,8 @@ class VideoAugmentation(nn.Module):
         Returns:
             Augmented clips
         """
-        if not self.training:
+        # Quick exit if augmentation is disabled or in eval mode
+        if not self.training or not self.enabled:
             return clips
             
         batch_size = clips.size(0)
@@ -193,6 +195,14 @@ class VideoAugmentation(nn.Module):
             clip = torch.clamp(clip + noise, 0, 1)
             
         return clip
+    
+    def disable(self):
+        """Disable augmentation for debugging."""
+        self.enabled = False
+        
+    def enable(self):
+        """Re-enable augmentation."""
+        self.enabled = True
 
 class ResNet3DBackbone(nn.Module):
     """3D ResNet backbone for video feature extraction."""
@@ -283,7 +293,8 @@ class MultiTaskMultiViewResNet3D(nn.Module):
         if self.use_augmentation:
             self.video_augmentation = VideoAugmentation(
                 severity_weights=severity_weights,
-                training=True
+                training=True,
+                enabled=True  # Will be controlled by disable_in_model_augmentation
             )
         
         # Initialize components
@@ -439,6 +450,7 @@ class MultiTaskMultiViewResNet3D(nn.Module):
         backbone_name: str = 'r2plus1d_18',
         use_attention_aggregation: bool = True,
         use_augmentation: bool = True,
+        disable_in_model_augmentation: bool = False,
         severity_weights: Dict[float, float] = None,
         **config_kwargs
     ) -> 'MultiTaskMultiViewResNet3D':
@@ -452,6 +464,7 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             backbone_name: ResNet3D variant ('resnet3d_18', 'mc3_18', 'r2plus1d_18')
             use_attention_aggregation: Whether to use attention-based view aggregation
             use_augmentation: Whether to apply adaptive augmentation for class imbalance
+            disable_in_model_augmentation: Whether to disable in-model augmentation
             severity_weights: Custom augmentation weights for severity classes
             **config_kwargs: Additional configuration parameters
             
@@ -501,8 +514,13 @@ class MultiTaskMultiViewResNet3D(nn.Module):
                 5.0: 8.0    # 8x more aggressive augmentation (if exists)
             }
         
+        # Override use_augmentation if disable_in_model_augmentation is True
+        if disable_in_model_augmentation:
+            use_augmentation = False
+            logger.info("🚫 In-model augmentation disabled via disable_in_model_augmentation flag")
+        
         # Create and return model
-        return cls(
+        model = cls(
             num_severity=num_severity,
             num_action_type=num_action_type,
             vocab_sizes=vocab_sizes,
@@ -511,6 +529,13 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             use_augmentation=use_augmentation,
             severity_weights=severity_weights
         )
+        
+        # If we have augmentation but it should be disabled, disable it
+        if hasattr(model, 'video_augmentation') and disable_in_model_augmentation:
+            model.video_augmentation.disable()
+            logger.info("🚫 VideoAugmentation disabled for debugging")
+        
+        return model
     
     def train(self, mode: bool = True):
         """Override train method to handle augmentation state."""

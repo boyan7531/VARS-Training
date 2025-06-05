@@ -1,6 +1,63 @@
 # train.py
 """
-Enhanced Multi-Task Multi-View ResNet3D Training Script with SAFE Class Imbalance Handling
+Enhanced Multi-Task Multi-View ResNet3D Training Script with FLEXIBLE CLASS IMBALANCE HANDLING
+
+FLEXIBLE LOSS FUNCTION OPTIONS:
+===============================
+
+⚙️  LOSS FUNCTION CONTROL:
+Choose your loss function strategy:
+
+1. 🎯 FOCAL LOSS (for severe class imbalance):
+   --loss_function focal --focal_gamma 2.0
+   - Automatically focuses on hard examples
+   - Can use class weights as alpha parameter
+   - Good for severe imbalance
+
+2. 📊 WEIGHTED CROSS-ENTROPY (traditional approach):
+   --loss_function weighted --class_weighting_strategy balanced_capped
+   - Standard CrossEntropyLoss with class weights
+   - Multiple weighting strategies available
+   - Proven approach
+
+3. 🆓 PLAIN CROSS-ENTROPY (no balancing):
+   --loss_function plain
+   - Standard CrossEntropyLoss with no modifications
+   - Good for debugging and well-balanced datasets
+   - Fastest training
+
+DEBUGGING & FLEXIBILITY OPTIONS:
+===============================
+
+🔧 DISABLE FEATURES FOR DEBUGGING:
+--disable_class_balancing        # Disable all class balancing (sampler + weights)
+--disable_augmentation          # Disable all augmentation
+--disable_in_model_augmentation # Disable only in-model augmentation
+--simple_training               # Disable all advanced features (plain training)
+
+🎛️  FINE-TUNE INDIVIDUAL FEATURES:
+--loss_function [focal|weighted|plain]
+--class_weighting_strategy [none|balanced_capped|sqrt|log]
+--use_class_balanced_sampler [true|false]
+--aggressive_augmentation [true|false]
+
+USAGE EXAMPLES:
+==============
+
+# Plain training (no class balancing, no augmentation):
+python train.py --simple_training
+
+# Focal loss with class balancing:
+python train.py --loss_function focal --focal_gamma 2.0
+
+# Weighted loss with conservative settings:
+python train.py --loss_function weighted --class_weighting_strategy sqrt
+
+# Debug training (minimal features):
+python train.py --loss_function plain --disable_class_balancing --disable_augmentation
+
+# Previous behavior (weighted + balancing):
+python train.py --loss_function weighted --class_weighting_strategy balanced_capped
 
 CLASS IMBALANCE STRATEGIES (SAFE OPTIONS):
 =========================================
@@ -10,44 +67,22 @@ CLASS IMBALANCE STRATEGIES (SAFE OPTIONS):
 RECOMMENDED SOLUTIONS (from most stable to least):
 
 1. 🥇 FOCAL LOSS (MOST STABLE):
-   --use_focal_loss --focal_gamma 2.0
+   --loss_function focal --focal_gamma 2.0
    - Automatically focuses on hard examples
    - No extreme weight ratios
    - Very stable training
 
 2. 🥈 CAPPED CLASS WEIGHTS (STABLE):
-   --class_weighting_strategy balanced_capped --max_weight_ratio 10.0
+   --loss_function weighted --class_weighting_strategy balanced_capped --max_weight_ratio 10.0
    - Limits maximum weight ratio (prevents instability)
    - Default: 10x max ratio (recommended)
 
 3. 🥉 GENTLE WEIGHTING (VERY STABLE):
-   --class_weighting_strategy sqrt  # or 'log' for even gentler
+   --loss_function weighted --class_weighting_strategy sqrt  # or 'log' for even gentler
    - Gentler than inverse frequency
    - Much safer than raw inverse weights
 
 4. 🚫 AVOID: Uncapped inverse frequency weighting (can cause 400x weight ratios!)
-
-USAGE EXAMPLES:
-==============
-
-# Most stable - Focal Loss (RECOMMENDED for severe imbalance):
-python train.py --use_focal_loss --focal_gamma 2.0
-
-# Safe class weights with capping:
-python train.py --class_weighting_strategy balanced_capped --max_weight_ratio 5.0
-
-# Very gentle weighting:
-python train.py --class_weighting_strategy sqrt
-
-# Disable class weighting entirely:
-python train.py --class_weighting_strategy none
-
-PARAMETERS:
-==========
---class_weighting_strategy: 'balanced_capped', 'sqrt', 'log', 'effective_number', 'none'
---max_weight_ratio: Maximum ratio between highest/lowest weight (default: 10.0)
---use_focal_loss: Use Focal Loss instead of weighted CrossEntropyLoss
---focal_gamma: Focal Loss focusing parameter (2.0 recommended)
 
 AUGMENTATION MODES FOR SMALL DATASETS:
 =====================================
@@ -218,6 +253,19 @@ def parse_args():
     parser.add_argument('--dropout_rate', type=float, default=0.1, help='Dropout rate for regularization')
     parser.add_argument('--lr_warmup', action='store_true', help='Enable learning rate warmup')
     
+    # === NEW FLEXIBLE LOSS FUNCTION CONTROLS ===
+    parser.add_argument('--loss_function', type=str, default='weighted', 
+                       choices=['focal', 'weighted', 'plain'],
+                       help='Loss function type: focal (FocalLoss), weighted (weighted CrossEntropyLoss), plain (standard CrossEntropyLoss)')
+    
+    # === DEBUGGING & FLEXIBILITY OPTIONS ===
+    parser.add_argument('--simple_training', action='store_true', default=False,
+                       help='Enable simple training mode: disables class balancing, augmentation, and uses plain CrossEntropyLoss')
+    parser.add_argument('--disable_class_balancing', action='store_true', default=False,
+                       help='Disable all class balancing (both class weights and balanced sampler)')
+    parser.add_argument('--disable_augmentation', action='store_true', default=False,
+                       help='Disable all augmentation (both in-dataset and in-model)')
+    
     # ENHANCED AUGMENTATION OPTIONS FOR SMALL DATASETS
     parser.add_argument('--use_class_balanced_sampler', action='store_true', default=True,
                        help='Use class-balanced sampler to oversample minority classes')
@@ -268,18 +316,22 @@ def parse_args():
     parser.add_argument('--phase1_plateau_factor', type=float, default=0.2,
                        help='Factor for ReduceLROnPlateau scheduler in Phase 1 (gradual fine-tuning only).')
     
-    # New class weighting options
-    parser.add_argument('--use_class_weighted_loss', action='store_true', default=True,
-                       help='Use class-weighted loss to give higher weight to minority severity classes')
+    # Modified class weighting options (now controlled by loss_function and disable_class_balancing)
     parser.add_argument('--class_weighting_strategy', type=str, default='balanced_capped',
                        choices=['none', 'balanced_capped', 'sqrt', 'log', 'effective_number'],
                        help='Strategy for calculating class weights (balanced_capped recommended for stability)')
     parser.add_argument('--max_weight_ratio', type=float, default=10.0,
                        help='Maximum ratio between highest and lowest class weight (prevents training instability)')
-    parser.add_argument('--use_focal_loss', action='store_true', default=False,
-                       help='Use Focal Loss instead of class-weighted CrossEntropyLoss (often more stable)')
+    
+    # Focal loss specific parameters
     parser.add_argument('--focal_gamma', type=float, default=2.0,
                        help='Focal Loss gamma parameter (higher = more focus on hard examples)')
+    
+    # Legacy arguments (for backward compatibility)
+    parser.add_argument('--use_focal_loss', action='store_true', default=False,
+                       help='DEPRECATED: Use --loss_function focal instead')
+    parser.add_argument('--use_class_weighted_loss', action='store_true', default=True,
+                       help='DEPRECATED: Use --loss_function weighted instead')
     
     # New argument to control in-model augmentation
     parser.add_argument('--disable_in_model_augmentation', action='store_true', default=False,
@@ -290,6 +342,45 @@ def parse_args():
                        help='Interval (in batches) for calling memory cleanup. 0 or negative to disable in train/val loops.')
     
     args = parser.parse_args()
+    
+    # Handle simple training mode
+    if args.simple_training:
+        logger.info("🔧 SIMPLE TRAINING MODE ENABLED - Disabling advanced features for debugging")
+        args.loss_function = 'plain'
+        args.disable_class_balancing = True
+        args.disable_augmentation = True
+        args.disable_in_model_augmentation = True
+        args.use_class_balanced_sampler = False
+        args.aggressive_augmentation = False
+        args.extreme_augmentation = False
+        args.gradual_finetuning = False
+        args.label_smoothing = 0.0
+        logger.info("   - Loss function: plain CrossEntropyLoss")
+        logger.info("   - Class balancing: disabled")
+        logger.info("   - Augmentation: disabled")
+        logger.info("   - Gradual fine-tuning: disabled")
+        logger.info("   - Label smoothing: disabled")
+    
+    # Handle disable flags
+    if args.disable_class_balancing:
+        args.use_class_balanced_sampler = False
+        args.class_weighting_strategy = 'none'
+        logger.info("🚫 Class balancing disabled (both sampler and weights)")
+    
+    if args.disable_augmentation:
+        args.aggressive_augmentation = False
+        args.extreme_augmentation = False
+        args.disable_in_model_augmentation = True
+        logger.info("🚫 All augmentation disabled")
+    
+    # Handle legacy arguments and provide warnings
+    if args.use_focal_loss and args.loss_function == 'weighted':
+        logger.warning("⚠️  --use_focal_loss is deprecated. Setting --loss_function to 'focal'")
+        args.loss_function = 'focal'
+    
+    if not args.use_class_weighted_loss and args.loss_function == 'weighted':
+        logger.warning("⚠️  --use_class_weighted_loss=False detected. Setting --loss_function to 'plain'")
+        args.loss_function = 'plain'
     
     # Construct the specific mvfouls path from the root
     if not args.dataset_root:
@@ -432,9 +523,9 @@ def calculate_class_weights(dataset, num_classes, device, weighting_strategy='ba
     return class_weights.to(device)
 
 def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, aux_weight=0.5, 
-                           label_smoothing=0.0, severity_class_weights=None, use_focal_loss=False, focal_gamma=2.0):
+                           label_smoothing=0.0, severity_class_weights=None, loss_function='weighted', focal_gamma=2.0):
     """
-    Calculate weighted multi-task loss with multiple loss function options.
+    Calculate weighted multi-task loss with flexible loss function selection.
     
     Args:
         sev_logits: Severity classification logits
@@ -444,13 +535,13 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, a
         aux_weight: Weight for auxiliary tasks (currently not implemented)
         label_smoothing: Label smoothing factor for regularization
         severity_class_weights: Optional class weights for severity loss
-        use_focal_loss: Whether to use Focal Loss instead of CrossEntropyLoss
+        loss_function: 'focal', 'weighted', or 'plain'
         focal_gamma: Focal Loss gamma parameter
     
     Returns:
         total_loss, loss_sev, loss_act
     """
-    if use_focal_loss:
+    if loss_function == 'focal':
         # Use Focal Loss - often more stable for class imbalance
         focal_criterion = FocalLoss(
             alpha=severity_class_weights,
@@ -462,7 +553,7 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, a
         # Use standard CrossEntropyLoss for action type (usually more balanced)
         loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
         
-    else:
+    elif loss_function == 'weighted':
         # Use class-weighted CrossEntropyLoss
         loss_sev = nn.CrossEntropyLoss(
             label_smoothing=label_smoothing, 
@@ -470,6 +561,14 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, a
         )(sev_logits, batch_data["label_severity"]) * main_weights[0]
         
         loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
+    
+    elif loss_function == 'plain':
+        # Use plain CrossEntropyLoss (no class weights)
+        loss_sev = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(sev_logits, batch_data["label_severity"]) * main_weights[0]
+        loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
+    
+    else:
+        raise ValueError(f"Unknown loss_function: {loss_function}. Must be 'focal', 'weighted', or 'plain'")
     
     total_loss = loss_sev + loss_act
     
@@ -508,7 +607,7 @@ class EarlyStopping:
 
 def train_one_epoch(model, dataloader, criterion_severity, criterion_action, optimizer, device, 
                    scaler=None, max_batches=None, loss_weights=[1.0, 1.0], gradient_clip_norm=1.0, 
-                   label_smoothing=0.0, severity_class_weights=None, use_focal_loss=False, focal_gamma=2.0):
+                   label_smoothing=0.0, severity_class_weights=None, loss_function='weighted', focal_gamma=2.0):
     model.train()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -543,7 +642,7 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
                 total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_weights, 
                     label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
-                    use_focal_loss=use_focal_loss, focal_gamma=focal_gamma
+                    loss_function=loss_function, focal_gamma=focal_gamma
                 )
 
             scaler.scale(total_loss).backward()
@@ -560,7 +659,7 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
             total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
                 sev_logits, act_logits, batch_data, loss_weights, 
                 label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
-                use_focal_loss=use_focal_loss, focal_gamma=focal_gamma
+                loss_function=loss_function, focal_gamma=focal_gamma
             )
 
             total_loss.backward()
@@ -614,7 +713,7 @@ def cleanup_memory():
 
 def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, device, 
                       max_batches=None, loss_weights=[1.0, 1.0], label_smoothing=0.0, 
-                      severity_class_weights=None, use_focal_loss=False, focal_gamma=2.0):
+                      severity_class_weights=None, loss_function='weighted', focal_gamma=2.0):
     model.eval()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -651,14 +750,14 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
                     total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
                         sev_logits, act_logits, batch_data, loss_weights, 
                         label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
-                        use_focal_loss=use_focal_loss, focal_gamma=focal_gamma
+                        loss_function=loss_function, focal_gamma=focal_gamma
                     )
             else: # CPU or other device, or if mixed precision is explicitly disabled for validation
                 sev_logits, act_logits = model(batch_data)
                 total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_weights, 
                     label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
-                    use_focal_loss=use_focal_loss, focal_gamma=focal_gamma
+                    loss_function=loss_function, focal_gamma=focal_gamma
                 )
 
             running_loss += total_loss.item() * batch_data["clips"].size(0)
@@ -1139,20 +1238,47 @@ if __name__ == "__main__":
 
     # Calculate class weights for severe imbalance handling
     severity_class_weights = None
-    if args.use_class_weighted_loss:
-        if args.use_focal_loss:
+    if args.loss_function in ['focal', 'weighted'] and not args.disable_class_balancing:
+        if args.loss_function == 'focal':
             logger.info("🎯 Using Focal Loss for severity class imbalance handling!")
             logger.info(f"   - Focal gamma: {args.focal_gamma} (higher = more focus on hard examples)")
             severity_class_weights = calculate_class_weights(train_dataset, 6, device, args.class_weighting_strategy, args.max_weight_ratio)
             logger.info("   - Class weights will be used as alpha parameter in Focal Loss")
-        else:
+        elif args.loss_function == 'weighted':
             logger.info("🎯 Using class-weighted CrossEntropyLoss for severity imbalance!")
             logger.info(f"   - Weighting strategy: {args.class_weighting_strategy}")
             logger.info(f"   - Max weight ratio: {args.max_weight_ratio}")
             severity_class_weights = calculate_class_weights(train_dataset, 6, device, args.class_weighting_strategy, args.max_weight_ratio)
     else:
-        logger.info("📊 Using standard CrossEntropyLoss (no class balancing)")
-        logger.info("   - Consider enabling --use_class_weighted_loss for imbalanced datasets")
+        if args.loss_function == 'plain':
+            logger.info("📊 Using plain CrossEntropyLoss (no class balancing)")
+        else:
+            logger.info("📊 Class balancing disabled - using standard CrossEntropyLoss")
+        logger.info("   - Consider enabling class balancing for imbalanced datasets")
+
+    # === CLEAR LOSS FUNCTION LOGGING ===
+    logger.info("=" * 60)
+    logger.info("🔧 LOSS FUNCTION CONFIGURATION")
+    logger.info("=" * 60)
+    logger.info(f"Loss function: {args.loss_function.upper()}")
+    if args.loss_function == 'focal':
+        logger.info(f"   - Focal gamma: {args.focal_gamma}")
+        logger.info(f"   - Class weights as alpha: {'Yes' if severity_class_weights is not None else 'No'}")
+    elif args.loss_function == 'weighted':
+        logger.info(f"   - Class weighting strategy: {args.class_weighting_strategy}")
+        logger.info(f"   - Max weight ratio: {args.max_weight_ratio}")
+        logger.info(f"   - Class weights applied: {'Yes' if severity_class_weights is not None else 'No'}")
+    elif args.loss_function == 'plain':
+        logger.info("   - No class balancing applied")
+    
+    logger.info(f"Class balanced sampler: {'Enabled' if args.use_class_balanced_sampler else 'Disabled'}")
+    logger.info(f"Augmentation: {'Disabled' if args.disable_augmentation else ('Aggressive' if args.aggressive_augmentation else 'Standard')}")
+    logger.info(f"In-model augmentation: {'Disabled' if args.disable_in_model_augmentation else 'Enabled'}")
+    logger.info(f"Label smoothing: {args.label_smoothing}")
+    logger.info(f"Gradual fine-tuning: {'Enabled' if args.gradual_finetuning else 'Disabled'}")
+    if args.simple_training:
+        logger.info("⚡ SIMPLE TRAINING MODE: Minimal features for debugging")
+    logger.info("=" * 60)
 
     # Create vocabulary sizes dictionary for the model
     vocab_sizes = {
@@ -1183,7 +1309,8 @@ if __name__ == "__main__":
         vocab_sizes=vocab_sizes,
         backbone_name=args.backbone_name,
         config=model_config,
-        use_augmentation=(not args.disable_in_model_augmentation) # Control in-model augmentation
+        use_augmentation=(not args.disable_in_model_augmentation),  # Control in-model augmentation
+        disable_in_model_augmentation=args.disable_in_model_augmentation  # Pass the flag explicitly
     )
     model.to(device)
     
@@ -1402,7 +1529,7 @@ if __name__ == "__main__":
             model, train_loader, criterion_severity, criterion_action, optimizer, device,
             scaler=scaler, max_batches=num_batches_to_run, 
             loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm, label_smoothing=args.label_smoothing,
-            severity_class_weights=severity_class_weights, use_focal_loss=args.use_focal_loss, focal_gamma=args.focal_gamma
+            severity_class_weights=severity_class_weights, loss_function=args.loss_function, focal_gamma=args.focal_gamma
         )
         
         train_loss, train_sev_acc, train_act_acc, train_sev_f1, train_act_f1 = train_metrics
@@ -1411,7 +1538,7 @@ if __name__ == "__main__":
         val_metrics = validate_one_epoch(
             model, val_loader, criterion_severity, criterion_action, device,
             max_batches=num_batches_to_run, loss_weights=args.main_task_weights, label_smoothing=args.label_smoothing,
-            severity_class_weights=severity_class_weights, use_focal_loss=args.use_focal_loss, focal_gamma=args.focal_gamma
+            severity_class_weights=severity_class_weights, loss_function=args.loss_function, focal_gamma=args.focal_gamma
         )
         
         val_loss, val_sev_acc, val_act_acc, val_sev_f1, val_act_f1 = val_metrics
