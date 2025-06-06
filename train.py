@@ -158,6 +158,137 @@ from model import MultiTaskMultiViewResNet3D, ModelConfig
 # Import transforms directly
 from pytorchvideo.transforms import ShortSideScale, Normalize as VideoNormalize
 
+# GPU-based augmentation classes using native PyTorch operations
+class GPUTemporalJitter(nn.Module):
+    """GPU-based temporal jittering"""
+    def __init__(self, max_jitter=3):
+        super().__init__()
+        self.max_jitter = max_jitter
+    
+    def forward(self, video):
+        if self.training and self.max_jitter > 0:
+            B, C, T, H, W = video.shape
+            jitter = torch.randint(-self.max_jitter, self.max_jitter + 1, (B,), device=video.device)
+            
+            # Apply temporal shift by rolling frames
+            for i, j in enumerate(jitter):
+                if j != 0:
+                    video[i] = torch.roll(video[i], j.item(), dims=1)  # Roll along time dimension
+        return video
+
+class GPURandomBrightness(nn.Module):
+    """GPU-based brightness adjustment"""
+    def __init__(self, strength=0.3):
+        super().__init__()
+        self.strength = strength
+    
+    def forward(self, video):
+        if self.training:
+            B = video.shape[0]
+            # Generate random brightness factors for each sample in batch
+            brightness_factors = 1.0 + (torch.rand(B, 1, 1, 1, 1, device=video.device) - 0.5) * 2 * self.strength
+            video = video * brightness_factors
+            video = torch.clamp(video, 0, 1)
+        return video
+
+class GPURandomContrast(nn.Module):
+    """GPU-based contrast adjustment"""
+    def __init__(self, strength=0.3):
+        super().__init__()
+        self.strength = strength
+    
+    def forward(self, video):
+        if self.training:
+            B = video.shape[0]
+            # Generate random contrast factors for each sample in batch
+            contrast_factors = 1.0 + (torch.rand(B, 1, 1, 1, 1, device=video.device) - 0.5) * 2 * self.strength
+            # Apply contrast: (x - 0.5) * contrast + 0.5
+            video = (video - 0.5) * contrast_factors + 0.5
+            video = torch.clamp(video, 0, 1)
+        return video
+
+class GPURandomNoise(nn.Module):
+    """GPU-based Gaussian noise"""
+    def __init__(self, noise_strength=0.06):
+        super().__init__()
+        self.noise_strength = noise_strength
+    
+    def forward(self, video):
+        if self.training:
+            noise = torch.randn_like(video) * self.noise_strength
+            video = video + noise
+            video = torch.clamp(video, 0, 1)
+        return video
+
+class GPURandomHorizontalFlip(nn.Module):
+    """GPU-based horizontal flip"""
+    def __init__(self, p=0.5):
+        super().__init__()
+        self.p = p
+    
+    def forward(self, video):
+        if self.training:
+            B = video.shape[0]
+            flip_mask = torch.rand(B, device=video.device) < self.p
+            for i, should_flip in enumerate(flip_mask):
+                if should_flip:
+                    video[i] = torch.flip(video[i], dims=[-1])  # Flip along width dimension
+        return video
+
+class GPURandomFrameDropout(nn.Module):
+    """GPU-based frame dropout"""
+    def __init__(self, dropout_prob=0.1):
+        super().__init__()
+        self.dropout_prob = dropout_prob
+    
+    def forward(self, video):
+        if self.training and self.dropout_prob > 0:
+            B, C, T, H, W = video.shape
+            # Create dropout mask for each frame
+            keep_mask = torch.rand(B, 1, T, 1, 1, device=video.device) > self.dropout_prob
+            # Ensure at least one frame remains per sample
+            for i in range(B):
+                if not keep_mask[i, 0, :, 0, 0].any():
+                    keep_mask[i, 0, 0, 0, 0] = True  # Keep first frame
+            
+            video = video * keep_mask.float()
+        return video
+
+class GPUAugmentationPipeline(nn.Module):
+    """Complete GPU-based augmentation pipeline"""
+    def __init__(self, 
+                 temporal_jitter_strength=3,
+                 color_strength=0.3,
+                 noise_strength=0.06,
+                 dropout_prob=0.1,
+                 hflip_prob=0.5,
+                 aggressive=True):
+        super().__init__()
+        
+        self.augmentations = nn.ModuleList()
+        
+        if aggressive:
+            # Aggressive augmentation for small datasets
+            self.augmentations.extend([
+                GPUTemporalJitter(max_jitter=temporal_jitter_strength),
+                GPURandomBrightness(strength=color_strength),
+                GPURandomContrast(strength=color_strength),
+                GPURandomNoise(noise_strength=noise_strength),
+                GPURandomHorizontalFlip(p=hflip_prob),
+                GPURandomFrameDropout(dropout_prob=dropout_prob),
+            ])
+        else:
+            # Basic augmentation
+            self.augmentations.extend([
+                GPURandomBrightness(strength=color_strength * 0.5),
+                GPURandomHorizontalFlip(p=hflip_prob),
+            ])
+    
+    def forward(self, video):
+        for aug in self.augmentations:
+            video = aug(video)
+        return video
+
 # Define transforms locally instead of importing from test file
 class ConvertToFloatAndScale(torch.nn.Module):
     """Converts a uint8 video tensor (C, T, H, W) from [0, 255] to float32 [0, 1]."""
@@ -336,6 +467,10 @@ def parse_args():
     # New argument to control in-model augmentation
     parser.add_argument('--disable_in_model_augmentation', action='store_true', default=False,
                        help='Disable VideoAugmentation applied inside the model forward pass (for bottleneck testing)')
+    
+    # GPU-based augmentation option
+    parser.add_argument('--gpu_augmentation', action='store_true', default=False,
+                       help='Use GPU-based augmentation instead of CPU augmentation (recommended for dual GPU setups)')
     
     # New argument for memory cleanup interval
     parser.add_argument('--memory_cleanup_interval', type=int, default=20,
@@ -612,7 +747,8 @@ class EarlyStopping:
 
 def train_one_epoch(model, dataloader, criterion_severity, criterion_action, optimizer, device, 
                    scaler=None, max_batches=None, loss_weights=[1.0, 1.0], gradient_clip_norm=1.0, 
-                   label_smoothing=0.0, severity_class_weights=None, loss_function='weighted', focal_gamma=2.0):
+                   label_smoothing=0.0, severity_class_weights=None, loss_function='weighted', focal_gamma=2.0,
+                   gpu_augmentation=None):
     model.train()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -634,6 +770,11 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         for key in batch_data:
             if isinstance(batch_data[key], torch.Tensor):
                 batch_data[key] = batch_data[key].to(device, non_blocking=True)
+        
+        # Apply GPU augmentation if enabled
+        if gpu_augmentation is not None:
+            # Apply augmentation to video clips
+            batch_data["clips"] = gpu_augmentation(batch_data["clips"])
             
         severity_labels = batch_data["label_severity"]
         action_labels = batch_data["label_type"]
@@ -1039,65 +1180,97 @@ if __name__ == "__main__":
 
     logger.info(f"Using mixed precision training" if scaler else "Not using mixed precision training")
 
-    # Enhanced transforms with AGGRESSIVE/EXTREME augmentation for small dataset
-    # Multiple augmentation stages for maximum data variety
-    augmentation_stages = [ConvertToFloatAndScale()]
-    
-    # STAGE 1: Aggressive temporal augmentations (before normalization)
-    augmentation_stages.extend([
-        TemporalJitter(max_jitter=args.temporal_jitter_strength),
-        RandomTemporalReverse(prob=0.5 if args.extreme_augmentation else (0.4 if args.aggressive_augmentation else 0.2)),
-        RandomFrameDropout(
-            dropout_prob=args.dropout_prob * (1.5 if args.extreme_augmentation else 1.0),
-            max_consecutive=min(4, args.temporal_jitter_strength + 1)
-        ),
-    ])
-    
-    # STAGE 1.5: EXTREME temporal augmentations (only in extreme mode)
-    if args.extreme_augmentation:
-        augmentation_stages.extend([
-            RandomTimeWarp(warp_factor=0.3, prob=0.4),  # More aggressive time warping
-            RandomMixup(alpha=0.3, prob=0.4),  # Inter-frame mixing
+    # GPU-based or CPU-based augmentation pipeline
+    if args.gpu_augmentation:
+        logger.info("🖥️  Using GPU-based augmentation pipeline for maximum throughput!")
+        # Minimal CPU transforms - just basic preprocessing
+        train_transform = Compose([
+            ConvertToFloatAndScale(),
+            VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ShortSideScale(size=args.img_height),
+            PerFrameCenterCrop((args.img_height, args.img_width))
         ])
-    
-    # STAGE 2: Aggressive spatial augmentations
-    augmentation_stages.extend([
-        RandomSpatialCrop(
-            crop_scale_range=(args.spatial_crop_strength * (0.9 if args.extreme_augmentation else 1.0), 1.0),
-            prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
-        ),
-        RandomHorizontalFlip(prob=0.7 if args.extreme_augmentation else (0.6 if args.aggressive_augmentation else 0.5)),
-    ])
-    
-    # STAGE 2.5: EXTREME spatial augmentations (only in extreme mode)
-    if args.extreme_augmentation:
+        
+        # GPU augmentation will be applied in the training loop
+        gpu_augmentation = GPUAugmentationPipeline(
+            temporal_jitter_strength=args.temporal_jitter_strength,
+            color_strength=args.color_aug_strength,
+            noise_strength=args.noise_strength,
+            dropout_prob=args.dropout_prob,
+            hflip_prob=0.7 if args.extreme_augmentation else (0.6 if args.aggressive_augmentation else 0.5),
+            aggressive=args.aggressive_augmentation or args.extreme_augmentation
+        ).to(device)
+        
+        logger.info(f"   - GPU augmentation mode: {'Aggressive' if args.aggressive_augmentation or args.extreme_augmentation else 'Standard'}")
+        logger.info(f"   - Temporal jitter: ±{args.temporal_jitter_strength} frames")
+        logger.info(f"   - Color variation: ±{args.color_aug_strength*100:.1f}%")
+        logger.info(f"   - Gaussian noise: up to {args.noise_strength:.3f} std")
+        logger.info(f"   - Frame dropout: {args.dropout_prob*100:.1f}% probability")
+        
+    else:
+        # Traditional CPU-based augmentation pipeline
+        logger.info("🖥️  Using CPU-based augmentation pipeline")
+        gpu_augmentation = None
+        
+        # Enhanced transforms with AGGRESSIVE/EXTREME augmentation for small dataset
+        # Multiple augmentation stages for maximum data variety
+        augmentation_stages = [ConvertToFloatAndScale()]
+        
+        # STAGE 1: Aggressive temporal augmentations (before normalization)
         augmentation_stages.extend([
-            RandomRotation(max_angle=8, prob=0.5),  # Small rotations
-            RandomCutout(max_holes=2, max_height=15, max_width=15, prob=0.5),  # Cutout augmentation
+            TemporalJitter(max_jitter=args.temporal_jitter_strength),
+            RandomTemporalReverse(prob=0.5 if args.extreme_augmentation else (0.4 if args.aggressive_augmentation else 0.2)),
+            RandomFrameDropout(
+                dropout_prob=args.dropout_prob * (1.5 if args.extreme_augmentation else 1.0),
+                max_consecutive=min(4, args.temporal_jitter_strength + 1)
+            ),
         ])
-    
-    # STAGE 3: Color/intensity augmentations (before normalization)
-    augmentation_stages.extend([
-        RandomBrightnessContrast(
-            brightness_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-            contrast_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-            prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
-        ),
-        RandomGaussianNoise(
-            std_range=(0.01, args.noise_strength * (1.3 if args.extreme_augmentation else 1.0)),
-            prob=0.6 if args.extreme_augmentation else (0.5 if args.aggressive_augmentation else 0.3)
-        ),
-    ])
-    
-    # STAGE 4: Standard preprocessing
-    augmentation_stages.extend([
-        VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ShortSideScale(size=int(args.img_height * (1.5 if args.extreme_augmentation else (1.4 if args.aggressive_augmentation else 1.2)))),
-        PerFrameCenterCrop((args.img_height, args.img_width)),
-    ])
-    
-    # Create the final transform
-    train_transform = Compose(augmentation_stages)
+        
+        # STAGE 1.5: EXTREME temporal augmentations (only in extreme mode)
+        if args.extreme_augmentation:
+            augmentation_stages.extend([
+                RandomTimeWarp(warp_factor=0.3, prob=0.4),  # More aggressive time warping
+                RandomMixup(alpha=0.3, prob=0.4),  # Inter-frame mixing
+            ])
+        
+        # STAGE 2: Aggressive spatial augmentations
+        augmentation_stages.extend([
+            RandomSpatialCrop(
+                crop_scale_range=(args.spatial_crop_strength * (0.9 if args.extreme_augmentation else 1.0), 1.0),
+                prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
+            ),
+            RandomHorizontalFlip(prob=0.7 if args.extreme_augmentation else (0.6 if args.aggressive_augmentation else 0.5)),
+        ])
+        
+        # STAGE 2.5: EXTREME spatial augmentations (only in extreme mode)
+        if args.extreme_augmentation:
+            augmentation_stages.extend([
+                RandomRotation(max_angle=8, prob=0.5),  # Small rotations
+                RandomCutout(max_holes=2, max_height=15, max_width=15, prob=0.5),  # Cutout augmentation
+            ])
+        
+        # STAGE 3: Color/intensity augmentations (before normalization)
+        augmentation_stages.extend([
+            RandomBrightnessContrast(
+                brightness_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+                contrast_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+                prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
+            ),
+            RandomGaussianNoise(
+                std_range=(0.01, args.noise_strength * (1.3 if args.extreme_augmentation else 1.0)),
+                prob=0.6 if args.extreme_augmentation else (0.5 if args.aggressive_augmentation else 0.3)
+            ),
+        ])
+        
+        # STAGE 4: Standard preprocessing
+        augmentation_stages.extend([
+            VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ShortSideScale(size=int(args.img_height * (1.5 if args.extreme_augmentation else (1.4 if args.aggressive_augmentation else 1.2)))),
+            PerFrameCenterCrop((args.img_height, args.img_width)),
+        ])
+        
+        # Create the final transform
+        train_transform = Compose(augmentation_stages)
     
     # Log augmentation settings
     if args.extreme_augmentation:
@@ -1537,7 +1710,8 @@ if __name__ == "__main__":
             model, train_loader, criterion_severity, criterion_action, optimizer, device,
             scaler=scaler, max_batches=num_batches_to_run, 
             loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm, label_smoothing=args.label_smoothing,
-            severity_class_weights=severity_class_weights, loss_function=args.loss_function, focal_gamma=args.focal_gamma
+            severity_class_weights=severity_class_weights, loss_function=args.loss_function, focal_gamma=args.focal_gamma,
+            gpu_augmentation=gpu_augmentation
         )
         
         train_loss, train_sev_acc, train_act_acc, train_sev_f1, train_act_f1 = train_metrics
