@@ -167,13 +167,23 @@ class GPUTemporalJitter(nn.Module):
     
     def forward(self, video):
         if self.training and self.max_jitter > 0:
-            B, C, T, H, W = video.shape
-            jitter = torch.randint(-self.max_jitter, self.max_jitter + 1, (B,), device=video.device)
-            
-            # Apply temporal shift by rolling frames
-            for i, j in enumerate(jitter):
-                if j != 0:
-                    video[i] = torch.roll(video[i], j.item(), dims=1)  # Roll along time dimension
+            # Handle multi-view format: (B, V, C, T, H, W) or single view: (B, C, T, H, W)
+            if len(video.shape) == 6:  # Multi-view: (B, V, C, T, H, W)
+                B, V, C, T, H, W = video.shape
+                jitter = torch.randint(-self.max_jitter, self.max_jitter + 1, (B,), device=video.device)
+                
+                # Apply temporal shift by rolling frames
+                for i, j in enumerate(jitter):
+                    if j != 0:
+                        video[i] = torch.roll(video[i], j.item(), dims=2)  # Roll along time dimension (index 2)
+            else:  # Single view: (B, C, T, H, W)
+                B, C, T, H, W = video.shape
+                jitter = torch.randint(-self.max_jitter, self.max_jitter + 1, (B,), device=video.device)
+                
+                # Apply temporal shift by rolling frames
+                for i, j in enumerate(jitter):
+                    if j != 0:
+                        video[i] = torch.roll(video[i], j.item(), dims=1)  # Roll along time dimension (index 1)
         return video
 
 class GPURandomBrightness(nn.Module):
@@ -185,8 +195,11 @@ class GPURandomBrightness(nn.Module):
     def forward(self, video):
         if self.training:
             B = video.shape[0]
-            # Generate random brightness factors for each sample in batch
-            brightness_factors = 1.0 + (torch.rand(B, 1, 1, 1, 1, device=video.device) - 0.5) * 2 * self.strength
+            # Handle multi-view format: (B, V, C, T, H, W) or single view: (B, C, T, H, W)
+            if len(video.shape) == 6:  # Multi-view
+                brightness_factors = 1.0 + (torch.rand(B, 1, 1, 1, 1, 1, device=video.device) - 0.5) * 2 * self.strength
+            else:  # Single view
+                brightness_factors = 1.0 + (torch.rand(B, 1, 1, 1, 1, device=video.device) - 0.5) * 2 * self.strength
             video = video * brightness_factors
             video = torch.clamp(video, 0, 1)
         return video
@@ -200,8 +213,11 @@ class GPURandomContrast(nn.Module):
     def forward(self, video):
         if self.training:
             B = video.shape[0]
-            # Generate random contrast factors for each sample in batch
-            contrast_factors = 1.0 + (torch.rand(B, 1, 1, 1, 1, device=video.device) - 0.5) * 2 * self.strength
+            # Handle multi-view format: (B, V, C, T, H, W) or single view: (B, C, T, H, W)
+            if len(video.shape) == 6:  # Multi-view
+                contrast_factors = 1.0 + (torch.rand(B, 1, 1, 1, 1, 1, device=video.device) - 0.5) * 2 * self.strength
+            else:  # Single view
+                contrast_factors = 1.0 + (torch.rand(B, 1, 1, 1, 1, device=video.device) - 0.5) * 2 * self.strength
             # Apply contrast: (x - 0.5) * contrast + 0.5
             video = (video - 0.5) * contrast_factors + 0.5
             video = torch.clamp(video, 0, 1)
@@ -232,7 +248,7 @@ class GPURandomHorizontalFlip(nn.Module):
             flip_mask = torch.rand(B, device=video.device) < self.p
             for i, should_flip in enumerate(flip_mask):
                 if should_flip:
-                    video[i] = torch.flip(video[i], dims=[-1])  # Flip along width dimension
+                    video[i] = torch.flip(video[i], dims=[-1])  # Flip along width dimension (works for both formats)
         return video
 
 class GPURandomFrameDropout(nn.Module):
@@ -243,13 +259,23 @@ class GPURandomFrameDropout(nn.Module):
     
     def forward(self, video):
         if self.training and self.dropout_prob > 0:
-            B, C, T, H, W = video.shape
-            # Create dropout mask for each frame
-            keep_mask = torch.rand(B, 1, T, 1, 1, device=video.device) > self.dropout_prob
-            # Ensure at least one frame remains per sample
-            for i in range(B):
-                if not keep_mask[i, 0, :, 0, 0].any():
-                    keep_mask[i, 0, 0, 0, 0] = True  # Keep first frame
+            # Handle multi-view format: (B, V, C, T, H, W) or single view: (B, C, T, H, W)
+            if len(video.shape) == 6:  # Multi-view: (B, V, C, T, H, W)
+                B, V, C, T, H, W = video.shape
+                # Create dropout mask for each frame
+                keep_mask = torch.rand(B, 1, 1, T, 1, 1, device=video.device) > self.dropout_prob
+                # Ensure at least one frame remains per sample
+                for i in range(B):
+                    if not keep_mask[i, 0, 0, :, 0, 0].any():
+                        keep_mask[i, 0, 0, 0, 0, 0] = True  # Keep first frame
+            else:  # Single view: (B, C, T, H, W)
+                B, C, T, H, W = video.shape
+                # Create dropout mask for each frame
+                keep_mask = torch.rand(B, 1, T, 1, 1, device=video.device) > self.dropout_prob
+                # Ensure at least one frame remains per sample
+                for i in range(B):
+                    if not keep_mask[i, 0, :, 0, 0].any():
+                        keep_mask[i, 0, 0, 0, 0] = True  # Keep first frame
             
             video = video * keep_mask.float()
         return video
