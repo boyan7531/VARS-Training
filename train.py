@@ -1353,7 +1353,7 @@ if __name__ == "__main__":
         phase1_scheduler = ReduceLROnPlateau(optimizer, mode='max', 
                                             factor=args.phase1_plateau_factor, 
                                             patience=args.phase1_plateau_patience, 
-                                            min_lr=args.min_lr, verbose=True)
+                                            min_lr=args.min_lr)
         scheduler_info = f"Phase 1: ReduceLROnPlateau (patience={args.phase1_plateau_patience}, factor={args.phase1_plateau_factor})"
         # Main scheduler (for Phase 2) will be initialized later
     else:
@@ -1379,7 +1379,7 @@ if __name__ == "__main__":
             scheduler_info = f"ExponentialLR (gamma={args.gamma})"
         elif args.scheduler == 'reduce_on_plateau':
             scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=args.gamma, 
-                                        patience=args.plateau_patience, min_lr=args.min_lr, verbose=True)
+                                        patience=args.plateau_patience, min_lr=args.min_lr)
             scheduler_info = f"ReduceLROnPlateau (mode=max, factor={args.gamma}, patience={args.plateau_patience}, min_lr={args.min_lr:.1e})"
 
     # Early stopping
@@ -1512,7 +1512,7 @@ if __name__ == "__main__":
                     scheduler_info = f"Phase 2: ExponentialLR (gamma={args.gamma})"
                 elif args.scheduler == 'reduce_on_plateau':
                     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=args.gamma,
-                                                patience=args.plateau_patience, min_lr=args.min_lr, verbose=True)
+                                                patience=args.plateau_patience, min_lr=args.min_lr)
                     scheduler_info = f"Phase 2: ReduceLROnPlateau (main_args)"
                 else:
                     scheduler = None # No scheduler for phase 2 if 'none' or unknown
