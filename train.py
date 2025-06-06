@@ -406,6 +406,11 @@ def parse_args():
     
     return args
 
+def worker_init_fn(worker_id):
+    """Initialize worker with unique seed for reproducibility."""
+    torch.manual_seed(42 + worker_id)
+    np.random.seed(42 + worker_id)
+
 def set_seed(seed):
     """Sets seed for reproducibility."""
     random.seed(seed)
@@ -1182,7 +1187,7 @@ if __name__ == "__main__":
             prefetch_factor=2 if args.num_workers > 0 else None,  # Reduce prefetch to lower memory pressure
             drop_last=True,  # Better for training stability
             collate_fn=variable_views_collate_fn,
-            worker_init_fn=lambda worker_id: torch.manual_seed(42 + worker_id)  # Ensure reproducibility
+            worker_init_fn=worker_init_fn  # Ensure reproducibility
         )
         
         logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority classes")
@@ -1200,7 +1205,7 @@ if __name__ == "__main__":
             prefetch_factor=2 if args.num_workers > 0 else None,  # Reduce prefetch to lower memory pressure
             drop_last=True,  # Better for training stability
             collate_fn=variable_views_collate_fn,
-            worker_init_fn=lambda worker_id: torch.manual_seed(42 + worker_id)  # Ensure reproducibility
+            worker_init_fn=worker_init_fn  # Ensure reproducibility
         )
     
     # Determine number of workers for validation DataLoader
@@ -1222,7 +1227,7 @@ if __name__ == "__main__":
         persistent_workers=False,  # Disable to prevent worker memory accumulation
         prefetch_factor=2 if val_num_workers > 0 else None,
         collate_fn=variable_views_collate_fn,
-        worker_init_fn=lambda worker_id: torch.manual_seed(42 + worker_id)  # Ensure reproducibility
+        worker_init_fn=worker_init_fn  # Ensure reproducibility
     )
     
     # Log data loading optimization details
