@@ -500,9 +500,9 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             # use_attention_aggregation from the signature and any other relevant config_kwargs.
             # At this point, config_kwargs should not contain 'config'.
             final_model_config = ModelConfig(
-                use_attention_aggregation=use_attention_aggregation,
-                **config_kwargs 
-            )
+            use_attention_aggregation=use_attention_aggregation,
+            **config_kwargs
+        )
         
         # Default severity weights for class imbalance (higher weights for minority classes)
         if severity_weights is None:

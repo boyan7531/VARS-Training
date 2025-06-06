@@ -148,19 +148,19 @@ def load_model_checkpoint(checkpoint_path, device):
     
     return checkpoint, metrics, epoch, vocab_sizes
 
-def predict_offence_from_severity(severity_logits, threshold=0.5):
+def predict_offence_from_severity(severity_logits):
     """
-    Determine if there's an offence based on severity prediction confidence.
-    If the model is confident about any severity level, it's an offence.
+    Determine offence and severity based on model predictions.
+    Class 0 (empty) = No offence, Classes 1-5 = Offence with severity.
     """
     # Apply softmax to get probabilities
     severity_probs = torch.softmax(severity_logits, dim=1)
     
-    # Get max probability for each sample
-    max_prob, severity_pred = torch.max(severity_probs, dim=1)
+    # Get predicted class
+    _, severity_pred = torch.max(severity_probs, dim=1)
     
-    # If confidence is high enough, there's an offence
-    has_offence = max_prob > threshold
+    # Class 0 = No offence, Classes 1-5 = Offence
+    has_offence = severity_pred > 0
     
     return has_offence, severity_pred
 
@@ -221,7 +221,15 @@ def run_benchmark(model, dataloader, device, vocab_sizes):
                 _, act_pred = torch.max(act_logits, dim=1)
                 
                 # Determine offence and severity
-                has_offence, sev_pred = predict_offence_from_severity(sev_logits, threshold=0.4)
+                has_offence, sev_pred = predict_offence_from_severity(sev_logits)
+                
+                # Debug logging for first few batches
+                if batch_idx < 3:
+                    severity_probs = torch.softmax(sev_logits, dim=1)
+                    logger.info(f"Batch {batch_idx} sample predictions:")
+                    for i in range(min(2, sev_logits.size(0))):
+                        logger.info(f"  Sample {i}: sev_pred={sev_pred[i].item()}, has_offence={has_offence[i].item()}")
+                        logger.info(f"    Severity probs: {severity_probs[i].cpu().numpy()}")
                 
                 # Process each sample in the batch
                 batch_size = sev_logits.size(0)
