@@ -1178,10 +1178,11 @@ if __name__ == "__main__":
             sampler=train_sampler,  # Use custom sampler
             num_workers=args.num_workers,
             pin_memory=True,
-            persistent_workers=args.num_workers > 0,
-            prefetch_factor=4 if args.num_workers > 0 else None,  # Async prefetch when workers > 0
+            persistent_workers=False,  # Disable to prevent worker memory accumulation
+            prefetch_factor=2 if args.num_workers > 0 else None,  # Reduce prefetch to lower memory pressure
             drop_last=True,  # Better for training stability
-            collate_fn=variable_views_collate_fn
+            collate_fn=variable_views_collate_fn,
+            worker_init_fn=lambda worker_id: torch.manual_seed(42 + worker_id)  # Ensure reproducibility
         )
         
         logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority classes")
@@ -1195,10 +1196,11 @@ if __name__ == "__main__":
             shuffle=True, 
             num_workers=args.num_workers,
             pin_memory=True,
-            persistent_workers=args.num_workers > 0,
-            prefetch_factor=4 if args.num_workers > 0 else None,  # Async prefetch when workers > 0
+            persistent_workers=False,  # Disable to prevent worker memory accumulation
+            prefetch_factor=2 if args.num_workers > 0 else None,  # Reduce prefetch to lower memory pressure
             drop_last=True,  # Better for training stability
-            collate_fn=variable_views_collate_fn
+            collate_fn=variable_views_collate_fn,
+            worker_init_fn=lambda worker_id: torch.manual_seed(42 + worker_id)  # Ensure reproducibility
         )
     
     # Determine number of workers for validation DataLoader
@@ -1217,9 +1219,10 @@ if __name__ == "__main__":
         shuffle=False, 
         num_workers=val_num_workers,
         pin_memory=True,
-        persistent_workers=val_num_workers > 0,
+        persistent_workers=False,  # Disable to prevent worker memory accumulation
         prefetch_factor=2 if val_num_workers > 0 else None,
-        collate_fn=variable_views_collate_fn
+        collate_fn=variable_views_collate_fn,
+        worker_init_fn=lambda worker_id: torch.manual_seed(42 + worker_id)  # Ensure reproducibility
     )
     
     # Log data loading optimization details
@@ -1228,7 +1231,7 @@ if __name__ == "__main__":
         logger.info(f"   - Training workers: {args.num_workers} (prefetch_factor=4)")
         logger.info(f"   - Validation workers: {val_num_workers} (prefetch_factor=2)")
         logger.info(f"   - Pin memory: True (faster CPU->GPU transfers)")
-        logger.info(f"   - Persistent workers: True (avoid respawning overhead)")
+        logger.info(f"   - Persistent workers: False (avoid memory accumulation)")
     else:
         logger.info(f"⚠️  Synchronous data loading (num_workers=0)")
         logger.info(f"   - This may cause GPU starvation and low utilization")
