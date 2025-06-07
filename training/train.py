@@ -67,6 +67,16 @@ def setup_device_and_scaling(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
     
+    # Check num_workers for potential bottlenecks and provide feedback
+    if args.num_workers == 0:
+        logger.warning("⚠️  num_workers is 0. Data loading is synchronous and may cause a CPU bottleneck, leading to low GPU utilization.")
+        logger.warning("   Consider setting --num-workers to a value like 4 for better performance.")
+    elif args.num_workers > os.cpu_count():
+        logger.warning(f"⚠️  num_workers ({args.num_workers}) is greater than the number of CPU cores ({os.cpu_count()}). This may cause resource contention.")
+        logger.warning(f"   A value around {os.cpu_count()} is often optimal.")
+    else:
+        logger.info(f"🚀 Using {args.num_workers} worker processes for asynchronous data loading.")
+    
     # Multi-GPU setup
     num_gpus = torch.cuda.device_count()
     if num_gpus > 1:
