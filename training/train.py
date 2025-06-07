@@ -376,6 +376,14 @@ def main():
             train_dataset, 6, device, args.class_weighting_strategy, args.max_weight_ratio
         )
 
+    # Configure loss function parameters
+    loss_config = {
+        'loss_function': args.loss_function,
+        'severity_weights': severity_class_weights,
+        'focal_loss_gamma': getattr(args, 'focal_loss_gamma', 2.0),
+        'device': device
+    }
+
     # Early stopping
     early_stopping = EarlyStopping(patience=args.early_stopping_patience)
 
@@ -397,10 +405,6 @@ def main():
     # Log configuration summary
     log_configuration_summary(args, train_dataset, val_dataset)
     logger.info(f"Learning Rate Scheduler: {scheduler_info}")
-
-    # Loss functions (kept for compatibility)
-    criterion_severity = nn.CrossEntropyLoss()
-    criterion_action = nn.CrossEntropyLoss()
 
     # Main training loop
     logger.info("Starting Training")
