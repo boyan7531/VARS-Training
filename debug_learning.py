@@ -17,7 +17,7 @@ from pathlib import Path
 
 # Import your modules
 from dataset import SoccerNetMVFoulDataset, SEVERITY_LABELS, ACTION_TYPE_LABELS
-from model import MultiTaskMultiViewResNet3D, ModelConfig
+from model.resnet3d_model import MultiTaskMultiViewResNet3D, ModelConfig
 from torch.utils.data import DataLoader
 
 
@@ -315,8 +315,10 @@ def main():
     
     # Load dataset
     print("Loading dataset...")
+    # If dataset_path is ".", use "mvfouls" which is the correct path
+    dataset_path = "mvfouls" if args.train_dataset_path == "." else args.train_dataset_path
     train_dataset = SoccerNetMVFoulDataset(
-        dataset_path=args.train_dataset_path,
+        dataset_path=dataset_path,
         split='train'
     )
     
@@ -335,11 +337,17 @@ def main():
     checkpoint = torch.load(args.model_checkpoint, map_location=device)
     
     # Get vocab sizes from dataset
-    vocab_sizes = {}
-    for action in train_dataset.actions[:100]:  # Sample some actions to get vocab
-        for key, value in action.items():
-            if isinstance(value, str) and key not in ['video_path', 'label_severity', 'label_type']:
-                vocab_sizes[key] = vocab_sizes.get(key, 0) + 1
+    vocab_sizes = {
+        'contact': train_dataset.num_contact_classes,
+        'bodypart': train_dataset.num_bodypart_classes,
+        'upper_bodypart': train_dataset.num_upper_bodypart_classes,
+        'lower_bodypart': train_dataset.num_lower_bodypart_classes,
+        'multiple_fouls': train_dataset.num_multiple_fouls_classes,
+        'try_to_play': train_dataset.num_try_to_play_classes,
+        'touch_ball': train_dataset.num_touch_ball_classes,
+        'handball': train_dataset.num_handball_classes,
+        'handball_offence': train_dataset.num_handball_offence_classes
+    }
     
     # Create model (you might need to adjust this based on your model structure)
     model = MultiTaskMultiViewResNet3D.create_model(
