@@ -17,12 +17,10 @@ import random
 import numpy as np
 import multiprocessing as mp
 from pathlib import Path
-from torch.utils.data import DataLoader
 
 # Import our modular components
 from .config import parse_args, log_configuration_summary
-from dataset import SoccerNetMVFoulDataset, variable_views_collate_fn, ClassBalancedSampler
-from torchvision import transforms
+from .data import create_datasets, create_dataloaders, create_gpu_augmentation, log_dataset_recommendations
 from .model_utils import (
     create_model, setup_freezing_strategy, calculate_class_weights,
     SmartFreezingManager, get_phase_info, setup_discriminative_optimizer,
@@ -66,16 +64,6 @@ def setup_device_and_scaling(args):
     """Setup device and adjust parameters for multi-GPU training."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
-    
-    # Check num_workers for potential bottlenecks and provide feedback
-    if args.num_workers == 0:
-        logger.warning("⚠️  num_workers is 0. Data loading is synchronous and may cause a CPU bottleneck, leading to low GPU utilization.")
-        logger.warning("   Consider setting --num-workers to a value like 4 for better performance.")
-    elif args.num_workers > os.cpu_count():
-        logger.warning(f"⚠️  num_workers ({args.num_workers}) is greater than the number of CPU cores ({os.cpu_count()}). This may cause resource contention.")
-        logger.warning(f"   A value around {os.cpu_count()} is often optimal.")
-    else:
-        logger.info(f"🚀 Using {args.num_workers} worker processes for asynchronous data loading.")
     
     # Multi-GPU setup
     num_gpus = torch.cuda.device_count()
@@ -274,67 +262,11 @@ def main():
     logger.info(f"Using mixed precision training" if scaler else "Not using mixed precision training")
 
     # Create datasets and dataloaders
-    # Minimal transform, as augmentations are handled inside the dataset class via use_severity_aware_aug=True
-    transform = transforms.Compose([
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-
-    logger.info("Loading datasets...")
-    train_dataset = SoccerNetMVFoulDataset(
-        dataset_path=args.mvfouls_path,
-        split='train',
-        annotation_file_name="annotations.json",
-        frames_per_clip=args.frames_per_clip,
-        target_fps=args.target_fps,
-        transform=transform,
-        use_severity_aware_aug=True,  # Use the augmentation strategy from dataset.py
-        max_views_to_load=args.max_views,
-        target_height=args.img_height,
-        target_width=args.img_width,
-        start_frame=args.start_frame,
-        end_frame=args.end_frame,
-    )
-
-    val_dataset = SoccerNetMVFoulDataset(
-        dataset_path=args.mvfouls_path,
-        split='valid',
-        annotation_file_name="annotations.json",
-        frames_per_clip=args.frames_per_clip,
-        target_fps=args.target_fps,
-        transform=transform,
-        use_severity_aware_aug=False, # No augmentation on validation
-        max_views_to_load=args.max_views,
-        target_height=args.img_height,
-        target_width=args.img_width,
-        start_frame=args.start_frame,
-        end_frame=args.end_frame,
-    )
+    train_dataset, val_dataset = create_datasets(args)
+    train_loader, val_loader = create_dataloaders(args, train_dataset, val_dataset)
     
-    # Create Dataloaders
-    logger.info("Creating data loaders...")
-    train_sampler = None
-    if hasattr(args, 'use_class_balanced_sampler') and args.use_class_balanced_sampler:
-        logger.info("🎯 Using ClassBalancedSampler to address class imbalance!")
-        train_sampler = ClassBalancedSampler(train_dataset, oversample_factor=args.oversample_factor)
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        sampler=train_sampler,
-        shuffle=(train_sampler is None),
-        num_workers=args.num_workers,
-        pin_memory=True,
-        collate_fn=variable_views_collate_fn
-    )
-
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        collate_fn=variable_views_collate_fn
-    )
+    # Log dataset recommendations
+    log_dataset_recommendations(train_dataset)
 
     # Create vocabulary sizes dictionary for the model
     vocab_sizes = {
@@ -350,7 +282,7 @@ def main():
     }
 
     # Create model
-    model = create_model(args, vocab_sizes, device, num_gpus, backbone_name=args.backbone_name)
+    model = create_model(args, vocab_sizes, device, num_gpus)
     
     # Setup freezing strategy
     freezing_manager = setup_freezing_strategy(args, model)
@@ -376,13 +308,8 @@ def main():
             train_dataset, 6, device, args.class_weighting_strategy, args.max_weight_ratio
         )
 
-    # Configure loss function parameters
-    loss_config = {
-        'loss_function': args.loss_function,
-        'severity_weights': severity_class_weights,
-        'focal_loss_gamma': getattr(args, 'focal_loss_gamma', 2.0),
-        'device': device
-    }
+    # GPU augmentation setup
+    gpu_augmentation = create_gpu_augmentation(args, device)
 
     # Early stopping
     early_stopping = EarlyStopping(patience=args.early_stopping_patience)
@@ -406,6 +333,10 @@ def main():
     log_configuration_summary(args, train_dataset, val_dataset)
     logger.info(f"Learning Rate Scheduler: {scheduler_info}")
 
+    # Loss functions (kept for compatibility)
+    criterion_severity = nn.CrossEntropyLoss()
+    criterion_action = nn.CrossEntropyLoss()
+
     # Main training loop
     logger.info("Starting Training")
     logger.info("=" * 80)
@@ -418,18 +349,20 @@ def main():
         
         # Training
         train_metrics = train_one_epoch(
-            model, train_loader, optimizer, device,
+            model, train_loader, criterion_severity, criterion_action, optimizer, device,
             scaler=scaler, max_batches=num_batches_to_run, 
-            loss_config=loss_config, scheduler=scheduler,
-            gradient_clip_norm=args.gradient_clip_norm, 
-            memory_cleanup_interval=args.memory_cleanup_interval
+            loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm, 
+            label_smoothing=args.label_smoothing, severity_class_weights=severity_class_weights, 
+            loss_function=args.loss_function, focal_gamma=args.focal_gamma,
+            gpu_augmentation=gpu_augmentation, memory_cleanup_interval=args.memory_cleanup_interval
         )
         
         # Validation
         val_metrics = validate_one_epoch(
-            model, val_loader, device,
-            max_batches=num_batches_to_run, 
-            loss_config=loss_config,
+            model, val_loader, criterion_severity, criterion_action, device,
+            max_batches=num_batches_to_run, loss_weights=args.main_task_weights, 
+            label_smoothing=args.label_smoothing, severity_class_weights=severity_class_weights, 
+            loss_function=args.loss_function, focal_gamma=args.focal_gamma,
             memory_cleanup_interval=args.memory_cleanup_interval
         )
         

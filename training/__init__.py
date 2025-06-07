@@ -11,6 +11,7 @@ This package provides a modular training system with the following components:
 """
 
 from .config import parse_args, log_configuration_summary
+from .data import create_datasets, create_dataloaders, create_gpu_augmentation
 from .model_utils import create_model, setup_freezing_strategy, SmartFreezingManager
 from .training_utils import train_one_epoch, validate_one_epoch, EarlyStopping
 from .checkpoint_utils import save_checkpoint, load_checkpoint, save_training_history
@@ -22,6 +23,11 @@ __all__ = [
     # Configuration
     'parse_args',
     'log_configuration_summary',
+    
+    # Data utilities  
+    'create_datasets',
+    'create_dataloaders', 
+    'create_gpu_augmentation',
     
     # Model utilities
     'create_model',

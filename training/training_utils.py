@@ -165,7 +165,7 @@ class EarlyStopping:
             self.best_weights = model.state_dict().copy()
 
 
-def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, scheduler=None, scaler=None, 
+def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, scaler=None, 
                    max_batches=None, gradient_clip_norm=1.0, memory_cleanup_interval=20):
     """Train the model for one epoch."""
     model.train()
@@ -225,10 +225,6 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sch
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
             
             optimizer.step()
-
-        # Step the scheduler after each batch if it's OneCycleLR
-        if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-            scheduler.step()
 
         # Calculate metrics
         running_loss += total_loss.item() * batch_data["clips"].size(0)
