@@ -17,6 +17,7 @@ import random
 import numpy as np
 import multiprocessing as mp
 from pathlib import Path
+from torch.utils.data import DataLoader
 
 # Import our modular components
 from .config import parse_args, log_configuration_summary
