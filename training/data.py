@@ -156,7 +156,8 @@ class GPURandomFrameDropout(nn.Module):
 
 
 class GPUAugmentationPipeline(nn.Module):
-    """Complete GPU-based augmentation pipeline"""
+    """Complete pipeline of GPU-based augmentations for training."""
+    
     def __init__(self, 
                  temporal_jitter_strength=3,
                  color_strength=0.3,
@@ -164,30 +165,57 @@ class GPUAugmentationPipeline(nn.Module):
                  dropout_prob=0.1,
                  hflip_prob=0.5,
                  aggressive=True):
+        """Initialize GPU augmentation pipeline."""
         super().__init__()
         
-        self.augmentations = nn.ModuleList()
+        self.aggressive = aggressive
+        self.modules_list = nn.ModuleList()
         
-        if aggressive:
-            # Aggressive augmentation for small datasets
-            self.augmentations.extend([
-                GPUTemporalJitter(max_jitter=temporal_jitter_strength),
-                GPURandomBrightness(strength=color_strength),
-                GPURandomContrast(strength=color_strength),
-                GPURandomNoise(noise_strength=noise_strength),
-                GPURandomHorizontalFlip(p=hflip_prob),
-                GPURandomFrameDropout(dropout_prob=dropout_prob),
-            ])
-        else:
-            # Basic augmentation
-            self.augmentations.extend([
-                GPURandomBrightness(strength=color_strength * 0.5),
-                GPURandomHorizontalFlip(p=hflip_prob),
-            ])
+        # Randomize order of augmentations for more variation
+        modules = []
+        
+        # Add temporal jitter (safer than random frame reversal)
+        if temporal_jitter_strength > 0:
+            modules.append(GPUTemporalJitter(max_jitter=temporal_jitter_strength))
+        
+        # Add color transforms
+        modules.append(GPURandomBrightness(strength=color_strength))
+        modules.append(GPURandomContrast(strength=color_strength))
+        
+        # Add noise (last to avoid amplification by other transforms)
+        if noise_strength > 0:
+            modules.append(GPURandomNoise(noise_strength=noise_strength * (1.5 if aggressive else 1.0)))
+        
+        # Add frame dropout for temporal variation (if enabled)
+        if dropout_prob > 0:
+            modules.append(GPURandomFrameDropout(dropout_prob=dropout_prob))
+        
+        # Add horizontal flip
+        modules.append(GPURandomHorizontalFlip(p=hflip_prob))
+        
+        # Shuffle the modules to apply in random order for more variation
+        random.shuffle(modules)
+        self.modules_list = nn.ModuleList(modules)
+        
+        logger.info(f"🔥 GPU Augmentation pipeline created with {len(modules)} modules")
+        logger.info(f"   Modules: {[type(m).__name__ for m in modules]}")
     
     def forward(self, video):
-        for aug in self.augmentations:
-            video = aug(video)
+        """Apply augmentation pipeline to video clips."""
+        # Ensure input is float32 for mixed precision compatibility
+        if video.dtype != torch.float32:
+            video = video.to(torch.float32)
+
+        # Apply random augmentations with some probability
+        for module in self.modules_list:
+            # For aggressive mode, apply all transforms
+            # For standard mode, only apply each transform with 70% probability
+            if self.aggressive or random.random() < 0.7:
+                video = module(video)
+        
+        # Ensure output is in valid range [0, 1]
+        video = torch.clamp(video, 0, 1)
+        
         return video
 
 

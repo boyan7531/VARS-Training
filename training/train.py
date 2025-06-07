@@ -258,8 +258,15 @@ def main():
     device, num_gpus = setup_device_and_scaling(args)
 
     # Initialize GradScaler for mixed-precision training
-    scaler = torch.amp.GradScaler('cuda') if args.mixed_precision and device.type == 'cuda' else None
-    logger.info(f"Using mixed precision training" if scaler else "Not using mixed precision training")
+    if args.mixed_precision and device.type == 'cuda':
+        amp_dtype = torch.bfloat16 if args.amp_dtype == 'bfloat16' else torch.float16
+        scaler = torch.amp.GradScaler()
+        logger.info(f"📈 Using mixed precision training with {args.amp_dtype}")
+        # Set default autocast dtype for the entire training run
+        torch.amp.autocast('cuda', dtype=amp_dtype).__enter__()
+    else:
+        scaler = None
+        logger.info("⚠️ Mixed precision training disabled (slower training, higher memory usage)")
 
     # Create datasets and dataloaders
     train_dataset, val_dataset = create_datasets(args)
@@ -355,7 +362,8 @@ def main():
             label_smoothing=args.label_smoothing, severity_class_weights=severity_class_weights, 
             loss_function=args.loss_function, focal_gamma=args.focal_gamma,
             gpu_augmentation=gpu_augmentation, memory_cleanup_interval=args.memory_cleanup_interval,
-            scheduler=scheduler
+            scheduler=scheduler, 
+            amp_dtype=torch.bfloat16 if args.amp_dtype == 'bfloat16' else torch.float16
         )
         
         # Validation
@@ -364,7 +372,8 @@ def main():
             max_batches=num_batches_to_run, loss_weights=args.main_task_weights, 
             label_smoothing=args.label_smoothing, severity_class_weights=severity_class_weights, 
             loss_function=args.loss_function, focal_gamma=args.focal_gamma,
-            memory_cleanup_interval=args.memory_cleanup_interval
+            memory_cleanup_interval=args.memory_cleanup_interval,
+            amp_dtype=torch.bfloat16 if args.amp_dtype == 'bfloat16' else torch.float16
         )
         
         # Reset model to training mode and clean memory

@@ -168,7 +168,8 @@ class EarlyStopping:
 def train_one_epoch(model, dataloader, criterion_severity, criterion_action, optimizer, device,
                    scaler=None, max_batches=None, loss_weights=None, gradient_clip_norm=1.0, 
                    label_smoothing=0.0, severity_class_weights=None, loss_function='weighted',
-                   focal_gamma=2.0, gpu_augmentation=None, memory_cleanup_interval=20, scheduler=None):
+                   focal_gamma=2.0, gpu_augmentation=None, memory_cleanup_interval=20, scheduler=None,
+                   amp_dtype=torch.float16):
     """Train the model for one epoch."""
     model.train()
     running_loss = 0.0
@@ -212,9 +213,9 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
 
         optimizer.zero_grad()
 
-        # Mixed precision forward pass (fixed deprecation warning)
+        # Mixed precision forward pass
         if scaler is not None:
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda', dtype=amp_dtype):
                 sev_logits, act_logits = model(batch_data)
                 total_loss, _, _ = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_config
@@ -291,7 +292,7 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
 def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, device,
                      max_batches=None, loss_weights=None, label_smoothing=0.0, 
                      severity_class_weights=None, loss_function='weighted', focal_gamma=2.0,
-                     memory_cleanup_interval=20):
+                     memory_cleanup_interval=20, amp_dtype=torch.float16):
     """Validate the model for one epoch."""
     model.eval()
     running_loss = 0.0
@@ -328,17 +329,14 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             severity_labels = batch_data["label_severity"]
             action_labels = batch_data["label_type"]
 
-            # Apply autocast for consistency with training if using CUDA and mixed precision is enabled for training
-            # We infer mixed precision enablement from whether scaler was used in train,
-            # or more directly, if args.mixed_precision is True (assuming args is accessible or passed)
-            # For simplicity here, we'll check device type.
-            if device.type == 'cuda': # Assuming mixed precision is used if cuda is available and training uses it.
-                with torch.amp.autocast('cuda'): # Enable AMP for the forward pass
+            # Always use autocast for CUDA to be consistent with the training mode
+            if device.type == 'cuda':
+                with torch.amp.autocast('cuda', dtype=amp_dtype):
                     sev_logits, act_logits = model(batch_data)
                     total_loss, _, _ = calculate_multitask_loss(
                         sev_logits, act_logits, batch_data, loss_config
                     )
-            else: # CPU or other device, or if mixed precision is explicitly disabled for validation
+            else:
                 sev_logits, act_logits = model(batch_data)
                 total_loss, _, _ = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_config

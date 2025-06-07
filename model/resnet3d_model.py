@@ -362,17 +362,17 @@ class MultiTaskMultiViewResNet3D(nn.Module):
     
     def forward(self, batch_data: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass through the model.
+        Forward pass for multi-task multi-view ResNet3D model.
         
         Args:
             batch_data: Dictionary containing:
-                - clips: Video tensor(s) [B, N, C, T, H, W] or List[[N_i, C, T, H, W]]
-                - view_mask: Optional boolean mask [B, N] for valid views
-                - severity: Optional severity labels [B] for adaptive augmentation
-                - All categorical feature indices
-        
+                - 'clips': [B, V, C, T, H, W] tensor with B batches, V views
+                - Various label tensors
+                - Various categorical feature tensors
+                
         Returns:
-            Tuple of (severity_logits, action_type_logits)
+            sev_logits: [B, num_severity] logits for severity prediction
+            act_logits: [B, num_action_type] logits for action type prediction
         """
         try:
             # Validate inputs
@@ -386,20 +386,27 @@ class MultiTaskMultiViewResNet3D(nn.Module):
                 # Update batch_data with augmented clips
                 batch_data = {**batch_data, "clips": clips}
             
-            # Process video features
+            # Process video features with automatic mixed precision support
             video_features = self._process_video_features(batch_data)
             
-            # Process categorical features
-            categorical_features = self._process_categorical_features(batch_data)
+            # Process categorical features (if any)
+            if self.use_categorical_features and any(k in batch_data for k in self.categorical_features):
+                categorical_features = self._process_categorical_features(batch_data)
+                
+                # Ensure consistent dtype with video features for mixed precision training
+                if categorical_features.dtype != video_features.dtype:
+                    categorical_features = categorical_features.to(video_features.dtype)
+                    
+                # Concatenate video and categorical features
+                combined_features = torch.cat([video_features, categorical_features], dim=1)
+            else:
+                combined_features = video_features
             
-            # Combine features
-            combined_features = torch.cat([video_features, categorical_features], dim=1)
+            # Classification heads
+            sev_logits = self.severity_head(combined_features)
+            act_logits = self.action_type_head(combined_features)
             
-            # Generate predictions
-            severity_logits = self.severity_head(combined_features)
-            action_type_logits = self.action_type_head(combined_features)
-            
-            return severity_logits, action_type_logits
+            return sev_logits, act_logits
             
         except (ValidationError, RuntimeError) as e:
             # Re-raise known errors

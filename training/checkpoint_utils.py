@@ -14,29 +14,59 @@ logger = logging.getLogger(__name__)
 
 
 def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, filepath):
-    """Save training checkpoint."""
+    """
+    Save training checkpoint with mixed precision support.
+    
+    Args:
+        model: The PyTorch model
+        optimizer: The optimizer
+        scheduler: The learning rate scheduler
+        scaler: The GradScaler for mixed precision training
+        epoch: Current epoch number
+        metrics: Dictionary of metrics to save
+        filepath: Path to save the checkpoint
+    """
     # Handle DataParallel models
     model_state_dict = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
     
+    # Create base checkpoint
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model_state_dict,
         'optimizer_state_dict': optimizer.state_dict(),
-        'metrics': metrics
+        'metrics': metrics,
+        'mixed_precision_enabled': scaler is not None
     }
     
+    # Add scheduler state dict if exists
     if scheduler is not None:
         checkpoint['scheduler_state_dict'] = scheduler.state_dict()
+        checkpoint['scheduler_type'] = scheduler.__class__.__name__
     
+    # Add scaler state dict for mixed precision if exists
     if scaler is not None:
         checkpoint['scaler_state_dict'] = scaler.state_dict()
     
+    # Save checkpoint to file
     torch.save(checkpoint, filepath)
     logger.info(f"Checkpoint saved to {filepath}")
 
 
 def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None):
-    """Load training checkpoint with DataParallel compatibility."""
+    """
+    Load training checkpoint with DataParallel and mixed precision compatibility.
+    
+    Args:
+        filepath: Path to the checkpoint file
+        model: The PyTorch model to load weights into
+        optimizer: The optimizer to load state into (optional)
+        scheduler: The scheduler to load state into (optional)
+        scaler: The GradScaler for mixed precision (optional)
+        
+    Returns:
+        tuple: (epoch, metrics_dict)
+    """
+    # Load checkpoint from file with CPU-compatible mapping
     checkpoint = torch.load(filepath, map_location='cpu')
     
     # Handle DataParallel state dict key mismatch
@@ -60,8 +90,10 @@ def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
             logger.info("Removed 'module.' prefix from checkpoint keys for DataParallel compatibility")
     
+    # Load model weights
     model.load_state_dict(state_dict)
     
+    # Load optimizer state if provided
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
         try:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -69,11 +101,28 @@ def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None
             logger.warning(f"Could not load optimizer state: {e}")
             logger.warning("Continuing with fresh optimizer state (this is normal when resuming across training phases)")
     
+    # Load scheduler state if provided
     if scheduler is not None and 'scheduler_state_dict' in checkpoint:
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        try:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            logger.info(f"Loaded scheduler state (type: {checkpoint.get('scheduler_type', 'unknown')})")
+        except (ValueError, KeyError) as e:
+            logger.warning(f"Could not load scheduler state: {e}")
+            logger.warning("Continuing with fresh scheduler state")
     
+    # Load scaler state for mixed precision if provided
+    mixed_precision_enabled = checkpoint.get('mixed_precision_enabled', False)
     if scaler is not None and 'scaler_state_dict' in checkpoint:
-        scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        try:
+            scaler.load_state_dict(checkpoint['scaler_state_dict'])
+            logger.info("Loaded mixed precision scaler state")
+        except (ValueError, KeyError) as e:
+            logger.warning(f"Could not load scaler state: {e}")
+            logger.warning("Continuing with fresh scaler state")
+    elif mixed_precision_enabled and scaler is None:
+        logger.warning("Checkpoint was saved with mixed precision, but current training has it disabled")
+    elif not mixed_precision_enabled and scaler is not None:
+        logger.warning("Checkpoint was saved without mixed precision, but current training has it enabled")
     
     logger.info(f"Checkpoint loaded from {filepath}")
     return checkpoint['epoch'], checkpoint.get('metrics', {})

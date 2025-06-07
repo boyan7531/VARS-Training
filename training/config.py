@@ -7,6 +7,7 @@ This module handles all command-line arguments and training configuration setup.
 import argparse
 import logging
 from pathlib import Path
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,12 @@ def parse_args():
     # === TRAINING OPTIMIZATION ===
     parser.add_argument('--optimizer', type=str, default='adamw', choices=['adamw', 'sgd', 'adam'], help='Optimizer type')
     parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum')
-    parser.add_argument('--mixed_precision', action='store_true', help='Use mixed precision training')
+    parser.add_argument('--mixed_precision', action='store_true', default=True, 
+                      help='Enable mixed precision training (faster and memory efficient)')
+    parser.add_argument('--amp_dtype', type=str, default='float16', choices=['float16', 'bfloat16'], 
+                      help='Data type for Automatic Mixed Precision (AMP)')
+    parser.add_argument('--disable_mixed_precision', action='store_true', default=False,
+                      help='Disable mixed precision training (override --mixed_precision)')
     parser.add_argument('--gradient_clip_norm', type=float, default=1.0, help='Gradient clipping norm')
     parser.add_argument('--early_stopping_patience', type=int, default=None,
                        help='Patience for early stopping (epochs with no improvement).')
@@ -210,6 +216,16 @@ def process_config(args):
         args.disable_in_model_augmentation = True
         args.use_severity_aware_aug = False
         logger.info("🚫 All augmentation disabled")
+        
+    # Handle mixed precision settings
+    if args.disable_mixed_precision:
+        args.mixed_precision = False
+        logger.info("🚫 Mixed precision training disabled")
+    elif args.mixed_precision:
+        logger.info(f"⚡ Mixed precision training enabled with {args.amp_dtype}")
+        if args.amp_dtype == 'bfloat16' and not torch.cuda.is_bf16_supported():
+            logger.warning("⚠️ bfloat16 requested but not supported by your GPU. Falling back to float16.")
+            args.amp_dtype = 'float16'
     
     # Handle legacy arguments and provide warnings
     if args.use_focal_loss and args.loss_function == 'weighted':
