@@ -119,6 +119,8 @@ def parse_args():
                        help='Enable aggressive augmentation pipeline for small datasets')
     parser.add_argument('--extreme_augmentation', action='store_true', default=False,
                        help='Enable EXTREME augmentation with all techniques (use for very small datasets)')
+    parser.add_argument('--use_severity_aware_aug', action='store_true', default=True,
+                       help='Apply stronger augmentation to minority severity classes (rare fouls)')
     parser.add_argument('--temporal_jitter_strength', type=int, default=3,
                        help='Max temporal jitter in frames (higher = more temporal variation)')
     parser.add_argument('--dropout_prob', type=float, default=0.2,
@@ -187,6 +189,7 @@ def process_config(args):
         args.use_class_balanced_sampler = False
         args.aggressive_augmentation = False
         args.extreme_augmentation = False
+        args.use_severity_aware_aug = False
         args.gradual_finetuning = False
         args.label_smoothing = 0.0
         logger.info("   - Loss function: plain CrossEntropyLoss")
@@ -205,6 +208,7 @@ def process_config(args):
         args.aggressive_augmentation = False
         args.extreme_augmentation = False
         args.disable_in_model_augmentation = True
+        args.use_severity_aware_aug = False
         logger.info("🚫 All augmentation disabled")
     
     # Handle legacy arguments and provide warnings
@@ -277,6 +281,8 @@ def log_configuration_summary(args):
     elif not args.disable_augmentation:
         aug_level = "Standard"
     logger.info(f"Augmentation: {aug_level}")
+    if not args.disable_augmentation:
+        logger.info(f"   - Severity-aware augmentation: {'Enabled' if args.use_severity_aware_aug else 'Disabled'}")
     
     # Class balancing
     logger.info(f"Class balancing: {'Enabled' if args.use_class_balanced_sampler else 'Disabled'}")

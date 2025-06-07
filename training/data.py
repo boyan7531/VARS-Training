@@ -250,7 +250,6 @@ def create_transforms(args, is_training=True):
         # STAGE 1: Aggressive temporal augmentations (before normalization)
         augmentation_stages.extend([
             TemporalJitter(max_jitter=args.temporal_jitter_strength),
-            RandomTemporalReverse(prob=0.5 if args.extreme_augmentation else (0.4 if args.aggressive_augmentation else 0.2)),
             RandomFrameDropout(
                 dropout_prob=args.dropout_prob * (1.5 if args.extreme_augmentation else 1.0),
                 max_consecutive=min(4, args.temporal_jitter_strength + 1)
@@ -375,7 +374,8 @@ def create_datasets(args):
             max_views_to_load=args.max_views,  # None by default = use all views
             transform=train_transform,
             target_height=args.img_height,
-            target_width=args.img_width
+            target_width=args.img_width,
+            use_severity_aware_aug=args.use_severity_aware_aug  # Pass the parameter
         )
         
         val_dataset = SoccerNetMVFoulDataset(
@@ -388,7 +388,8 @@ def create_datasets(args):
             max_views_to_load=args.max_views,  # None by default = use all views
             transform=val_transform,
             target_height=args.img_height,
-            target_width=args.img_width
+            target_width=args.img_width,
+            use_severity_aware_aug=False  # Always disable for validation
         )
     except FileNotFoundError as e:
         logger.error(f"Error loading dataset: {e}")
@@ -399,6 +400,12 @@ def create_datasets(args):
         raise ValueError("Empty datasets detected")
 
     logger.info(f"Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}")
+    
+    # Log information about SeverityAwareAugmentation
+    if args.use_severity_aware_aug:
+        logger.info("🎯 Using SeverityAwareAugmentation for minority severity classes")
+        logger.info("   - Applying stronger augmentation to severity classes 2-5")
+        logger.info("   - Lighter augmentation for majority class (severity 1)")
     
     return train_dataset, val_dataset
 

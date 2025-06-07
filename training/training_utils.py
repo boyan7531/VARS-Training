@@ -206,7 +206,9 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
 
         # Apply GPU augmentation if provided
         if gpu_augmentation is not None and model.training:
-            batch_data = gpu_augmentation(batch_data)
+            # Apply augmentation only to the video clips, not the entire batch_data
+            clips = batch_data["clips"]
+            batch_data["clips"] = gpu_augmentation(clips)
 
         optimizer.zero_grad()
 
