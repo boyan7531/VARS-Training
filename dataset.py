@@ -7,10 +7,10 @@ from pathlib import Path
 import random
 from collections import defaultdict
 import numpy as np
+from scipy.ndimage import gaussian_filter, map_coordinates
 
 # Optional import for advanced augmentations
 try:
-    from scipy.ndimage import gaussian_filter
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
@@ -46,7 +46,7 @@ INV_ACTION_TYPE_LABELS = {v: k for k, v in ACTION_TYPE_LABELS.items()}
 CONTACT_FIELD = "Contact"
 BODYPART_FIELD = "Bodypart"
 UPPER_BODYPART_FIELD = "Upper body part"
-LOWER_BODYPART_FIELD = "Lower body part"  # Added missing field
+# LOWER_BODYPART_FIELD = "Lower body part"  # Removed as it's 100% N/A in the dataset
 MULTIPLE_FOULS_FIELD = "Multiple fouls"
 TRY_TO_PLAY_FIELD = "Try to play"
 TOUCH_BALL_FIELD = "Touch ball"
@@ -59,9 +59,9 @@ UNKNOWN_TOKEN = "<UNK>"
 OFFENCE_VALUES = {"Offence": 1, "No offence": 0, "Between": 2}
 CONTACT_VALUES = {"With contact": 1, "Without contact": 0}
 BODYPART_VALUES = {"Upper body": 1, "Under body": 2, "": 0}  # Empty string maps to 0
-UPPER_BODYPART_VALUES = {"Use of shoulder": 1, "Use of arms": 2, "": 0}  # Empty string maps to 0
-LOWER_BODYPART_VALUES = {"Use of leg": 1, "Use of knee": 2, "Use of foot": 3}
-MULTIPLE_FOULS_VALUES = {"Yes": 1, "": 0}  # Empty string maps to 0 (No)
+UPPER_BODYPART_VALUES = {"Use of shoulder": 1, "Use of arms": 2, "": 0, "Use of shoulders": 1} # Map plural to singular
+# LOWER_BODYPART_VALUES = {"Use of leg": 1, "Use of knee": 2, "Use of foot": 3} # Removed
+MULTIPLE_FOULS_VALUES = {"Yes": 1, "yes": 1, "No": 0, "": 0}  # Handle inconsistencies and map "" to No
 TRY_TO_PLAY_VALUES = {"Yes": 1, "No": 0, "": 0}  # Empty string maps to 0 (No)
 TOUCH_BALL_VALUES = {"Yes": 1, "No": 0, "Maybe": 2, "": 0}  # Empty string maps to 0 (No)
 HANDBALL_VALUES = {"Handball": 1, "No handball": 0}
@@ -72,7 +72,7 @@ INV_OFFENCE_VALUES = {v: k for k, v in OFFENCE_VALUES.items()}
 INV_CONTACT_VALUES = {v: k for k, v in CONTACT_VALUES.items()}
 INV_BODYPART_VALUES = {v: k for k, v in BODYPART_VALUES.items()}
 INV_UPPER_BODYPART_VALUES = {v: k for k, v in UPPER_BODYPART_VALUES.items()}
-INV_LOWER_BODYPART_VALUES = {v: k for k, v in LOWER_BODYPART_VALUES.items()}
+# INV_LOWER_BODYPART_VALUES = {v: k for k, v in LOWER_BODYPART_VALUES.items()} # Removed
 INV_MULTIPLE_FOULS_VALUES = {v: k for k, v in MULTIPLE_FOULS_VALUES.items()}
 INV_TRY_TO_PLAY_VALUES = {v: k for k, v in TRY_TO_PLAY_VALUES.items()}
 INV_TOUCH_BALL_VALUES = {v: k for k, v in TOUCH_BALL_VALUES.items()}
@@ -260,14 +260,14 @@ class SeverityAwareAugmentation(torch.nn.Module):
         
         # Light augmentation for majority class (severity 1.0)
         self.light_aug = transforms.Compose([
-            RandomHorizontalFlip(prob=0.3),
-            RandomBrightnessContrast(brightness_range=0.1, contrast_range=0.1, prob=0.3),
+            RandomHorizontalFlip(prob=0.5),
+            TemporalJitter(max_jitter=1),
+            RandomBrightnessContrast(brightness_range=0.15, contrast_range=0.15, prob=0.5),
         ])
         
         # Heavy augmentation for minority classes (severity 2.0+)
         self.heavy_aug = transforms.Compose([
             RandomHorizontalFlip(prob=0.6),
-            RandomTemporalReverse(prob=0.4),
             RandomFrameDropout(dropout_prob=0.15, max_consecutive=2),
             TemporalJitter(max_jitter=2),
             RandomBrightnessContrast(brightness_range=0.25, contrast_range=0.25, prob=0.8),
@@ -388,6 +388,7 @@ class SoccerNetMVFoulDataset(Dataset):
             transform: PyTorch transforms to be applied to each clip.
             target_height (int): Target height for dummy tensors if video loading fails.
             target_width (int): Target width for dummy tensors if video loading fails.
+            use_severity_aware_aug (bool): If True, applies severity-aware augmentations for class imbalance during training.
         """
         self.dataset_path = Path(dataset_path)
         self.split = split
@@ -406,6 +407,7 @@ class SoccerNetMVFoulDataset(Dataset):
         self.transform = transform
         self.target_height = target_height
         self.target_width = target_width
+        self.use_severity_aware_aug = use_severity_aware_aug
 
         # Validate frame range
         expected_frames = end_frame - start_frame + 1
@@ -428,7 +430,7 @@ class SoccerNetMVFoulDataset(Dataset):
         self.contact_vocab, self.num_contact_classes = self._build_vocab(raw_annotations_data, CONTACT_FIELD)
         self.bodypart_vocab, self.num_bodypart_classes = self._build_vocab(raw_annotations_data, BODYPART_FIELD)
         self.upper_bodypart_vocab, self.num_upper_bodypart_classes = self._build_vocab(raw_annotations_data, UPPER_BODYPART_FIELD)
-        self.lower_bodypart_vocab, self.num_lower_bodypart_classes = self._build_vocab(raw_annotations_data, LOWER_BODYPART_FIELD)
+        # self.lower_bodypart_vocab, self.num_lower_bodypart_classes = self._build_vocab(raw_annotations_data, LOWER_BODYPART_FIELD) # Removed
         self.multiple_fouls_vocab, self.num_multiple_fouls_classes = self._build_vocab(raw_annotations_data, MULTIPLE_FOULS_FIELD)
         self.try_to_play_vocab, self.num_try_to_play_classes = self._build_vocab(raw_annotations_data, TRY_TO_PLAY_FIELD)
         self.touch_ball_vocab, self.num_touch_ball_classes = self._build_vocab(raw_annotations_data, TOUCH_BALL_FIELD)
@@ -438,7 +440,7 @@ class SoccerNetMVFoulDataset(Dataset):
         print(f"Built '{CONTACT_FIELD}' vocab ({self.num_contact_classes} classes): {self.contact_vocab}")
         print(f"Built '{BODYPART_FIELD}' vocab ({self.num_bodypart_classes} classes): {self.bodypart_vocab}")
         print(f"Built '{UPPER_BODYPART_FIELD}' vocab ({self.num_upper_bodypart_classes} classes): {self.upper_bodypart_vocab}")
-        print(f"Built '{LOWER_BODYPART_FIELD}' vocab ({self.num_lower_bodypart_classes} classes): {self.lower_bodypart_vocab}")
+        # print(f"Built '{LOWER_BODYPART_FIELD}' vocab ({self.num_lower_bodypart_classes} classes): {self.lower_bodypart_vocab}") # Removed
         print(f"Built '{MULTIPLE_FOULS_FIELD}' vocab ({self.num_multiple_fouls_classes} classes): {self.multiple_fouls_vocab}")
         print(f"Built '{TRY_TO_PLAY_FIELD}' vocab ({self.num_try_to_play_classes} classes): {self.try_to_play_vocab}")
         print(f"Built '{TOUCH_BALL_FIELD}' vocab ({self.num_touch_ball_classes} classes): {self.touch_ball_vocab}")
@@ -621,21 +623,6 @@ class SoccerNetMVFoulDataset(Dataset):
             else:
                 upper_bodypart_standard_idx = 0 # Default to unknown
                 
-            # Lower body part (only applicable when Bodypart is "Lower body")
-            lower_bodypart_str = action_details.get(LOWER_BODYPART_FIELD, "")  # Default to empty string
-            # Create vocab on the fly if this field wasn't explicitly processed
-            if not hasattr(self, 'lower_bodypart_vocab'):
-                self.lower_bodypart_vocab = {UNKNOWN_TOKEN: 0}
-                self.num_lower_bodypart_classes = 1
-                print(f"Warning: Creating lower_bodypart_vocab on the fly as it wasn't processed earlier.")
-                
-            lower_bodypart_idx = getattr(self, 'lower_bodypart_vocab', {}).get(lower_bodypart_str, 0)
-            # Standard mapping
-            if lower_bodypart_str in LOWER_BODYPART_VALUES:
-                lower_bodypart_standard_idx = LOWER_BODYPART_VALUES[lower_bodypart_str]
-            else:
-                lower_bodypart_standard_idx = 0 # Default to unknown
-            
             # Multiple fouls
             multiple_fouls_str = action_details.get(MULTIPLE_FOULS_FIELD, "")  # Default to empty string
             multiple_fouls_idx = self.multiple_fouls_vocab.get(multiple_fouls_str, self.multiple_fouls_vocab[UNKNOWN_TOKEN])
@@ -692,7 +679,6 @@ class SoccerNetMVFoulDataset(Dataset):
                 "contact_idx": contact_idx,
                 "bodypart_idx": bodypart_idx,
                 "upper_bodypart_idx": upper_bodypart_idx,
-                "lower_bodypart_idx": lower_bodypart_idx,
                 "multiple_fouls_idx": multiple_fouls_idx,
                 "try_to_play_idx": try_to_play_idx,
                 "touch_ball_idx": touch_ball_idx,
@@ -704,7 +690,6 @@ class SoccerNetMVFoulDataset(Dataset):
                 "contact_standard_idx": contact_standard_idx,
                 "bodypart_standard_idx": bodypart_standard_idx,
                 "upper_bodypart_standard_idx": upper_bodypart_standard_idx,
-                "lower_bodypart_standard_idx": lower_bodypart_standard_idx,
                 "multiple_fouls_standard_idx": multiple_fouls_standard_idx,
                 "try_to_play_standard_idx": try_to_play_standard_idx,
                 "touch_ball_standard_idx": touch_ball_standard_idx,
@@ -871,7 +856,6 @@ class SoccerNetMVFoulDataset(Dataset):
                 "contact_idx": torch.tensor(action_info["contact_idx"], dtype=torch.long),
                 "bodypart_idx": torch.tensor(action_info["bodypart_idx"], dtype=torch.long),
                 "upper_bodypart_idx": torch.tensor(action_info["upper_bodypart_idx"], dtype=torch.long),
-                "lower_bodypart_idx": torch.tensor(action_info["lower_bodypart_idx"], dtype=torch.long),
                 "multiple_fouls_idx": torch.tensor(action_info["multiple_fouls_idx"], dtype=torch.long),
                 "try_to_play_idx": torch.tensor(action_info["try_to_play_idx"], dtype=torch.long),
                 "touch_ball_idx": torch.tensor(action_info["touch_ball_idx"], dtype=torch.long),
@@ -883,7 +867,6 @@ class SoccerNetMVFoulDataset(Dataset):
                 "contact_standard_idx": torch.tensor(action_info["contact_standard_idx"], dtype=torch.long),
                 "bodypart_standard_idx": torch.tensor(action_info["bodypart_standard_idx"], dtype=torch.long),
                 "upper_bodypart_standard_idx": torch.tensor(action_info["upper_bodypart_standard_idx"], dtype=torch.long),
-                "lower_bodypart_standard_idx": torch.tensor(action_info["lower_bodypart_standard_idx"], dtype=torch.long),
                 "multiple_fouls_standard_idx": torch.tensor(action_info["multiple_fouls_standard_idx"], dtype=torch.long),
                 "try_to_play_standard_idx": torch.tensor(action_info["try_to_play_standard_idx"], dtype=torch.long),
                 "touch_ball_standard_idx": torch.tensor(action_info["touch_ball_standard_idx"], dtype=torch.long),
@@ -892,10 +875,20 @@ class SoccerNetMVFoulDataset(Dataset):
             }
 
         clips_for_action = []
+
+        # Define item-specific augmentation based on severity for training split
+        item_specific_aug = None
+        if self.use_severity_aware_aug and self.split == 'train':
+            severity_label = action_info["label_severity"]
+            item_specific_aug = SeverityAwareAugmentation(severity_label)
+
         for video_path_rel_str in selected_video_paths_relative:
             clip = self._get_video_clip(video_path_rel_str, action_info)
             if clip is not None:
-                if self.transform: # Transform expects (C, T, H, W)
+                if item_specific_aug:
+                    clip = item_specific_aug(clip)
+
+                if self.transform: # Apply general transforms like normalization
                     clip = self.transform(clip)
                 clips_for_action.append(clip)
         
@@ -929,7 +922,6 @@ class SoccerNetMVFoulDataset(Dataset):
             "contact_idx": torch.tensor(action_info["contact_idx"], dtype=torch.long),
             "bodypart_idx": torch.tensor(action_info["bodypart_idx"], dtype=torch.long),
             "upper_bodypart_idx": torch.tensor(action_info["upper_bodypart_idx"], dtype=torch.long),
-            "lower_bodypart_idx": torch.tensor(action_info["lower_bodypart_idx"], dtype=torch.long),
             "multiple_fouls_idx": torch.tensor(action_info["multiple_fouls_idx"], dtype=torch.long),
             "try_to_play_idx": torch.tensor(action_info["try_to_play_idx"], dtype=torch.long),
             "touch_ball_idx": torch.tensor(action_info["touch_ball_idx"], dtype=torch.long),
@@ -941,7 +933,6 @@ class SoccerNetMVFoulDataset(Dataset):
             "contact_standard_idx": torch.tensor(action_info["contact_standard_idx"], dtype=torch.long),
             "bodypart_standard_idx": torch.tensor(action_info["bodypart_standard_idx"], dtype=torch.long),
             "upper_bodypart_standard_idx": torch.tensor(action_info["upper_bodypart_standard_idx"], dtype=torch.long),
-            "lower_bodypart_standard_idx": torch.tensor(action_info["lower_bodypart_standard_idx"], dtype=torch.long),
             "multiple_fouls_standard_idx": torch.tensor(action_info["multiple_fouls_standard_idx"], dtype=torch.long),
             "try_to_play_standard_idx": torch.tensor(action_info["try_to_play_standard_idx"], dtype=torch.long),
             "touch_ball_standard_idx": torch.tensor(action_info["touch_ball_standard_idx"], dtype=torch.long),
@@ -1071,13 +1062,18 @@ class RandomElasticDeformation(torch.nn.Module):
             
             # Create coordinate grids
             x, y = np.meshgrid(np.arange(W), np.arange(H))
-            x_new = np.clip(x + dx, 0, W-1).astype(np.int32)
-            y_new = np.clip(y + dy, 0, H-1).astype(np.int32)
+            
+            # Clamp indices to be within bounds
+            x_new = np.clip(x + dx, 0, W-1).astype(np.float32)
+            y_new = np.clip(y + dy, 0, H-1).astype(np.float32)
             
             # Apply deformation to each channel
             deformed_frame = np.zeros_like(frame)
             for c in range(C):
-                deformed_frame[c] = frame[c][y_new, x_new]
+                # Use scipy's map_coordinates for smoother interpolation
+                coords = np.array([y_new.flatten(), x_new.flatten()])
+                deformed_channel = map_coordinates(frame[c], coords, order=1, mode='reflect')
+                deformed_frame[c] = deformed_channel.reshape(H, W)
             
             deformed_frames.append(torch.from_numpy(deformed_frame))
         

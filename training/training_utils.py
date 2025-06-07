@@ -73,27 +73,35 @@ class FocalLoss(nn.Module):
             return focal_loss
 
 
-def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, aux_weight=0.5, 
-                           label_smoothing=0.0, severity_class_weights=None, loss_function='weighted', focal_gamma=2.0):
+def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: dict):
     """
-    Calculate weighted multi-task loss with flexible loss function selection.
+    Calculate weighted multi-task loss based on a configuration dictionary.
     
     Args:
         sev_logits: Severity classification logits
         act_logits: Action type classification logits  
         batch_data: Batch data containing labels
-        main_weights: [severity_weight, action_weight] for main tasks
-        aux_weight: Weight for auxiliary tasks (currently not implemented)
-        label_smoothing: Label smoothing factor for regularization
-        severity_class_weights: Optional class weights for severity loss
-        loss_function: 'focal', 'weighted', or 'plain'
-        focal_gamma: Focal Loss gamma parameter
+        loss_config (dict): Configuration for the loss function.
+            - 'function': 'focal', 'weighted', or 'plain'
+            - 'weights': [severity_weight, action_weight] for main tasks
+            - 'label_smoothing': Label smoothing factor
+            - 'focal_gamma': Focal Loss gamma parameter
+            - 'severity_class_weights': Optional class weights for severity loss.
+                                        If 'focal' is used, these become the 'alpha' parameter.
+                                        If using a balanced sampler, this should typically be None.
     
     Returns:
         total_loss, loss_sev, loss_act
     """
+    loss_function = loss_config.get('function', 'weighted')
+    main_weights = loss_config.get('weights', [1.0, 1.0])
+    label_smoothing = loss_config.get('label_smoothing', 0.0)
+    
     if loss_function == 'focal':
-        # Use Focal Loss - often more stable for class imbalance
+        focal_gamma = loss_config.get('focal_gamma', 2.0)
+        # When using Focal Loss with a balanced sampler, alpha (class weights) is often omitted.
+        severity_class_weights = loss_config.get('severity_class_weights', None) 
+        
         focal_criterion = FocalLoss(
             alpha=severity_class_weights,
             gamma=focal_gamma,
@@ -101,11 +109,11 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, a
         )
         loss_sev = focal_criterion(sev_logits, batch_data["label_severity"]) * main_weights[0]
         
-        # Use standard CrossEntropyLoss for action type (usually more balanced)
+        # Action type loss is typically less imbalanced, so standard CE is fine.
         loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
         
     elif loss_function == 'weighted':
-        # Use class-weighted CrossEntropyLoss
+        severity_class_weights = loss_config.get('severity_class_weights') # Should be provided for this option
         loss_sev = nn.CrossEntropyLoss(
             label_smoothing=label_smoothing, 
             weight=severity_class_weights
@@ -114,7 +122,6 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, main_weights, a
         loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
     
     elif loss_function == 'plain':
-        # Use plain CrossEntropyLoss (no class weights)
         loss_sev = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(sev_logits, batch_data["label_severity"]) * main_weights[0]
         loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
     
@@ -158,10 +165,8 @@ class EarlyStopping:
             self.best_weights = model.state_dict().copy()
 
 
-def train_one_epoch(model, dataloader, criterion_severity, criterion_action, optimizer, device, 
-                   scaler=None, max_batches=None, loss_weights=[1.0, 1.0], gradient_clip_norm=1.0, 
-                   label_smoothing=0.0, severity_class_weights=None, loss_function='weighted', focal_gamma=2.0,
-                   gpu_augmentation=None, memory_cleanup_interval=20):
+def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, scaler=None, 
+                   max_batches=None, gradient_clip_norm=1.0, memory_cleanup_interval=20):
     """Train the model for one epoch."""
     model.train()
     running_loss = 0.0
@@ -185,11 +190,6 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
             if isinstance(batch_data[key], torch.Tensor):
                 batch_data[key] = batch_data[key].to(device, non_blocking=True)
         
-        # Apply GPU augmentation if enabled
-        if gpu_augmentation is not None:
-            # Apply augmentation to video clips
-            batch_data["clips"] = gpu_augmentation(batch_data["clips"])
-            
         severity_labels = batch_data["label_severity"]
         action_labels = batch_data["label_type"]
 
@@ -199,10 +199,8 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
         if scaler is not None:
             with torch.amp.autocast('cuda'):
                 sev_logits, act_logits = model(batch_data)
-                total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                    sev_logits, act_logits, batch_data, loss_weights, 
-                    label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
-                    loss_function=loss_function, focal_gamma=focal_gamma
+                total_loss, _, _ = calculate_multitask_loss(
+                    sev_logits, act_logits, batch_data, loss_config
                 )
 
             scaler.scale(total_loss).backward()
@@ -216,10 +214,8 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
             scaler.update()
         else:
             sev_logits, act_logits = model(batch_data)
-            total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                sev_logits, act_logits, batch_data, loss_weights, 
-                label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
-                loss_function=loss_function, focal_gamma=focal_gamma
+            total_loss, _, _ = calculate_multitask_loss(
+                sev_logits, act_logits, batch_data, loss_config
             )
 
             total_loss.backward()
@@ -262,13 +258,16 @@ def train_one_epoch(model, dataloader, criterion_severity, criterion_action, opt
     epoch_sev_f1 = running_sev_f1 / processed_batches if processed_batches > 0 else 0
     epoch_act_f1 = running_act_f1 / processed_batches if processed_batches > 0 else 0
     
-    return epoch_loss, epoch_sev_acc, epoch_act_acc, epoch_sev_f1, epoch_act_f1
+    return {
+        'loss': epoch_loss,
+        'sev_acc': epoch_sev_acc,
+        'act_acc': epoch_act_acc,
+        'sev_f1': epoch_sev_f1,
+        'act_f1': epoch_act_f1
+    }
 
 
-def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, device, 
-                      max_batches=None, loss_weights=[1.0, 1.0], label_smoothing=0.0, 
-                      severity_class_weights=None, loss_function='weighted', focal_gamma=2.0,
-                      memory_cleanup_interval=20):
+def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches=None, memory_cleanup_interval=20):
     """Validate the model for one epoch."""
     model.eval()
     running_loss = 0.0
@@ -303,17 +302,13 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             if device.type == 'cuda': # Assuming mixed precision is used if cuda is available and training uses it.
                 with torch.amp.autocast('cuda'): # Enable AMP for the forward pass
                     sev_logits, act_logits = model(batch_data)
-                    total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                        sev_logits, act_logits, batch_data, loss_weights, 
-                        label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
-                        loss_function=loss_function, focal_gamma=focal_gamma
+                    total_loss, _, _ = calculate_multitask_loss(
+                        sev_logits, act_logits, batch_data, loss_config
                     )
             else: # CPU or other device, or if mixed precision is explicitly disabled for validation
                 sev_logits, act_logits = model(batch_data)
-                total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                    sev_logits, act_logits, batch_data, loss_weights, 
-                    label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
-                    loss_function=loss_function, focal_gamma=focal_gamma
+                total_loss, _, _ = calculate_multitask_loss(
+                    sev_logits, act_logits, batch_data, loss_config
                 )
 
             running_loss += total_loss.item() * batch_data["clips"].size(0)
@@ -342,4 +337,10 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
     # Critical: Clean up memory after validation
     cleanup_memory()
     
-    return epoch_loss, epoch_sev_acc, epoch_act_acc, epoch_sev_f1, epoch_act_f1 
+    return {
+        'loss': epoch_loss,
+        'sev_acc': epoch_sev_acc,
+        'act_acc': epoch_act_acc,
+        'sev_f1': epoch_sev_f1,
+        'act_f1': epoch_act_f1
+    } 

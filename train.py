@@ -270,6 +270,7 @@ import random
 from tqdm import tqdm
 import torch.nn.functional as F
 import multiprocessing as mp
+import wandb
 
 # Imports from our other files
 from dataset import (
@@ -1781,17 +1782,17 @@ if __name__ == "__main__":
         logger.info("⚡ SIMPLE TRAINING MODE: Minimal features for debugging")
     logger.info("=" * 60)
 
-    # Create vocabulary sizes dictionary for the model
+    # Get all vocab sizes from the dataset object
     vocab_sizes = {
-        'contact': train_dataset.num_contact_classes,
-        'bodypart': train_dataset.num_bodypart_classes,
-        'upper_bodypart': train_dataset.num_upper_bodypart_classes,
-        'lower_bodypart': train_dataset.num_lower_bodypart_classes,
-        'multiple_fouls': train_dataset.num_multiple_fouls_classes,
-        'try_to_play': train_dataset.num_try_to_play_classes,
-        'touch_ball': train_dataset.num_touch_ball_classes,
-        'handball': train_dataset.num_handball_classes,
-        'handball_offence': train_dataset.num_handball_offence_classes,
+        "contact": train_dataset.num_contact_classes,
+        "bodypart": train_dataset.num_bodypart_classes,
+        "upper_bodypart": train_dataset.num_upper_bodypart_classes,
+        # "lower_bodypart": train_dataset.num_lower_bodypart_classes, # Feature removed
+        "multiple_fouls": train_dataset.num_multiple_fouls_classes,
+        "try_to_play": train_dataset.num_try_to_play_classes,
+        "touch_ball": train_dataset.num_touch_ball_classes,
+        "handball": train_dataset.num_handball_classes,
+        "handball_offence": train_dataset.num_handball_offence_classes,
     }
 
     # Model configuration
