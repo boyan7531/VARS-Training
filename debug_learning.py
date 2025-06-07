@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 # Import your modules
-from dataset import SoccerNetMVFoulDataset, SEVERITY_LABELS, ACTION_TYPE_LABELS
+from dataset import SoccerNetMVFoulDataset, SEVERITY_LABELS, ACTION_TYPE_LABELS, variable_views_collate_fn
 from model.resnet3d_model import MultiTaskMultiViewResNet3D, ModelConfig
 from torch.utils.data import DataLoader
 
@@ -326,7 +326,8 @@ def main():
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=2
+        num_workers=2,
+        collate_fn=variable_views_collate_fn
     )
     
     # Analyze class distribution
@@ -351,8 +352,8 @@ def main():
     
     # Create model (you might need to adjust this based on your model structure)
     model = MultiTaskMultiViewResNet3D.create_model(
-        num_severity=6,  # 0-5 severity classes
-        num_action_type=10,  # 0-9 action classes  
+        num_severity=5,  # Checkpoint has 5 severity classes
+        num_action_type=9,  # Checkpoint has 9 action type classes
         vocab_sizes=vocab_sizes,
         backbone_name='r2plus1d_18'
     )
