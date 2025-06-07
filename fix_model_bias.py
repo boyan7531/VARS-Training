@@ -31,6 +31,26 @@ def load_model_checkpoint(checkpoint_path, device):
         
         logger.info(f"Original model has {num_severity} severity classes and {num_action_type} action type classes")
         
+        # Add default vocabulary sizes if not present
+        # We only need these for model initialization, not for our bias adjustment
+        default_vocab_sizes = {
+            'contact': 3,
+            'bodypart': 3,
+            'upper_bodypart': 3,
+            'lower_bodypart': 3,
+            'multiple_fouls': 3,
+            'try_to_play': 3,
+            'touch_ball': 3,
+            'handball': 3,
+            'handball_offence': 3
+        }
+        
+        # Add any missing vocabulary sizes with defaults
+        for key in default_vocab_sizes:
+            if key not in vocab_sizes:
+                vocab_sizes[key] = default_vocab_sizes[key]
+                logger.info(f"Using default value {default_vocab_sizes[key]} for {key}")
+        
         # Initialize a new model with the same architecture
         model = MultiTaskMultiViewResNet3D.create_model(
             num_severity=num_severity,
