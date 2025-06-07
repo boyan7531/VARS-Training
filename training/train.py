@@ -414,20 +414,18 @@ def main():
         
         # Training
         train_metrics = train_one_epoch(
-            model, train_loader, criterion_severity, criterion_action, optimizer, device,
+            model, train_loader, optimizer, device,
             scaler=scaler, max_batches=num_batches_to_run, 
-            loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm, 
-            label_smoothing=args.label_smoothing, severity_class_weights=severity_class_weights, 
-            loss_function=args.loss_function, focal_gamma=args.focal_gamma,
+            loss_config=loss_config, scheduler=scheduler,
+            gradient_clip_norm=args.gradient_clip_norm, 
             memory_cleanup_interval=args.memory_cleanup_interval
         )
         
         # Validation
         val_metrics = validate_one_epoch(
-            model, val_loader, criterion_severity, criterion_action, device,
-            max_batches=num_batches_to_run, loss_weights=args.main_task_weights, 
-            label_smoothing=args.label_smoothing, severity_class_weights=severity_class_weights, 
-            loss_function=args.loss_function, focal_gamma=args.focal_gamma,
+            model, val_loader, device,
+            max_batches=num_batches_to_run, 
+            loss_config=loss_config,
             memory_cleanup_interval=args.memory_cleanup_interval
         )
         
