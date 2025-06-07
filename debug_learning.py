@@ -352,8 +352,8 @@ def main():
     
     # Create model (you might need to adjust this based on your model structure)
     model = MultiTaskMultiViewResNet3D.create_model(
-        num_severity=5,  # Checkpoint has 5 severity classes
-        num_action_type=9,  # Checkpoint has 9 action type classes
+        num_severity=6,  # 0-5 severity classes (6 total classes)
+        num_action_type=10,  # 0-9 action classes (10 total classes)
         vocab_sizes=vocab_sizes,
         backbone_name='r2plus1d_18'
     )
