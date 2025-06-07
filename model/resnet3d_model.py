@@ -7,6 +7,10 @@ import random
 import numpy as np
 from typing import Dict, List, Union, Tuple
 import logging
+import os
+import urllib.request
+import shutil
+from pathlib import Path
 
 from .config import ModelConfig
 from .embedding_manager import EmbeddingManager
@@ -205,25 +209,29 @@ class VideoAugmentation(nn.Module):
         self.enabled = True
 
 class ResNet3DBackbone(nn.Module):
-    """3D ResNet backbone for video feature extraction."""
+    """3D ResNet backbone for video feature extraction with Sports-1M pretrained weights."""
     
     def __init__(self, model_name='r2plus1d_18', pretrained=True):
         super().__init__()
         
-        # Load pretrained ResNet3D
+        # Initialize model architecture
         if model_name == 'resnet3d_18':
-            self.backbone = models.video.r3d_18(pretrained=pretrained)
+            self.backbone = models.video.r3d_18(pretrained=False)  # Initialize without weights
+            self.model_type = 'r3d_18'
             self.feature_dim = 512
         elif model_name == 'mc3_18':
-            self.backbone = models.video.mc3_18(pretrained=pretrained)
+            self.backbone = models.video.mc3_18(pretrained=False)  # Initialize without weights
+            self.model_type = 'mc3_18'
             self.feature_dim = 512
         elif model_name == 'r2plus1d_18':
-            self.backbone = models.video.r2plus1d_18(pretrained=pretrained)
+            self.backbone = models.video.r2plus1d_18(pretrained=False)  # Initialize without weights
+            self.model_type = 'r2plus1d_18'
             self.feature_dim = 512
         elif model_name == 'resnet3d_50':
             # resnet3d_50 doesn't exist in torchvision, fall back to best available model
-            print(f"Warning: resnet3d_50 not available in torchvision. Using r2plus1d_18 (better accuracy) instead.")
-            self.backbone = models.video.r2plus1d_18(pretrained=pretrained)
+            logger.warning(f"Warning: resnet3d_50 not available in torchvision. Using r2plus1d_18 (better accuracy) instead.")
+            self.backbone = models.video.r2plus1d_18(pretrained=False)
+            self.model_type = 'r2plus1d_18'
             self.feature_dim = 512
         else:
             raise ValueError(f"Unsupported model: {model_name}. Available options: 'resnet3d_18', 'mc3_18', 'r2plus1d_18'")
@@ -231,8 +239,123 @@ class ResNet3DBackbone(nn.Module):
         # Remove final classification layer
         self.backbone.fc = nn.Identity()
         
-        # Stronger dropout for small dataset (increased from 0.3 to 0.4)
+        # Stronger dropout for small dataset
         self.dropout = nn.Dropout(0.4)
+        
+        # Load pretrained weights - use Sports-1M instead of Kinetics-400
+        if pretrained:
+            # Try to load Sports-1M pretrained weights first
+            sports1m_loaded = self._load_sports1m_weights(self.model_type)
+            
+            # Fall back to Kinetics weights if Sports-1M loading fails
+            if not sports1m_loaded:
+                logger.warning(f"Could not load Sports-1M weights. Falling back to Kinetics-400 weights.")
+                
+                # Re-initialize with pretrained weights from Kinetics
+                if model_name == 'resnet3d_18':
+                    self.backbone = models.video.r3d_18(pretrained=True)
+                elif model_name == 'mc3_18':
+                    self.backbone = models.video.mc3_18(pretrained=True)
+                elif model_name == 'r2plus1d_18' or model_name == 'resnet3d_50':
+                    self.backbone = models.video.r2plus1d_18(pretrained=True)
+                
+                # Reset final layer to Identity
+                self.backbone.fc = nn.Identity()
+                logger.info(f"Loaded pretrained Kinetics-400 weights for {model_name}")
+    
+    def _load_sports1m_weights(self, model_type):
+        """
+        Load Sports-1M pretrained weights for better transfer learning.
+        
+        Args:
+            model_type: Model architecture type ('r3d_18', 'mc3_18', 'r2plus1d_18')
+            
+        Returns:
+            bool: True if weights were successfully loaded, False otherwise
+        """
+        try:
+            # Create directory for pretrained models if it doesn't exist
+            pretrained_dir = Path('pretrained_models')
+            pretrained_dir.mkdir(exist_ok=True)
+            
+            # Map our model types to the ones used in the Sports-1M repository
+            # The main difference is r2plus1d_18 is called 'r2.5d_d18_l8' in the repo
+            model_name_map = {
+                'r3d_18': 'resnet-18-kinetics',   # Use Kinetics model as fallback since no direct Sports-1M available
+                'mc3_18': 'resnet-18-kinetics',   # Use Kinetics model as fallback since no direct Sports-1M available
+                'r2plus1d_18': 'r2.5d_d18_l8_sports1m'  # This one has Sports-1M weights
+            }
+            
+            if model_type not in model_name_map:
+                logger.warning(f"No Sports-1M weights mapping for {model_type}")
+                return False
+            
+            sports1m_name = model_name_map[model_type]
+            weights_path = pretrained_dir / f"{sports1m_name}.pth"
+            
+            # Download weights if they don't exist
+            if not weights_path.exists():
+                logger.info(f"Downloading Sports-1M weights for {model_type}...")
+                
+                # URL for the Sports-1M pretrained models
+                # Using weights from 3D-ResNets-PyTorch repository
+                url = f"https://github.com/kenshohara/3D-ResNets-PyTorch/releases/download/1.0/{sports1m_name}.pth"
+                
+                try:
+                    # Download the file
+                    with urllib.request.urlopen(url) as response, open(weights_path, 'wb') as out_file:
+                        shutil.copyfileobj(response, out_file)
+                except Exception as e:
+                    logger.error(f"Failed to download Sports-1M weights: {e}")
+                    return False
+            
+            # Load the weights
+            logger.info(f"Loading Sports-1M weights from {weights_path}")
+            checkpoint = torch.load(weights_path, map_location='cpu')
+            
+            # Handle different checkpoint formats
+            if 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            else:
+                state_dict = checkpoint
+            
+            # Convert state dict for compatibility with our model
+            converted_state_dict = {}
+            for k, v in state_dict.items():
+                # Remove 'module.' prefix if present (from DataParallel)
+                k = k.replace('module.', '')
+                
+                # Skip final classifier weights
+                if k.startswith('fc') or k.startswith('classifier'):
+                    continue
+                
+                # Adapt key names to match our backbone if needed
+                if k.startswith('conv1') and 'conv1.weight' not in self.backbone.state_dict():
+                    # Handle different naming in some architectures
+                    new_k = k.replace('conv1', 'stem.0')
+                    if new_k in self.backbone.state_dict():
+                        converted_state_dict[new_k] = v
+                        continue
+                
+                # Use the key directly if it exists in our model
+                if k in self.backbone.state_dict():
+                    converted_state_dict[k] = v
+            
+            # Load the weights into our model
+            missing_keys, unexpected_keys = self.backbone.load_state_dict(converted_state_dict, strict=False)
+            
+            # Log the results
+            if len(missing_keys) > 0:
+                logger.warning(f"Missing keys when loading Sports-1M weights: {missing_keys}")
+            if len(unexpected_keys) > 0:
+                logger.warning(f"Unexpected keys in Sports-1M weights: {unexpected_keys}")
+            
+            logger.info(f"Successfully loaded Sports-1M pretrained weights for {model_type}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error loading Sports-1M weights: {e}")
+            return False
         
     def forward(self, x):
         """

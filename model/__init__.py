@@ -7,7 +7,7 @@ for sports action classification using ResNet3D architecture.
 
 from .resnet3d_model import MultiTaskMultiViewResNet3D, ResNet3DBackbone
 from .config import ModelConfig
-from .loader import ModelLoader, ModelLoadingError
+from .loader import ModelLoader, ModelLoadingError, create_model
 from .embedding_manager import EmbeddingManager
 from .view_aggregator import ViewAggregator
 from .validator import InputValidator, ValidationError
@@ -23,6 +23,7 @@ __all__ = [
     "ModelConfig",
     "ModelLoader",
     "ModelLoadingError",
+    "create_model",
     # Components
     "EmbeddingManager",
     "ViewAggregator",

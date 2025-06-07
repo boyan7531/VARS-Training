@@ -357,44 +357,69 @@ class SmartFreezingManager:
 
 
 def create_model(args, vocab_sizes, device, num_gpus=1):
-    """Create and initialize the model with proper configuration."""
+    """
+    Create a multi-task, multi-view ResNet3D model.
     
-    # Model configuration
-    model_config = ModelConfig(
-        use_attention_aggregation=args.attention_aggregation,
-        input_frames=args.frames_per_clip,
-        input_height=args.img_height,
-        input_width=args.img_width  # ResNet3D supports rectangular inputs
-    )
+    This function creates the model with Sports-1M pretrained weights for better transfer learning.
+    
+    Args:
+        args: Command-line arguments
+        vocab_sizes: Dictionary of vocabulary sizes for categorical features
+        device: Device to place the model on
+        num_gpus: Number of GPUs to use
+        
+    Returns:
+        model: The initialized model
+    """
+    try:
+        from model import create_model as model_create_model
+        
+        # Use the enhanced create_model function from model.loader that loads Sports-1M weights
+        model = model_create_model(args, vocab_sizes, device, num_gpus)
+        
+        # Freeze backbone initially if using gradual fine-tuning
+        if args.gradual_finetuning and args.freezing_strategy == 'fixed':
+            logger.info("[PHASE1] Freezing backbone for Phase 1 (training heads only)")
+            freeze_backbone(model)
+            log_trainable_parameters(model)
+        
+        return model
+        
+    except ImportError:
+        # Fallback to old implementation if import fails
+        logger.warning("Could not import enhanced create_model. Using legacy implementation.")
+        return _legacy_create_model(args, vocab_sizes, device, num_gpus)
 
-    # Initialize model with proper configuration
-    logger.info(f"Initializing ResNet3D model: {args.backbone_name}")
+def _legacy_create_model(args, vocab_sizes, device, num_gpus=1):
+    """Legacy model creation for backward compatibility."""
+    # Create model with the specified configuration
+    logger.info(f"Creating model with backbone {args.backbone_name}")
+    
     model = MultiTaskMultiViewResNet3D.create_model(
-        num_severity=6,  # 6 severity classes: "", 1.0, 2.0, 3.0, 4.0, 5.0
-        num_action_type=10,  # 10 action types: "", Challenge, Dive, Dont know, Elbowing, High leg, Holding, Pushing, Standing tackling, Tackling
+        num_severity=6,  # Number of severity classes including None (0-5)
+        num_action_type=10,  # Number of action type classes including None (0-9)
         vocab_sizes=vocab_sizes,
         backbone_name=args.backbone_name,
-        config=model_config,
-        use_augmentation=(not args.disable_in_model_augmentation),  # Control in-model augmentation
-        disable_in_model_augmentation=args.disable_in_model_augmentation  # Pass the flag explicitly
+        use_attention_aggregation=args.attention_aggregation,
+        use_augmentation=not args.disable_in_model_augmentation,
+        max_views=args.max_views,
+        dropout_rate=args.dropout_rate,
     )
-    model.to(device)
     
-    # Wrap model with DataParallel for multi-GPU
-    if num_gpus > 1:
-        model = nn.DataParallel(model)
-        logger.info(f"Model wrapped with DataParallel for {num_gpus} GPUs")
-
-    # Log model info - handle DataParallel wrapper
-    try:
-        # Get the actual model (unwrap DataParallel if needed)
-        actual_model = model.module if hasattr(model, 'module') else model
-        model_info = actual_model.get_model_info()
-        logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-        logger.info(f"Combined feature dimension: {model_info['video_feature_dim'] + model_info['total_embedding_dim']}")
-    except Exception as e:
-        logger.warning(f"Could not get model info: {e}")
-        logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+    # Apply DataParallel if using multiple GPUs
+    if num_gpus > 1 and not args.force_batch_size:
+        model = torch.nn.DataParallel(model)
+        logger.info(f"Using DataParallel across {num_gpus} GPUs")
+    
+    # Move model to the specified device
+    model = model.to(device)
+    logger.info(f"Model moved to {device}")
+    
+    # Freeze backbone initially if using gradual fine-tuning
+    if args.gradual_finetuning and args.freezing_strategy == 'fixed':
+        logger.info("[PHASE1] Freezing backbone for Phase 1 (training heads only)")
+        freeze_backbone(model)
+        log_trainable_parameters(model)
     
     return model
 

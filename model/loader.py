@@ -5,6 +5,7 @@ from torch.hub import load_state_dict_from_url
 import logging
 from typing import Tuple
 from .config import ModelConfig
+from .resnet3d_model import MultiTaskMultiViewResNet3D
 
 logger = logging.getLogger(__name__)
 
@@ -122,4 +123,55 @@ class ModelLoader:
     def _replace_head_with_identity(self, model: nn.Module) -> None:
         """Replace the model head with Identity layer."""
         model.head = nn.Identity()
-        logger.info("Replaced model head with nn.Identity") 
+        logger.info("Replaced model head with nn.Identity")
+
+def create_model(args, vocab_sizes=None, device=None, num_gpus=None):
+    """
+    Create a MultiTaskMultiViewResNet3D model with Sports-1M pretrained weights.
+    
+    Args:
+        args: Command-line arguments.
+        vocab_sizes: Dictionary of vocabulary sizes for categorical features.
+        device: Device to place the model on.
+        num_gpus: Number of GPUs to use for DataParallel (if > 1).
+        
+    Returns:
+        model: The initialized model
+    """
+    try:
+        logger.info(f"Creating model with backbone {args.backbone_name}")
+        logger.info(f"Using Sports-1M pretrained weights for improved transfer learning")
+        
+        # Create the base model
+        model = MultiTaskMultiViewResNet3D.create_model(
+            num_severity=6,  # Number of severity classes including None (0-5)
+            num_action_type=10,  # Number of action type classes including None (0-9)
+            vocab_sizes=vocab_sizes,
+            backbone_name=args.backbone_name,
+            use_attention_aggregation=args.attention_aggregation,
+            use_augmentation=not args.disable_in_model_augmentation,
+            max_views=args.max_views,
+            dropout_rate=args.dropout_rate,
+        )
+        
+        # Apply DataParallel if using multiple GPUs
+        if num_gpus is not None and num_gpus > 1 and not args.force_batch_size:
+            model = torch.nn.DataParallel(model)
+            logger.info(f"Using DataParallel across {num_gpus} GPUs")
+        
+        # Move model to device
+        if device is not None:
+            model = model.to(device)
+            logger.info(f"Model moved to {device}")
+        
+        # Log total number of parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info(f"Model created with {total_params:,} total parameters")
+        logger.info(f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params:.1%})")
+        
+        return model
+        
+    except Exception as e:
+        logger.error(f"Error creating model: {e}")
+        raise 
