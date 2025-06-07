@@ -165,8 +165,10 @@ class EarlyStopping:
             self.best_weights = model.state_dict().copy()
 
 
-def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, scaler=None, 
-                   max_batches=None, gradient_clip_norm=1.0, memory_cleanup_interval=20):
+def train_one_epoch(model, dataloader, criterion_severity, criterion_action, optimizer, device,
+                   scaler=None, max_batches=None, loss_weights=None, gradient_clip_norm=1.0, 
+                   label_smoothing=0.0, severity_class_weights=None, loss_function='weighted',
+                   focal_gamma=2.0, gpu_augmentation=None, memory_cleanup_interval=20, scheduler=None):
     """Train the model for one epoch."""
     model.train()
     running_loss = 0.0
@@ -177,6 +179,15 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
     processed_batches = 0
 
     start_time = time.time()
+    
+    # Construct loss_config dictionary from arguments
+    loss_config = {
+        'function': loss_function,
+        'weights': loss_weights if loss_weights is not None else [1.0, 1.0],
+        'label_smoothing': label_smoothing,
+        'focal_gamma': focal_gamma,
+        'severity_class_weights': severity_class_weights
+    }
     
     # Clean training without progress bar spam
     total_batches = max_batches if max_batches else len(dataloader)
@@ -192,6 +203,10 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
         
         severity_labels = batch_data["label_severity"]
         action_labels = batch_data["label_type"]
+
+        # Apply GPU augmentation if provided
+        if gpu_augmentation is not None and model.training:
+            batch_data = gpu_augmentation(batch_data)
 
         optimizer.zero_grad()
 
@@ -225,6 +240,10 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
             
             optimizer.step()
+            
+        # Step the OneCycleLR scheduler after each batch if provided
+        if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+            scheduler.step()
 
         # Calculate metrics
         running_loss += total_loss.item() * batch_data["clips"].size(0)
@@ -267,7 +286,10 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
     }
 
 
-def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches=None, memory_cleanup_interval=20):
+def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, device,
+                     max_batches=None, loss_weights=None, label_smoothing=0.0, 
+                     severity_class_weights=None, loss_function='weighted', focal_gamma=2.0,
+                     memory_cleanup_interval=20):
     """Validate the model for one epoch."""
     model.eval()
     running_loss = 0.0
@@ -278,6 +300,15 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
     processed_batches = 0
 
     start_time = time.time()
+    
+    # Construct loss_config dictionary from arguments
+    loss_config = {
+        'function': loss_function,
+        'weights': loss_weights if loss_weights is not None else [1.0, 1.0],
+        'label_smoothing': label_smoothing,
+        'focal_gamma': focal_gamma,
+        'severity_class_weights': severity_class_weights
+    }
     
     # Clean validation without progress bar spam
     total_batches = max_batches if max_batches else len(dataloader)

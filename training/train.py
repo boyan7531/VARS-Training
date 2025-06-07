@@ -354,7 +354,8 @@ def main():
             loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm, 
             label_smoothing=args.label_smoothing, severity_class_weights=severity_class_weights, 
             loss_function=args.loss_function, focal_gamma=args.focal_gamma,
-            gpu_augmentation=gpu_augmentation, memory_cleanup_interval=args.memory_cleanup_interval
+            gpu_augmentation=gpu_augmentation, memory_cleanup_interval=args.memory_cleanup_interval,
+            scheduler=scheduler
         )
         
         # Validation
@@ -406,7 +407,8 @@ def main():
                 if isinstance(scheduler, ReduceLROnPlateau):
                     val_combined_acc = (val_metrics[1] + val_metrics[2]) / 2
                     scheduler.step(val_combined_acc)
-                elif not isinstance(scheduler, OneCycleLR):
+                # Don't step OneCycleLR here, as it is stepped after each batch
+                elif not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
                     scheduler.step()
             
         # Calculate epoch metrics and log summary
