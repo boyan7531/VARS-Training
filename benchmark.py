@@ -201,6 +201,12 @@ def run_benchmark(model, dataloader, device, vocab_sizes):
     all_predictions = {}
     action_counter = 0
     
+    # Add detailed diagnostics storage
+    all_severity_probs = []
+    all_severity_preds = []
+    all_action_probs = []
+    all_action_preds = []
+    
     logger.info("Starting benchmark evaluation...")
     
     with torch.no_grad():
@@ -218,18 +224,27 @@ def run_benchmark(model, dataloader, device, vocab_sizes):
                 sev_logits, act_logits = model(batch_data)
                 
                 # Get action type predictions
-                _, act_pred = torch.max(act_logits, dim=1)
+                act_probs = torch.softmax(act_logits, dim=1)
+                _, act_pred = torch.max(act_probs, dim=1)
                 
                 # Determine offence and severity
-                has_offence, sev_pred = predict_offence_from_severity(sev_logits)
+                severity_probs = torch.softmax(sev_logits, dim=1)
+                _, sev_pred = torch.max(severity_probs, dim=1)
+                has_offence = sev_pred > 0
+                
+                # Store all predictions for analysis
+                all_severity_probs.append(severity_probs.cpu())
+                all_severity_preds.append(sev_pred.cpu())
+                all_action_probs.append(act_probs.cpu())
+                all_action_preds.append(act_pred.cpu())
                 
                 # Debug logging for first few batches
                 if batch_idx < 3:
-                    severity_probs = torch.softmax(sev_logits, dim=1)
                     logger.info(f"Batch {batch_idx} sample predictions:")
                     for i in range(min(2, sev_logits.size(0))):
                         logger.info(f"  Sample {i}: sev_pred={sev_pred[i].item()}, has_offence={has_offence[i].item()}")
                         logger.info(f"    Severity probs: {severity_probs[i].cpu().numpy()}")
+                        logger.info(f"    Action probs: {act_probs[i].cpu().numpy()}")
                 
                 # Process each sample in the batch
                 batch_size = sev_logits.size(0)
@@ -241,11 +256,13 @@ def run_benchmark(model, dataloader, device, vocab_sizes):
                     offence = "Offence" if has_offence[i].item() else "No offence"
                     severity = SEVERITY_LABELS[sev_pred[i].item()] if has_offence[i].item() else ""
                     
-                    # Store prediction
+                    # Store prediction with confidence scores
                     all_predictions[action_id] = {
                         "Action class": action_class,
                         "Offence": offence,
-                        "Severity": severity
+                        "Severity": severity,
+                        "Severity_confidence": float(severity_probs[i, sev_pred[i]].item()),
+                        "Action_confidence": float(act_probs[i, act_pred[i]].item())
                     }
                     
                     action_counter += 1
@@ -260,7 +277,168 @@ def run_benchmark(model, dataloader, device, vocab_sizes):
                 continue
     
     logger.info(f"Benchmark completed! Processed {action_counter} actions total.")
+    
+    # Combine all predictions for analysis
+    if all_severity_probs:
+        all_severity_probs = torch.cat(all_severity_probs, dim=0)
+        all_severity_preds = torch.cat(all_severity_preds, dim=0)
+        all_action_probs = torch.cat(all_action_probs, dim=0)
+        all_action_preds = torch.cat(all_action_preds, dim=0)
+        
+        # Run diagnostics
+        analyze_prediction_bias(all_severity_probs, all_severity_preds, all_action_probs, all_action_preds, model)
+    
     return all_predictions
+
+def analyze_prediction_bias(severity_probs, severity_preds, action_probs, action_preds, model):
+    """Analyze potential biases in model predictions"""
+    logger.info("="*60)
+    logger.info("DETAILED PREDICTION ANALYSIS")
+    logger.info("="*60)
+    
+    # Overall statistics
+    total_samples = len(severity_preds)
+    logger.info(f"Total samples analyzed: {total_samples}")
+    
+    # Severity class distribution
+    sev_class_counts = {}
+    for i in range(len(SEVERITY_LABELS)):
+        count = (severity_preds == i).sum().item()
+        percentage = 100 * count / total_samples
+        sev_class_counts[i] = count
+        logger.info(f"Severity class {i} ({SEVERITY_LABELS[i]}): {count} samples ({percentage:.1f}%)")
+    
+    # Check for high confidence in majority class
+    sev_confidences = torch.gather(severity_probs, 1, severity_preds.unsqueeze(1)).squeeze(1)
+    high_conf_mask = sev_confidences > 0.9
+    high_conf_count = high_conf_mask.sum().item()
+    
+    if high_conf_count > 0:
+        logger.info(f"High confidence predictions (>90%): {high_conf_count} ({100*high_conf_count/total_samples:.1f}%)")
+        
+        # Check which classes have high confidence
+        for i in range(len(SEVERITY_LABELS)):
+            class_high_conf = (severity_preds == i) & high_conf_mask
+            count = class_high_conf.sum().item()
+            if count > 0:
+                logger.info(f"  Class {i} ({SEVERITY_LABELS[i]}) high confidence: {count} ({100*count/high_conf_count:.1f}% of high conf)")
+    
+    # Analyze severity distribution details
+    logger.info("\nSeverity probability distribution statistics:")
+    mean_probs = severity_probs.mean(dim=0)
+    logger.info(f"Mean probabilities across all samples:")
+    for i, prob in enumerate(mean_probs):
+        logger.info(f"  Class {i} ({SEVERITY_LABELS[i]}): {prob:.4f}")
+    
+    # Check for separation between top predictions
+    top_probs, top_classes = torch.topk(severity_probs, k=2, dim=1)
+    confidence_gaps = top_probs[:, 0] - top_probs[:, 1]
+    mean_gap = confidence_gaps.mean().item()
+    logger.info(f"\nMean confidence gap between top 2 severity predictions: {mean_gap:.4f}")
+    
+    # Add class confusion analysis
+    logger.info("\nClass confusion analysis:")
+    for i in range(len(SEVERITY_LABELS)):
+        if sev_class_counts[i] == 0:
+            continue
+            
+        # For samples predicted as class i, what was the second highest prediction?
+        class_i_mask = severity_preds == i
+        class_i_probs = severity_probs[class_i_mask]
+        
+        if len(class_i_probs) > 0:
+            # Zero out the predicted class to find the second highest
+            second_probs = class_i_probs.clone()
+            second_probs[:, i] = 0
+            _, second_highest = torch.max(second_probs, dim=1)
+            
+            # Count occurrences of each second highest class
+            second_counts = {}
+            for j in range(len(SEVERITY_LABELS)):
+                count = (second_highest == j).sum().item()
+                if count > 0:
+                    percentage = 100 * count / len(second_highest)
+                    second_counts[j] = (count, percentage)
+            
+            logger.info(f"For samples predicted as class {i} ({SEVERITY_LABELS[i]}):")
+            for j, (count, percentage) in sorted(second_counts.items(), key=lambda x: x[1][0], reverse=True):
+                logger.info(f"  Second highest prediction: class {j} ({SEVERITY_LABELS[j]}) - {count} samples ({percentage:.1f}%)")
+    
+    logger.info("\nFurther diagnostics:")
+    # Check if model is making very certain predictions
+    avg_entropy = -torch.sum(severity_probs * torch.log(severity_probs + 1e-10), dim=1).mean().item()
+    max_entropy = -torch.log(torch.tensor(1.0/len(SEVERITY_LABELS)))
+    entropy_ratio = avg_entropy / max_entropy
+    
+    logger.info(f"Average prediction entropy: {avg_entropy:.4f} (ratio to max entropy: {entropy_ratio:.4f})")
+    if entropy_ratio < 0.5:
+        logger.info("INSIGHT: Model is making very confident predictions (low entropy), may indicate overfitting or overconfidence")
+    elif entropy_ratio > 0.8:
+        logger.info("INSIGHT: Model is making uncertain predictions (high entropy), may be underfitting or confused")
+    
+    # Check if predictions are balanced or skewed
+    predominant_class = severity_preds.mode().values.item()
+    predominant_count = (severity_preds == predominant_class).sum().item()
+    predominant_ratio = predominant_count / total_samples
+    
+    logger.info(f"Predominant class: {predominant_class} ({SEVERITY_LABELS[predominant_class]}) with {predominant_ratio*100:.1f}% of predictions")
+    if predominant_ratio > 0.7:
+        logger.info("INSIGHT: Model predictions are heavily skewed toward one class, may indicate bias or class imbalance issues")
+        logger.info("SUGGESTION: Consider checking model weights, specifically the final layer bias terms for the severity head")
+        
+    # Output detailed suggestions based on findings
+    logger.info("\nDIAGNOSTIC SUGGESTIONS:")
+    if predominant_ratio > 0.7 and entropy_ratio < 0.5:
+        logger.info("1. The model appears to be strongly biased toward one class with high confidence")
+        logger.info("   - Verify class balancing during training")
+        logger.info("   - Check if class weights were applied correctly")
+        logger.info("   - Examine data quality for the underrepresented classes")
+        logger.info("   - Try modifying the final layer bias values directly to calibrate predictions")
+    elif predominant_ratio > 0.7:
+        logger.info("1. The model predictions are skewed toward one class, but with moderate confidence")
+        logger.info("   - Review training process for class balancing effectiveness")
+        logger.info("   - Consider adjusting class weights or focal loss parameters")
+    
+    if sev_class_counts.get(1, 0) < sev_class_counts.get(2, 0):
+        logger.info("2. Model is predicting more severity 2.0 than 1.0, which is unexpected based on class distribution")
+        logger.info("   - Check if class mapping is consistent between training and inference")
+        logger.info("   - Verify that label indices match between dataset and benchmark code")
+        logger.info("   - Consider examining the model's decision boundary between classes 1 and 2")
+        
+    logger.info("\nEXAMINING MODEL WEIGHTS (if available):")
+    try:
+        # If we have access to the model, inspect its weights directly
+        if hasattr(model, 'severity_head') and isinstance(model.severity_head[-1], torch.nn.Linear):
+            final_layer = model.severity_head[-1]
+            weights = final_layer.weight.detach().cpu()
+            biases = final_layer.bias.detach().cpu()
+            
+            logger.info(f"Severity head final layer shape: weights {weights.shape}, biases {biases.shape}")
+            logger.info("Final layer biases:")
+            for i, bias in enumerate(biases):
+                logger.info(f"  Class {i} ({SEVERITY_LABELS[i]}) bias: {bias.item():.4f}")
+            
+            # Check for bias imbalance
+            max_bias_idx = torch.argmax(biases).item()
+            min_bias_idx = torch.argmin(biases).item()
+            bias_range = biases.max().item() - biases.min().item()
+            
+            logger.info(f"Bias range: {bias_range:.4f}")
+            logger.info(f"Max bias: Class {max_bias_idx} ({SEVERITY_LABELS[max_bias_idx]}): {biases[max_bias_idx].item():.4f}")
+            logger.info(f"Min bias: Class {min_bias_idx} ({SEVERITY_LABELS[min_bias_idx]}): {biases[min_bias_idx].item():.4f}")
+            
+            # If there's a big difference, flag it
+            if bias_range > 1.0:
+                logger.info("POTENTIAL ISSUE: Large bias difference between classes detected")
+                logger.info("This could cause the model to favor certain classes regardless of input")
+                
+                # If the predominantly predicted class has highest bias
+                if max_bias_idx == predominant_class:
+                    logger.info("The class with highest bias matches the predominantly predicted class")
+                    logger.info("SUGGESTION: Try reducing the bias term for class " + 
+                                f"{max_bias_idx} ({SEVERITY_LABELS[max_bias_idx]}) to calibrate predictions")
+    except Exception as e:
+        logger.warning(f"Could not examine model weights: {e}")
 
 def save_benchmark_results(predictions, output_file, split="test"):
     """Save predictions in the required JSON format"""
