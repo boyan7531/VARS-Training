@@ -350,7 +350,7 @@ def main():
     }
 
     # Create model
-    model = create_model(args, vocab_sizes, device, num_gpus)
+    model = create_model(args, vocab_sizes, device, num_gpus, backbone_name=args.backbone_name)
     
     # Setup freezing strategy
     freezing_manager = setup_freezing_strategy(args, model)

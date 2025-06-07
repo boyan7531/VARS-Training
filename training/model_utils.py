@@ -356,46 +356,51 @@ class SmartFreezingManager:
         return False
 
 
-def create_model(args, vocab_sizes, device, num_gpus=1):
-    """Create and initialize the model with proper configuration."""
+def create_model(args, vocab_sizes, device, num_gpus=1, backbone_name='r2plus1d_18'):
+    """
+    Creates the model, sets up data parallelism, and moves it to the correct device.
+    
+    Args:
+        args: Command-line arguments.
+        vocab_sizes: Dictionary of vocabulary sizes for categorical features.
+        device: The device to run the model on (e.g., 'cuda' or 'cpu').
+        num_gpus: Number of GPUs available.
+        backbone_name: Name of the ResNet3D backbone to use.
+        
+    Returns:
+        The created model.
+    """
     
     # Model configuration
     model_config = ModelConfig(
-        use_attention_aggregation=args.attention_aggregation,
-        input_frames=args.frames_per_clip,
-        input_height=args.img_height,
-        input_width=args.img_width  # ResNet3D supports rectangular inputs
+        num_heads=args.num_heads,
+        num_transformer_layers=args.num_transformer_layers,
+        dim_feedforward=args.dim_feedforward,
+        dropout=args.dropout,
+        embedding_dim=args.embedding_dim,
+        use_multiview_transformer=(not args.disable_multiview),
+        use_attention_aggregation=args.attention_aggregation
     )
-
-    # Initialize model with proper configuration
-    logger.info(f"Initializing ResNet3D model: {args.backbone_name}")
+    
+    # Create the model using the class factory method for clarity
     model = MultiTaskMultiViewResNet3D.create_model(
-        num_severity=6,  # 6 severity classes: "", 1.0, 2.0, 3.0, 4.0, 5.0
-        num_action_type=10,  # 10 action types: "", Challenge, Dive, Dont know, Elbowing, High leg, Holding, Pushing, Standing tackling, Tackling
+        num_severity=6,  # Assuming 6 classes for severity (0-5)
+        num_action_type=10, # Assuming 10 classes for action type
         vocab_sizes=vocab_sizes,
-        backbone_name=args.backbone_name,
+        backbone_name=backbone_name,  # Pass the backbone name
         config=model_config,
-        use_augmentation=(not args.disable_in_model_augmentation),  # Control in-model augmentation
-        disable_in_model_augmentation=args.disable_in_model_augmentation  # Pass the flag explicitly
+        use_augmentation=False, # Augmentation is handled in the dataset loader
     )
-    model.to(device)
-    
-    # Wrap model with DataParallel for multi-GPU
-    if num_gpus > 1:
-        model = nn.DataParallel(model)
-        logger.info(f"Model wrapped with DataParallel for {num_gpus} GPUs")
 
-    # Log model info - handle DataParallel wrapper
-    try:
-        # Get the actual model (unwrap DataParallel if needed)
-        actual_model = model.module if hasattr(model, 'module') else model
-        model_info = actual_model.get_model_info()
-        logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-        logger.info(f"Combined feature dimension: {model_info['video_feature_dim'] + model_info['total_embedding_dim']}")
-    except Exception as e:
-        logger.warning(f"Could not get model info: {e}")
-        logger.info(f"Model initialized - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info(f"Model '{model.__class__.__name__}' with backbone '{backbone_name}' created.")
     
+    # Multi-GPU setup
+    if num_gpus > 1:
+        logger.info(f"Using {num_gpus} GPUs with DataParallel.")
+        model = nn.DataParallel(model)
+        
+    model.to(device)
+    log_trainable_parameters(model)
     return model
 
 

@@ -24,16 +24,20 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     
     # === MODEL CONFIGURATION ===
-    parser.add_argument('--backbone_name', type=str, default='r2plus1d_18', 
-                        choices=['resnet3d_18', 'mc3_18', 'r2plus1d_18', 'resnet3d_50'], 
-                        help="ResNet3D backbone variant (r2plus1d_18 recommended for best accuracy)")
+    model_group = parser.add_argument_group('Model Architecture')
+    model_group.add_argument('--model_name', type=str, default='MultiTaskResNet3D', help='Name of the model architecture to use.')
+    model_group.add_argument('--backbone_name', type=str, default='r2plus1d_18', 
+                             choices=['r2plus1d_18', 'mc3_18', 'r3d_18'],
+                             help='Name of the pretrained ResNet3D backbone (default: r2plus1d_18).')
+    model_group.add_argument('--disable_multiview', action='store_true', help='Disable multi-view processing and use single-view mode.')
+    model_group.add_argument('--max_views', type=int, default=None, help='Maximum number of views to load per action (default: all).')
+    model_group.add_argument('--embedding_dim', type=int, default=256, help='Dimension for categorical feature embeddings.')
     parser.add_argument('--frames_per_clip', type=int, default=16, help='Number of frames per clip')
     parser.add_argument('--target_fps', type=int, default=15, help='Target FPS for clips')
     parser.add_argument('--start_frame', type=int, default=67, help='Start frame index for foul-centered extraction (8 frames before foul at frame 75)')
     parser.add_argument('--end_frame', type=int, default=82, help='End frame index for foul-centered extraction (7 frames after foul at frame 75)')
     parser.add_argument('--img_height', type=int, default=224, help='Target image height')
     parser.add_argument('--img_width', type=int, default=398, help='Target image width (matches original VARS paper)')
-    parser.add_argument('--max_views', type=int, default=None, help='Optional limit on max views per action (default: use all available)')
     parser.add_argument('--attention_aggregation', action='store_true', default=True, help='Use attention for view aggregation')
     
     # === TRAINING OPTIMIZATION ===
