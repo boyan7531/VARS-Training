@@ -296,10 +296,10 @@ class ClassBalancedSampler(torch.utils.data.Sampler):
             self.class_counts[severity_label] += 1
             self.class_indices[severity_label].append(idx)
         
-        # Calculate sampling weights
+                # Calculate sampling weights
         max_count = 1
         if self.class_counts: # Ensure class_counts is not empty
-        max_count = max(self.class_counts.values())
+            max_count = max(self.class_counts.values())
         
         self.sampling_weights = {}
         
@@ -323,7 +323,7 @@ class ClassBalancedSampler(torch.utils.data.Sampler):
         self.samples_per_epoch = 0
         for class_id, count in self.class_counts.items():
             if class_id in self.sampling_weights: # Ensure class_id has a weight
-            self.samples_per_epoch += int(count * self.sampling_weights[class_id])
+                self.samples_per_epoch += int(count * self.sampling_weights[class_id])
     
     def __iter__(self):
         indices = []
