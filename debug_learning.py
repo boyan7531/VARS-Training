@@ -316,7 +316,7 @@ def main():
     # Load dataset
     print("Loading dataset...")
     train_dataset = SoccerNetMVFoulDataset(
-        dataset_dir=args.train_dataset_path,
+        dataset_path=args.train_dataset_path,
         split='train'
     )
     

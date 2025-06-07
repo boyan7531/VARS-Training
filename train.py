@@ -1057,10 +1057,10 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
             # For simplicity here, we'll check device type.
             if device.type == 'cuda': # Assuming mixed precision is used if cuda is available and training uses it.
                 with torch.amp.autocast('cuda'): # Enable AMP for the forward pass
-                    sev_logits, act_logits = model(batch_data)
-                    total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
-                        sev_logits, act_logits, batch_data, loss_weights, 
-                        label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
+            sev_logits, act_logits = model(batch_data)
+            total_loss, loss_sev_weighted, loss_act_weighted = calculate_multitask_loss(
+                sev_logits, act_logits, batch_data, loss_weights, 
+                label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
                         loss_function=loss_function, focal_gamma=focal_gamma
                     )
             else: # CPU or other device, or if mixed precision is explicitly disabled for validation
@@ -1069,7 +1069,7 @@ def validate_one_epoch(model, dataloader, criterion_severity, criterion_action, 
                     sev_logits, act_logits, batch_data, loss_weights, 
                     label_smoothing=label_smoothing, severity_class_weights=severity_class_weights,
                     loss_function=loss_function, focal_gamma=focal_gamma
-                )
+            )
 
             running_loss += total_loss.item() * batch_data["clips"].size(0)
             sev_acc = calculate_accuracy(sev_logits, severity_labels)
@@ -1150,7 +1150,7 @@ def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None
     
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
         try:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         except ValueError as e:
             logger.warning(f"Could not load optimizer state: {e}")
             logger.warning("Continuing with fresh optimizer state (this is normal when resuming across training phases)")
@@ -1531,66 +1531,66 @@ if __name__ == "__main__":
         # Traditional CPU-based augmentation pipeline
         logger.info("🖥️  Using CPU-based augmentation pipeline")
         gpu_augmentation = None
-        
-        # Enhanced transforms with AGGRESSIVE/EXTREME augmentation for small dataset
-        # Multiple augmentation stages for maximum data variety
-        augmentation_stages = [ConvertToFloatAndScale()]
-        
-        # STAGE 1: Aggressive temporal augmentations (before normalization)
+
+    # Enhanced transforms with AGGRESSIVE/EXTREME augmentation for small dataset
+    # Multiple augmentation stages for maximum data variety
+    augmentation_stages = [ConvertToFloatAndScale()]
+    
+    # STAGE 1: Aggressive temporal augmentations (before normalization)
+    augmentation_stages.extend([
+        TemporalJitter(max_jitter=args.temporal_jitter_strength),
+        RandomTemporalReverse(prob=0.5 if args.extreme_augmentation else (0.4 if args.aggressive_augmentation else 0.2)),
+        RandomFrameDropout(
+            dropout_prob=args.dropout_prob * (1.5 if args.extreme_augmentation else 1.0),
+            max_consecutive=min(4, args.temporal_jitter_strength + 1)
+        ),
+    ])
+    
+    # STAGE 1.5: EXTREME temporal augmentations (only in extreme mode)
+    if args.extreme_augmentation:
         augmentation_stages.extend([
-            TemporalJitter(max_jitter=args.temporal_jitter_strength),
-            RandomTemporalReverse(prob=0.5 if args.extreme_augmentation else (0.4 if args.aggressive_augmentation else 0.2)),
-            RandomFrameDropout(
-                dropout_prob=args.dropout_prob * (1.5 if args.extreme_augmentation else 1.0),
-                max_consecutive=min(4, args.temporal_jitter_strength + 1)
-            ),
+            RandomTimeWarp(warp_factor=0.3, prob=0.4),  # More aggressive time warping
+            RandomMixup(alpha=0.3, prob=0.4),  # Inter-frame mixing
         ])
-        
-        # STAGE 1.5: EXTREME temporal augmentations (only in extreme mode)
-        if args.extreme_augmentation:
-            augmentation_stages.extend([
-                RandomTimeWarp(warp_factor=0.3, prob=0.4),  # More aggressive time warping
-                RandomMixup(alpha=0.3, prob=0.4),  # Inter-frame mixing
-            ])
-        
-        # STAGE 2: Aggressive spatial augmentations
+    
+    # STAGE 2: Aggressive spatial augmentations
+    augmentation_stages.extend([
+        RandomSpatialCrop(
+            crop_scale_range=(args.spatial_crop_strength * (0.9 if args.extreme_augmentation else 1.0), 1.0),
+            prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
+        ),
+        RandomHorizontalFlip(prob=0.7 if args.extreme_augmentation else (0.6 if args.aggressive_augmentation else 0.5)),
+    ])
+    
+    # STAGE 2.5: EXTREME spatial augmentations (only in extreme mode)
+    if args.extreme_augmentation:
         augmentation_stages.extend([
-            RandomSpatialCrop(
-                crop_scale_range=(args.spatial_crop_strength * (0.9 if args.extreme_augmentation else 1.0), 1.0),
-                prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
-            ),
-            RandomHorizontalFlip(prob=0.7 if args.extreme_augmentation else (0.6 if args.aggressive_augmentation else 0.5)),
+            RandomRotation(max_angle=8, prob=0.5),  # Small rotations
+            RandomCutout(max_holes=2, max_height=15, max_width=15, prob=0.5),  # Cutout augmentation
         ])
-        
-        # STAGE 2.5: EXTREME spatial augmentations (only in extreme mode)
-        if args.extreme_augmentation:
-            augmentation_stages.extend([
-                RandomRotation(max_angle=8, prob=0.5),  # Small rotations
-                RandomCutout(max_holes=2, max_height=15, max_width=15, prob=0.5),  # Cutout augmentation
-            ])
-        
-        # STAGE 3: Color/intensity augmentations (before normalization)
-        augmentation_stages.extend([
-            RandomBrightnessContrast(
-                brightness_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                contrast_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
-            ),
-            RandomGaussianNoise(
-                std_range=(0.01, args.noise_strength * (1.3 if args.extreme_augmentation else 1.0)),
-                prob=0.6 if args.extreme_augmentation else (0.5 if args.aggressive_augmentation else 0.3)
-            ),
-        ])
-        
-        # STAGE 4: Standard preprocessing
-        augmentation_stages.extend([
-            VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ShortSideScale(size=int(args.img_height * (1.5 if args.extreme_augmentation else (1.4 if args.aggressive_augmentation else 1.2)))),
-            PerFrameCenterCrop((args.img_height, args.img_width)),
-        ])
-        
-        # Create the final transform
-        train_transform = Compose(augmentation_stages)
+    
+    # STAGE 3: Color/intensity augmentations (before normalization)
+    augmentation_stages.extend([
+        RandomBrightnessContrast(
+            brightness_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+            contrast_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+            prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
+        ),
+        RandomGaussianNoise(
+            std_range=(0.01, args.noise_strength * (1.3 if args.extreme_augmentation else 1.0)),
+            prob=0.6 if args.extreme_augmentation else (0.5 if args.aggressive_augmentation else 0.3)
+        ),
+    ])
+    
+    # STAGE 4: Standard preprocessing
+    augmentation_stages.extend([
+        VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ShortSideScale(size=int(args.img_height * (1.5 if args.extreme_augmentation else (1.4 if args.aggressive_augmentation else 1.2)))),
+        PerFrameCenterCrop((args.img_height, args.img_width)),
+    ])
+    
+    # Create the final transform
+    train_transform = Compose(augmentation_stages)
     
     # Log augmentation settings
     if args.extreme_augmentation:
@@ -1710,7 +1710,7 @@ if __name__ == "__main__":
         val_num_workers = 2
     else: # args.num_workers >= 4
         val_num_workers = args.num_workers // 2
-        
+    
     val_loader = DataLoader(
         val_dataset, 
         batch_size=args.batch_size,
@@ -1917,29 +1917,29 @@ if __name__ == "__main__":
         # Main scheduler (for Phase 2) will be initialized later
     else:
         # Standard (non-gradual) training: initialize the main scheduler now
-        if args.scheduler == 'cosine':
-            scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
-            scheduler_info = f"CosineAnnealing (T_max={args.epochs}, eta_min={args.lr * 0.01:.1e})"
-        elif args.scheduler == 'onecycle':
-            steps_per_epoch = len(train_loader)
-            scheduler = OneCycleLR(
-                optimizer, 
-                max_lr=args.lr,
-                epochs=args.epochs,
-                steps_per_epoch=steps_per_epoch,
+    if args.scheduler == 'cosine':
+        scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
+        scheduler_info = f"CosineAnnealing (T_max={args.epochs}, eta_min={args.lr * 0.01:.1e})"
+    elif args.scheduler == 'onecycle':
+        steps_per_epoch = len(train_loader)
+        scheduler = OneCycleLR(
+            optimizer, 
+            max_lr=args.lr,
+            epochs=args.epochs,
+            steps_per_epoch=steps_per_epoch,
                 pct_start=args.warmup_epochs / args.epochs if args.epochs > 0 else 0.1
-            )
-            scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, warmup_epochs={args.warmup_epochs})"
-        elif args.scheduler == 'step':
-            scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
-            scheduler_info = f"StepLR (step_size={args.step_size}, gamma={args.gamma})"
-        elif args.scheduler == 'exponential':
-            scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.gamma)
-            scheduler_info = f"ExponentialLR (gamma={args.gamma})"
-        elif args.scheduler == 'reduce_on_plateau':
+        )
+        scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, warmup_epochs={args.warmup_epochs})"
+    elif args.scheduler == 'step':
+        scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
+        scheduler_info = f"StepLR (step_size={args.step_size}, gamma={args.gamma})"
+    elif args.scheduler == 'exponential':
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.gamma)
+        scheduler_info = f"ExponentialLR (gamma={args.gamma})"
+    elif args.scheduler == 'reduce_on_plateau':
             scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=args.gamma, 
                                         patience=args.plateau_patience, min_lr=args.min_lr)
-            scheduler_info = f"ReduceLROnPlateau (mode=max, factor={args.gamma}, patience={args.plateau_patience}, min_lr={args.min_lr:.1e})"
+        scheduler_info = f"ReduceLROnPlateau (mode=max, factor={args.gamma}, patience={args.plateau_patience}, min_lr={args.min_lr:.1e})"
 
     # Early stopping
     early_stopping = EarlyStopping(patience=args.early_stopping_patience)
@@ -2049,8 +2049,8 @@ if __name__ == "__main__":
                 optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
                 
                 # Initialize main scheduler for Phase 2
-                remaining_epochs = args.epochs - epoch
-                if args.scheduler == 'cosine':
+                    remaining_epochs = args.epochs - epoch
+                    if args.scheduler == 'cosine':
                     scheduler = CosineAnnealingLR(optimizer, T_max=remaining_epochs, eta_min=actual_phase2_backbone_lr * 0.01)
                     scheduler_info = f"Phase 2: CosineAnnealing (T_max={remaining_epochs}, eta_min={actual_phase2_backbone_lr * 0.01:.1e})"
                 elif args.scheduler == 'onecycle':
@@ -2063,8 +2063,8 @@ if __name__ == "__main__":
                         pct_start=(args.warmup_epochs / remaining_epochs) if remaining_epochs > 0 and args.warmup_epochs < remaining_epochs else 0.1
                     )
                     scheduler_info = f"Phase 2: OneCycle (max_lr_config, warmup_epochs_scaled)"
-                elif args.scheduler == 'step':
-                    scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
+                    elif args.scheduler == 'step':
+                        scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
                     scheduler_info = f"Phase 2: StepLR (step_size={args.step_size}, gamma={args.gamma})"
                 elif args.scheduler == 'exponential':
                     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.gamma)
@@ -2078,7 +2078,7 @@ if __name__ == "__main__":
                     scheduler_info = "Phase 2: None"
                 logger.info(f"[PHASE2_SCHEDULER] Initialized: {scheduler_info}")
                 phase1_scheduler = None # Ensure Phase 1 scheduler is no longer used
-                 
+                
                 log_trainable_parameters(model)
                 logger.info("[PHASE2] Phase 2 setup complete!")
                 logger.info("[PHASE2] " + "="*60)
@@ -2148,8 +2148,8 @@ if __name__ == "__main__":
                 if isinstance(scheduler, ReduceLROnPlateau):
                     scheduler.step(val_combined_acc)
                 elif not isinstance(scheduler, OneCycleLR): # OneCycleLR steps per batch
-                    scheduler.step()
-            
+                scheduler.step()
+
         # Calculate epoch time and learning rate info
         epoch_time = time.time() - epoch_start_time
         current_lr = optimizer.param_groups[0]['lr']
