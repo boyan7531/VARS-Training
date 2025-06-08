@@ -21,6 +21,9 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='Weight decay for AdamW')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
+    parser.add_argument('--worker_timeout', type=int, default=0, help='Timeout for DataLoader workers (seconds)')
+    parser.add_argument('--prefetch_factor', type=int, default=2, help='Number of batches loaded in advance by each worker')
+    parser.add_argument('--pin_memory', action='store_true', help='Pin memory for DataLoader')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     
     # === MODEL CONFIGURATION ===
@@ -133,10 +136,13 @@ def parse_args():
                        help='Factor for ReduceLROnPlateau scheduler in Phase 1 (gradual fine-tuning only).')
     
     # === AUGMENTATION CONFIGURATION ===
+    parser.add_argument('--augmentation_strength', type=str, default='aggressive',
+                       choices=['none', 'mild', 'moderate', 'aggressive', 'extreme'],
+                       help='Overall augmentation strength (none, mild, moderate, aggressive, extreme)')
     parser.add_argument('--aggressive_augmentation', action='store_true', default=True,
-                       help='Enable aggressive augmentation pipeline for small datasets')
+                       help='Enable aggressive augmentation pipeline for small datasets (deprecated)')
     parser.add_argument('--extreme_augmentation', action='store_true', default=False,
-                       help='Enable EXTREME augmentation with all techniques (use for very small datasets)')
+                       help='Enable EXTREME augmentation with all techniques (use for very small datasets) (deprecated)')
     parser.add_argument('--temporal_jitter_strength', type=int, default=3,
                        help='Max temporal jitter in frames (higher = more temporal variation)')
     parser.add_argument('--dropout_prob', type=float, default=0.2,
@@ -224,6 +230,24 @@ def process_config(args):
         args.extreme_augmentation = False
         args.disable_in_model_augmentation = True
         logger.info("🚫 All augmentation disabled")
+    
+    # Handle new augmentation_strength argument
+    if args.augmentation_strength == 'none':
+        args.disable_augmentation = True
+    elif args.augmentation_strength == 'mild':
+        args.aggressive_augmentation = False
+        args.extreme_augmentation = False
+        # You can add specific mild augmentation settings here if needed
+    elif args.augmentation_strength == 'moderate':
+        args.aggressive_augmentation = True # Moderate can be aggressive without extreme
+        args.extreme_augmentation = False
+        # Adjust other aug params for moderate as needed
+    elif args.augmentation_strength == 'aggressive':
+        args.aggressive_augmentation = True
+        args.extreme_augmentation = False
+    elif args.augmentation_strength == 'extreme':
+        args.aggressive_augmentation = True
+        args.extreme_augmentation = True
     
     # Handle legacy arguments and provide warnings
     if args.use_focal_loss and args.loss_function == 'weighted':
