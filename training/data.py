@@ -687,21 +687,21 @@ class ProgressiveClassBalancedSampler(torch.utils.data.Sampler):
         # Calculate target counts for each class
         self.targets_per_class = {}
         for cls, count in self.class_counts.items():
-            if count == self.majority_count:
-                # Majority class - no oversampling
+            minority_ratio = count / self.majority_count
+            
+            if minority_ratio >= 0.8:
+                # Large classes (≥80% of majority): no oversampling
                 self.targets_per_class[cls] = count
+            elif minority_ratio >= 0.4:
+                # Medium classes (40-80% of majority): minimal oversampling
+                class_specific_factor = 1.0 + (current_factor - 1.0) * 0.3  # 30% of full factor
+                target_count = int(count * class_specific_factor)
+                self.targets_per_class[cls] = min(target_count, int(self.majority_count * 1.2))  # Cap at 120% of majority
             else:
-                # Only oversample truly minority classes (< 50% of majority)
-                minority_ratio = count / self.majority_count
-                
-                if minority_ratio >= 0.5:
-                    # Medium-sized classes: minimal or no oversampling
-                    class_specific_factor = max(1.0, current_factor * 0.5)
-                else:
-                    # True minority classes: progressive oversampling
-                    # Inverse relationship: rarer classes get more oversampling
-                    rarity_boost = min(current_factor, self.max_targets_multiplier * minority_ratio)
-                    class_specific_factor = current_factor / max(minority_ratio, 0.1)
+                # True minority classes (<40% of majority): progressive oversampling
+                # Linear scaling based on rarity
+                rarity_factor = (1.0 - minority_ratio) / 0.6  # Scale from 0 to 1 as ratio goes from 0.4 to 0
+                class_specific_factor = 1.0 + (current_factor - 1.0) * (0.7 + 0.3 * rarity_factor)  # 70-100% of full factor
                 
                 # Cap the maximum oversampling
                 class_specific_factor = min(class_specific_factor, self.max_targets_multiplier)
