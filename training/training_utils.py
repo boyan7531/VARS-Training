@@ -288,9 +288,9 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
 
         optimizer.zero_grad()
 
-        # Mixed precision forward pass (fixed deprecation warning)
+        # Mixed precision forward pass with explicit dtype configuration
         if scaler is not None:
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda', dtype=torch.float16):  # Explicitly use float16 for maximum speed
                 # Apply GPU augmentation if provided
                 if gpu_augmentation is not None:
                     # Check if this is a severity-aware augmentation
@@ -414,17 +414,15 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
             severity_labels = batch_data["label_severity"]
             action_labels = batch_data["label_type"]
 
-            # Apply autocast for consistency with training if using CUDA and mixed precision is enabled for training
-            # We infer mixed precision enablement from whether scaler was used in train,
-            # or more directly, if args.mixed_precision is True (assuming args is accessible or passed)
-            # For simplicity here, we'll check device type.
-            if device.type == 'cuda': # Assuming mixed precision is used if cuda is available and training uses it.
-                with torch.amp.autocast('cuda'): # Enable AMP for the forward pass
+            # Apply autocast for validation to match training config
+            # Consistently use autocast with explicit dtype for validation when on CUDA
+            if device.type == 'cuda':
+                with torch.amp.autocast('cuda', dtype=torch.float16): # Explicitly use float16 for consistency
                     sev_logits, act_logits = model(batch_data)
                     total_loss, _, _ = calculate_multitask_loss(
                         sev_logits, act_logits, batch_data, loss_config
                     )
-            else: # CPU or other device, or if mixed precision is explicitly disabled for validation
+            else: # CPU or other device where mixed precision isn't available
                 sev_logits, act_logits = model(batch_data)
                 total_loss, _, _ = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_config

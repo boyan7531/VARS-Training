@@ -828,7 +828,8 @@ def create_model(args, vocab_sizes, device, num_gpus=1):
         use_augmentation=(not args.disable_in_model_augmentation),  # Control in-model augmentation
         disable_in_model_augmentation=args.disable_in_model_augmentation  # Pass the flag explicitly
     )
-    model.to(device)
+    # Keep master weights in fp32 for better precision during updates
+    model.to(device, dtype=torch.float32)
     
     # Wrap model with DataParallel for multi-GPU
     if num_gpus > 1:

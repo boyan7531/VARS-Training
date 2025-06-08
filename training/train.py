@@ -277,6 +277,20 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
     return optimizer, scheduler
 
 
+def reset_gradscaler_after_calibration(scaler):
+    """
+    Reset GradScaler parameters to more conservative values after initial calibration.
+    This helps with long-term training stability.
+    """
+    # Use more conservative growth factor for long-term stability
+    scaler.set_growth_factor(1.5)
+    # Check less frequently to allow stabilization
+    scaler.set_growth_interval(500)
+    # Keep current scale as starting point
+    logger.info(f"GradScaler reset to stable parameters after calibration. Current scale: {scaler.get_scale():.1f}")
+    return scaler
+
+
 def main():
     """Main training function."""
     # Configure multiprocessing for DataLoader workers
@@ -308,9 +322,20 @@ def main():
     # Device setup and scaling
     device, num_gpus = setup_device_and_scaling(args)
 
-    # Initialize GradScaler for mixed-precision training
-    scaler = torch.amp.GradScaler('cuda') if args.mixed_precision and device.type == 'cuda' else None
-    logger.info(f"Using mixed precision training" if scaler else "Not using mixed precision training")
+    # Initialize GradScaler for mixed-precision training with calibration
+    scaler = torch.amp.GradScaler() if args.mixed_precision and device.type == 'cuda' else None
+    
+    # Configure GradScaler for better initial stability
+    if scaler is not None:
+        # Start with more aggressive growth factor for faster calibration
+        scaler.set_growth_factor(2.0)
+        scaler.set_growth_interval(100)  # Check more frequently initially
+        logger.info(f"Using mixed precision training with calibrated GradScaler")
+    else:
+        logger.info("Not using mixed precision training")
+        
+    # Flag to track if we've reset scaler parameters after calibration
+    scaler_calibration_reset = False
 
     # Create datasets and dataloaders
     train_dataset, val_dataset = create_datasets(args)
@@ -413,6 +438,9 @@ def main():
     logger.info("=" * 80)
 
     for epoch in range(start_epoch, args.epochs):
+        # Track if we're using mixed precision for logging
+        if scaler is not None and epoch == 0:
+            logger.info("🚀 Mixed precision training active with explicit float16")
         epoch_start_time = time.time()
         
         # Update progressive sampler epoch if enabled
@@ -438,6 +466,11 @@ def main():
             scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
             gpu_augmentation=gpu_augmentation
         )
+        
+        # Reset GradScaler parameters after initial calibration period (typically 100-500 steps)
+        if scaler is not None and not scaler_calibration_reset and epoch >= 1:
+            scaler = reset_gradscaler_after_calibration(scaler)
+            scaler_calibration_reset = True
         
         # Validation
         val_metrics = validate_one_epoch(
