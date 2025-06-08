@@ -240,23 +240,40 @@ def process_config(args):
     elif args.augmentation_strength == 'mild':
         args.aggressive_augmentation = False
         args.extreme_augmentation = False
-        # You can add specific mild augmentation settings here if needed
+        args.temporal_jitter_strength = 1
+        args.spatial_crop_strength = 0.9
+        args.color_aug_strength = 0.1
+        args.noise_strength = 0.01
+        logger.info("🎨 Augmentation strength set to MILD.")
     elif args.augmentation_strength == 'moderate':
-        args.aggressive_augmentation = True # Moderate can be aggressive without extreme
+        args.aggressive_augmentation = False # Explicitly set to False
         args.extreme_augmentation = False
-        # Adjust other aug params for moderate as needed
+        args.temporal_jitter_strength = 2
+        args.spatial_crop_strength = 0.8
+        args.color_aug_strength = 0.2
+        args.noise_strength = 0.03
+        logger.info("🎨 Augmentation strength set to MODERATE.")
     elif args.augmentation_strength == 'aggressive':
         args.aggressive_augmentation = True
         args.extreme_augmentation = False
+        args.temporal_jitter_strength = 3 # Default aggressive value
+        args.spatial_crop_strength = 0.7 # Default aggressive value
+        args.color_aug_strength = 0.3 # Default aggressive value
+        args.noise_strength = 0.06 # Default aggressive value
+        logger.info("🎨 Augmentation strength set to AGGRESSIVE.")
     elif args.augmentation_strength == 'extreme':
         args.aggressive_augmentation = True
         args.extreme_augmentation = True
+        args.temporal_jitter_strength = 4 # Even more aggressive
+        args.spatial_crop_strength = 0.6 # Even more aggressive
+        args.color_aug_strength = 0.4 # Even more aggressive
+        args.noise_strength = 0.08 # Even more aggressive
+        logger.info("🎨 Augmentation strength set to EXTREME.")
     
     # Ensure gradual_finetuning is False if gradient_guided or adaptive freezing is active
-    if args.freezing_strategy in ['gradient_guided', 'adaptive']:
-        if args.gradual_finetuning:
-            logger.warning(f"⚠️  Disabling --gradual_finetuning as --freezing_strategy is set to '{args.freezing_strategy}'.")
-            args.gradual_finetuning = False
+    if args.freezing_strategy in ['gradient_guided', 'adaptive'] and args.gradual_finetuning:
+        logger.warning(f"⚠️  Disabling --gradual_finetuning as --freezing_strategy is set to '{args.freezing_strategy}'.")
+        args.gradual_finetuning = False
     
     # Handle legacy arguments and provide warnings
     if args.use_focal_loss and args.loss_function == 'weighted':
