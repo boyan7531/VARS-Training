@@ -894,7 +894,7 @@ class AdvancedFreezingManager:
             # Forward hook for activation statistics
             def make_forward_hook(layer_name):
                 def forward_hook(module, input, output):
-                    if self.training:
+                    if module.training:  # Check the module's training state, not self.training
                         # Track activation statistics
                         if isinstance(output, torch.Tensor):
                             activation_std = output.std().item()
