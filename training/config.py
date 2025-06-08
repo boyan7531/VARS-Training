@@ -191,6 +191,9 @@ def parse_args():
     parser.add_argument('--use_class_weighted_loss', action='store_true', default=True,
                        help='DEPRECATED: Use --loss_function weighted instead')
     
+    parser.add_argument('--discriminative_lr', action='store_true', default=False,
+                       help='Enable discriminative learning rates for different layers (e.g., backbone vs. head)')
+    
     args = parser.parse_args()
     
     # Apply configuration processing and validation
@@ -248,6 +251,12 @@ def process_config(args):
     elif args.augmentation_strength == 'extreme':
         args.aggressive_augmentation = True
         args.extreme_augmentation = True
+    
+    # Ensure gradual_finetuning is False if gradient_guided or adaptive freezing is active
+    if args.freezing_strategy in ['gradient_guided', 'adaptive']:
+        if args.gradual_finetuning:
+            logger.warning(f"⚠️  Disabling --gradual_finetuning as --freezing_strategy is set to '{args.freezing_strategy}'.")
+            args.gradual_finetuning = False
     
     # Handle legacy arguments and provide warnings
     if args.use_focal_loss and args.loss_function == 'weighted':
