@@ -90,6 +90,11 @@ class TemporalJitter(torch.nn.Module):
         self.max_jitter = max_jitter
     
     def forward(self, clip):
+        # Convert to float32 first if it's uint8
+        original_dtype = clip.dtype
+        if clip.dtype == torch.uint8:
+            clip = clip.float() / 255.0
+            
         C, T, H, W = clip.shape
         if T <= self.max_jitter * 2:
             return clip
@@ -131,6 +136,11 @@ class RandomFrameDropout(torch.nn.Module):
         self.max_consecutive = max_consecutive
     
     def forward(self, clip):
+        # Convert to float32 first if it's uint8
+        original_dtype = clip.dtype
+        if clip.dtype == torch.uint8:
+            clip = clip.float() / 255.0
+            
         C, T, H, W = clip.shape
         if T <= 4:  # Don't apply to very short clips
             return clip
@@ -171,6 +181,11 @@ class RandomBrightnessContrast(torch.nn.Module):
         if random.random() > self.prob:
             return clip
         
+        # Convert to float32 first if it's uint8
+        original_dtype = clip.dtype
+        if clip.dtype == torch.uint8:
+            clip = clip.float() / 255.0
+            
         C, T, H, W = clip.shape
         
         # Apply different brightness/contrast to each frame for more variation
@@ -197,6 +212,11 @@ class RandomSpatialCrop(torch.nn.Module):
     def forward(self, clip):
         if random.random() > self.prob:
             return clip
+            
+        # Convert to float32 first if it's uint8
+        original_dtype = clip.dtype
+        if clip.dtype == torch.uint8:
+            clip = clip.float() / 255.0
         
         C, T, H, W = clip.shape
         
@@ -232,6 +252,11 @@ class RandomHorizontalFlip(torch.nn.Module):
         self.prob = prob
     
     def forward(self, clip):
+        # Convert to float32 first if it's uint8
+        original_dtype = clip.dtype
+        if clip.dtype == torch.uint8:
+            clip = clip.float() / 255.0
+            
         if random.random() < self.prob:
             return torch.flip(clip, dims=[3])  # Flip width dimension
         return clip
