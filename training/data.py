@@ -543,8 +543,8 @@ def create_dataloaders(args, train_dataset, val_dataset):
             sampler=train_sampler,  # Use custom sampler
             num_workers=args.num_workers,
             pin_memory=True,
-            persistent_workers=False,  # Disable to prevent worker memory accumulation
-            prefetch_factor=2 if args.num_workers > 0 else None,  # Reduce prefetch to lower memory pressure
+            persistent_workers=True,  # Enable persistent workers to reduce startup overhead
+            prefetch_factor=2 if args.num_workers > 0 else None,
             drop_last=True,  # Better for training stability
             collate_fn=variable_views_collate_fn,
             worker_init_fn=worker_init_fn  # Ensure reproducibility
@@ -558,8 +558,8 @@ def create_dataloaders(args, train_dataset, val_dataset):
             shuffle=True, 
             num_workers=args.num_workers,
             pin_memory=True,
-            persistent_workers=False,  # Disable to prevent worker memory accumulation
-            prefetch_factor=2 if args.num_workers > 0 else None,  # Reduce prefetch to lower memory pressure
+            persistent_workers=True,  # Enable persistent workers to reduce startup overhead
+            prefetch_factor=2 if args.num_workers > 0 else None,
             drop_last=True,  # Better for training stability
             collate_fn=variable_views_collate_fn,
             worker_init_fn=worker_init_fn  # Ensure reproducibility
@@ -581,10 +581,10 @@ def create_dataloaders(args, train_dataset, val_dataset):
         shuffle=False, 
         num_workers=val_num_workers,
         pin_memory=True,
-        persistent_workers=False,  # Disable to prevent worker memory accumulation
+        persistent_workers=True,  # Enable persistent workers to reduce startup overhead
         prefetch_factor=2 if val_num_workers > 0 else None,
         collate_fn=variable_views_collate_fn,
-        worker_init_fn=worker_init_fn  # Ensure reproducibility
+        # worker_init_fn=worker_init_fn  # Ensure reproducibility
     )
     
     # Log data loading optimization details
@@ -593,7 +593,7 @@ def create_dataloaders(args, train_dataset, val_dataset):
         logger.info(f"   - Training workers: {args.num_workers} (prefetch_factor=4)")
         logger.info(f"   - Validation workers: {val_num_workers} (prefetch_factor=2)")
         logger.info(f"   - Pin memory: True (faster CPU->GPU transfers)")
-        logger.info(f"   - Persistent workers: False (avoid memory accumulation)")
+        logger.info(f"   - Persistent workers: True (reduce startup overhead)")
     else:
         logger.info(f"⚠️  Synchronous data loading (num_workers=0)")
         logger.info(f"   - This may cause GPU starvation and low utilization")
