@@ -23,7 +23,7 @@ from .config import parse_args, log_configuration_summary
 from .data import create_datasets, create_dataloaders, create_gpu_augmentation, log_dataset_recommendations
 from .model_utils import (
     create_model, setup_freezing_strategy, calculate_class_weights,
-    SmartFreezingManager, get_phase_info, setup_discriminative_optimizer,
+    SmartFreezingManager, GradientGuidedFreezingManager, get_phase_info, setup_discriminative_optimizer,
     unfreeze_backbone_gradually, log_trainable_parameters
 )
 from .training_utils import (
