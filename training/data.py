@@ -544,7 +544,7 @@ def create_dataloaders(args, train_dataset, val_dataset):
             num_workers=args.num_workers,
             pin_memory=True,
             persistent_workers=True,  # Enable persistent workers to reduce startup overhead
-            prefetch_factor=2 if args.num_workers > 0 else None,
+            prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
             drop_last=True,  # Better for training stability
             collate_fn=variable_views_collate_fn,
             worker_init_fn=worker_init_fn  # Ensure reproducibility
@@ -559,7 +559,7 @@ def create_dataloaders(args, train_dataset, val_dataset):
             num_workers=args.num_workers,
             pin_memory=True,
             persistent_workers=True,  # Enable persistent workers to reduce startup overhead
-            prefetch_factor=2 if args.num_workers > 0 else None,
+            prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
             drop_last=True,  # Better for training stability
             collate_fn=variable_views_collate_fn,
             worker_init_fn=worker_init_fn  # Ensure reproducibility
@@ -582,7 +582,7 @@ def create_dataloaders(args, train_dataset, val_dataset):
         num_workers=val_num_workers,
         pin_memory=True,
         persistent_workers=True,  # Enable persistent workers to reduce startup overhead
-        prefetch_factor=2 if val_num_workers > 0 else None,
+        prefetch_factor=args.prefetch_factor if val_num_workers > 0 else None,
         collate_fn=variable_views_collate_fn,
         # worker_init_fn=worker_init_fn  # Ensure reproducibility
     )
@@ -590,8 +590,8 @@ def create_dataloaders(args, train_dataset, val_dataset):
     # Log data loading optimization details
     if args.num_workers > 0:
         logger.info(f"🚀 Async data loading enabled:")
-        logger.info(f"   - Training workers: {args.num_workers} (prefetch_factor=4)")
-        logger.info(f"   - Validation workers: {val_num_workers} (prefetch_factor=2)")
+        logger.info(f"   - Training workers: {args.num_workers} (prefetch_factor={args.prefetch_factor})")
+        logger.info(f"   - Validation workers: {val_num_workers} (prefetch_factor={args.prefetch_factor})")
         logger.info(f"   - Pin memory: True (faster CPU->GPU transfers)")
         logger.info(f"   - Persistent workers: True (reduce startup overhead)")
     else:
