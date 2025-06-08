@@ -30,10 +30,6 @@ class EmbeddingManager(nn.Module):
                 self.vocab_sizes['upper_bodypart'], 
                 self.config.upper_bodypart_embedding_dim
             ),
-            'lower_bodypart': nn.Embedding(
-                self.vocab_sizes['lower_bodypart'], 
-                self.config.lower_bodypart_embedding_dim
-            ),
             'multiple_fouls': nn.Embedding(
                 self.vocab_sizes['multiple_fouls'], 
                 self.config.multiple_fouls_embedding_dim
@@ -76,10 +72,6 @@ class EmbeddingManager(nn.Module):
                 self.config.num_upper_bodypart_standard_classes, 
                 self.config.upper_bodypart_embedding_dim
             ),
-            'lower_bodypart': nn.Embedding(
-                self.config.num_lower_bodypart_standard_classes, 
-                self.config.lower_bodypart_embedding_dim
-            ),
             'multiple_fouls': nn.Embedding(
                 self.config.num_multiple_fouls_standard_classes, 
                 self.config.multiple_fouls_embedding_dim
@@ -112,7 +104,7 @@ class EmbeddingManager(nn.Module):
         """
         # Original embeddings
         orig_embeds = []
-        feature_names = ['contact', 'bodypart', 'upper_bodypart', 'lower_bodypart',
+        feature_names = ['contact', 'bodypart', 'upper_bodypart', 
                         'multiple_fouls', 'try_to_play', 'touch_ball', 'handball', 'handball_offence']
         
         for feature in feature_names:
@@ -124,7 +116,7 @@ class EmbeddingManager(nn.Module):
         
         # Standard embeddings
         std_embeds = []
-        std_feature_names = ['offence', 'contact', 'bodypart', 'upper_bodypart', 'lower_bodypart',
+        std_feature_names = ['offence', 'contact', 'bodypart', 'upper_bodypart',
                             'multiple_fouls', 'try_to_play', 'touch_ball', 'handball', 'handball_offence']
         
         for feature in std_feature_names:

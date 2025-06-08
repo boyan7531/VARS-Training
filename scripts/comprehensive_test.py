@@ -112,7 +112,6 @@ def test_model_components(dataloader, dataset):
         'contact': dataset.num_contact_classes,
         'bodypart': dataset.num_bodypart_classes,
         'upper_bodypart': dataset.num_upper_bodypart_classes,
-        'lower_bodypart': dataset.num_lower_bodypart_classes,
         'multiple_fouls': dataset.num_multiple_fouls_classes,
         'try_to_play': dataset.num_try_to_play_classes,
         'touch_ball': dataset.num_touch_ball_classes,
@@ -388,7 +387,6 @@ def test_categorical_features(dataset):
     print(f"  Contact: {dataset.num_contact_classes}")
     print(f"  Bodypart: {dataset.num_bodypart_classes}")
     print(f"  Upper bodypart: {dataset.num_upper_bodypart_classes}")
-    print(f"  Lower bodypart: {dataset.num_lower_bodypart_classes}")
     print(f"  Multiple fouls: {dataset.num_multiple_fouls_classes}")
     print(f"  Try to play: {dataset.num_try_to_play_classes}")
     print(f"  Touch ball: {dataset.num_touch_ball_classes}")
@@ -400,7 +398,6 @@ def test_categorical_features(dataset):
         ('contact', dataset.num_contact_classes),
         ('bodypart', dataset.num_bodypart_classes),
         ('upper_bodypart', dataset.num_upper_bodypart_classes),
-        ('lower_bodypart', dataset.num_lower_bodypart_classes),
         ('multiple_fouls', dataset.num_multiple_fouls_classes),
         ('try_to_play', dataset.num_try_to_play_classes),
         ('touch_ball', dataset.num_touch_ball_classes),

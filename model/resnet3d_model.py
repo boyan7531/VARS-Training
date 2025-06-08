@@ -307,7 +307,7 @@ class MultiTaskMultiViewResNet3D(nn.Module):
     def _validate_vocab_sizes(self, vocab_sizes: Dict[str, int]) -> None:
         """Validate that all required vocabulary sizes are provided."""
         required_vocab_keys = [
-            'contact', 'bodypart', 'upper_bodypart', 'lower_bodypart',
+            'contact', 'bodypart', 'upper_bodypart', 
             'multiple_fouls', 'try_to_play', 'touch_ball', 'handball', 'handball_offence'
         ]
         

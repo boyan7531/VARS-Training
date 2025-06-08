@@ -116,7 +116,6 @@ def load_model_checkpoint(checkpoint_path, device):
         'contact': ['embedding_manager.original_embeddings.contact.weight', 'module.embedding_manager.original_embeddings.contact.weight'],
         'bodypart': ['embedding_manager.original_embeddings.bodypart.weight', 'module.embedding_manager.original_embeddings.bodypart.weight'],
         'upper_bodypart': ['embedding_manager.original_embeddings.upper_bodypart.weight', 'module.embedding_manager.original_embeddings.upper_bodypart.weight'],
-        'lower_bodypart': ['embedding_manager.original_embeddings.lower_bodypart.weight', 'module.embedding_manager.original_embeddings.lower_bodypart.weight'],
         'multiple_fouls': ['embedding_manager.original_embeddings.multiple_fouls.weight', 'module.embedding_manager.original_embeddings.multiple_fouls.weight'],
         'try_to_play': ['embedding_manager.original_embeddings.try_to_play.weight', 'module.embedding_manager.original_embeddings.try_to_play.weight'],
         'touch_ball': ['embedding_manager.original_embeddings.touch_ball.weight', 'module.embedding_manager.original_embeddings.touch_ball.weight'],
@@ -137,8 +136,7 @@ def load_model_checkpoint(checkpoint_path, device):
             logger.warning(f"Could not find embedding for {field} in checkpoint")
             # Use reasonable defaults based on common vocab sizes
             default_sizes = {
-                'contact': 3, 'bodypart': 4, 'upper_bodypart': 3, 'lower_bodypart': 4,
-                'multiple_fouls': 2, 'try_to_play': 3, 'touch_ball': 4, 
+                'contact': 3, 'bodypart': 4, 'upper_bodypart': 3, 'multiple_fouls': 2, 'try_to_play': 3, 'touch_ball': 4, 
                 'handball': 3, 'handball_offence': 3
             }
             vocab_sizes[field] = default_sizes.get(field, 3)
@@ -171,7 +169,6 @@ def clamp_vocab_indices(batch_data, vocab_sizes):
         'contact_idx': vocab_sizes['contact'],
         'bodypart_idx': vocab_sizes['bodypart'],
         'upper_bodypart_idx': vocab_sizes['upper_bodypart'],
-        'lower_bodypart_idx': vocab_sizes['lower_bodypart'],
         'multiple_fouls_idx': vocab_sizes['multiple_fouls'],
         'try_to_play_idx': vocab_sizes['try_to_play'],
         'touch_ball_idx': vocab_sizes['touch_ball'],

@@ -15,7 +15,7 @@ class ModelConfig:
     contact_embedding_dim: int = 16
     bodypart_embedding_dim: int = 32
     upper_bodypart_embedding_dim: int = 16
-    lower_bodypart_embedding_dim: int = 16
+    # lower_bodypart_embedding_dim: int = 16
     multiple_fouls_embedding_dim: int = 8
     try_to_play_embedding_dim: int = 8
     touch_ball_embedding_dim: int = 8
@@ -28,7 +28,7 @@ class ModelConfig:
     num_contact_standard_classes: int = 2  # "Without contact": 0, "With contact": 1
     num_bodypart_standard_classes: int = 3  # "": 0, "Upper body": 1, "Under body": 2
     num_upper_bodypart_standard_classes: int = 3  # "": 0, "Use of shoulder": 1, "Use of arms": 2
-    num_lower_bodypart_standard_classes: int = 4  # "": 0, "Use of leg": 1, "Use of knee": 2, "Use of foot": 3
+    # num_lower_bodypart_standard_classes: int = 4  # "": 0, "Use of leg": 1, "Use of knee": 2, "Use of foot": 3
     num_multiple_fouls_standard_classes: int = 2  # "": 0, "Yes": 1
     num_try_to_play_standard_classes: int = 2  # "": 0, "No": 0, "Yes": 1
     num_touch_ball_standard_classes: int = 3  # "": 0, "No": 0, "Yes": 1, "Maybe": 2
@@ -47,7 +47,7 @@ class ModelConfig:
             self.contact_embedding_dim +
             self.bodypart_embedding_dim +
             self.upper_bodypart_embedding_dim +
-            self.lower_bodypart_embedding_dim +
+            # self.lower_bodypart_embedding_dim +
             self.multiple_fouls_embedding_dim +
             self.try_to_play_embedding_dim +
             self.touch_ball_embedding_dim +
@@ -57,7 +57,7 @@ class ModelConfig:
             self.contact_embedding_dim +  # Standard embeddings reuse same dims
             self.bodypart_embedding_dim +
             self.upper_bodypart_embedding_dim +
-            self.lower_bodypart_embedding_dim +
+            # self.lower_bodypart_embedding_dim +
             self.multiple_fouls_embedding_dim +
             self.try_to_play_embedding_dim +
             self.touch_ball_embedding_dim +
@@ -71,12 +71,12 @@ class ModelConfig:
         return [
             "clips",
             # Original vocabulary indices
-            "contact_idx", "bodypart_idx", "upper_bodypart_idx", "lower_bodypart_idx",
+            "contact_idx", "bodypart_idx", "upper_bodypart_idx", # "lower_bodypart_idx",
             "multiple_fouls_idx", "try_to_play_idx", "touch_ball_idx", 
             "handball_idx", "handball_offence_idx",
             # Standard indices
             "offence_standard_idx", "contact_standard_idx", "bodypart_standard_idx",
-            "upper_bodypart_standard_idx", "lower_bodypart_standard_idx",
+            "upper_bodypart_standard_idx", # "lower_bodypart_standard_idx",
             "multiple_fouls_standard_idx", "try_to_play_standard_idx", 
             "touch_ball_standard_idx", "handball_standard_idx", "handball_offence_standard_idx"
         ] 
