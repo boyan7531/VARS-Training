@@ -341,9 +341,9 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
             
             optimizer.step()
             
-        # Step the OneCycleLR scheduler after each batch
-        if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-            scheduler.step()
+            # Stepping the OneCycleLR scheduler after optimizer.step()
+            if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                scheduler.step()
 
         # Calculate metrics
         running_loss += total_loss.item() * batch_data["clips"].size(0)
