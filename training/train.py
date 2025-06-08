@@ -140,7 +140,7 @@ def setup_optimizer_and_scheduler(args, model, freezing_manager=None):
             scheduler_info = f"CosineAnnealing (T_max={args.epochs}, eta_min={args.lr * 0.01:.1e})"
         elif args.scheduler == 'onecycle':
             # Note: steps_per_epoch will be set after dataloader creation
-            scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, warmup_epochs={args.warmup_epochs})"
+            scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, warmup_epochs={args.scheduler_warmup_epochs})"
         elif args.scheduler == 'step':
             scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
             scheduler_info = f"StepLR (step_size={args.step_size}, gamma={args.gamma})"
@@ -373,9 +373,9 @@ def main():
             max_lr=args.lr,
             epochs=args.epochs,
             steps_per_epoch=steps_per_epoch,
-            pct_start=args.warmup_epochs / args.epochs if args.epochs > 0 else 0.1
+            pct_start=args.scheduler_warmup_epochs / args.epochs if args.epochs > 0 else 0.1
         )
-        scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, steps_per_epoch={steps_per_epoch}, warmup={args.warmup_epochs}e)"
+        scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, steps_per_epoch={steps_per_epoch}, warmup={args.scheduler_warmup_epochs}e)"
         logger.info(f"Initialized OneCycleLR scheduler with {steps_per_epoch} steps per epoch")
 
     # Calculate class weights for severity classification

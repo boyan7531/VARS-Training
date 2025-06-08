@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument('--scheduler', type=str, default='cosine', 
                        choices=['cosine', 'onecycle', 'step', 'exponential', 'reduce_on_plateau', 'none'], 
                        help='Learning rate scheduler type')
-    parser.add_argument('--warmup_epochs', type=int, default=5, help='Number of warmup epochs')
+    parser.add_argument('--scheduler_warmup_epochs', type=int, default=5, help='Number of warmup epochs for scheduler')
     parser.add_argument('--step_size', type=int, default=10, help='Step size for StepLR scheduler')
     parser.add_argument('--gamma', type=float, default=0.5, help='Decay factor for StepLR/ExponentialLR')
     parser.add_argument('--plateau_patience', type=int, default=5, help='Patience for ReduceLROnPlateau')
