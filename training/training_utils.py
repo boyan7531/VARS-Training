@@ -108,9 +108,12 @@ class AdaptiveFocalLoss(nn.Module):
         self.reduction = reduction
         self.label_smoothing = label_smoothing
         
-        logger.info("Using AdaptiveFocalLoss with class-specific gamma values:")
-        for cls, gamma in self.class_gamma_map.items():
-            logger.info(f"  Class {cls}: gamma={gamma:.1f}")
+        # Only log once when first created (not every batch)
+        if not hasattr(AdaptiveFocalLoss, '_logged_gamma_values'):
+            logger.info("Using AdaptiveFocalLoss with class-specific gamma values:")
+            for cls, gamma in self.class_gamma_map.items():
+                logger.info(f"  Class {cls}: gamma={gamma:.1f}")
+            AdaptiveFocalLoss._logged_gamma_values = True
     
     def forward(self, inputs, targets):
         # Standard cross entropy component
@@ -347,9 +350,7 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
             if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
                 scheduler.step()
 
-        # Debug class weights impact for first 3 batches
-        if i < 3 and loss_config.get('severity_class_weights') is not None:
-            debug_class_weights_impact(sev_logits, severity_labels, loss_config.get('severity_class_weights'))
+        # Debug removed for cleaner training logs
 
         # Calculate metrics
         running_loss += total_loss.item() * batch_data["clips"].size(0)
