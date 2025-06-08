@@ -452,7 +452,7 @@ class GradientGuidedFreezingManager:
             # Initialize gradient accumulation
             param.grad_acc = torch.zeros_like(param.data)
             param.grad_samples = 0
-            
+        
         logger.info(f"[GRADIENT_GUIDED] Froze entire backbone ({frozen_params:,} parameters)")
         logger.info(f"[GRADIENT_GUIDED] Starting gradient sampling phase for {self.sampling_epochs} epochs")
         
@@ -806,6 +806,729 @@ class GradientGuidedFreezingManager:
         }
 
 
+class AdvancedFreezingManager:
+    """
+    Next-generation freezing manager that combines multiple intelligence sources
+    for optimal layer unfreezing decisions:
+    
+    1. **Multi-Metric Analysis**: Combines gradient magnitude, gradient variance, 
+       activation patterns, and performance impact
+    2. **Dynamic Thresholds**: Adapts thresholds based on training progress
+    3. **Layer Dependency Analysis**: Considers inter-layer dependencies
+    4. **Performance Rollback**: Can re-freeze layers if they hurt performance
+    5. **Smart Warmup**: Uses layer-specific warmup strategies
+    6. **Ensemble Decision Making**: Multiple criteria must agree for unfreezing
+    
+    This manager is designed for production use with complex models where
+    traditional freezing strategies may be sub-optimal.
+    """
+    
+    def __init__(
+        self,
+        model,
+        base_importance_threshold=0.005,  # Lower base threshold, will adapt
+        performance_threshold=0.002,     # Min performance improvement to continue
+        max_layers_per_step=1,
+        warmup_epochs=4,
+        patience_epochs=3,
+        rollback_patience=2,             # Epochs to wait before rollback
+        gradient_momentum=0.9,           # For smoothing gradient importance
+        analysis_window=3,               # Epochs to analyze before decision
+        enable_rollback=True,
+        enable_dependency_analysis=True
+    ):
+        self.model = model
+        self.actual_model = model.module if hasattr(model, 'module') else model
+        
+        # Thresholds and parameters
+        self.base_importance_threshold = base_importance_threshold
+        self.current_importance_threshold = base_importance_threshold
+        self.performance_threshold = performance_threshold
+        self.max_layers_per_step = max_layers_per_step
+        self.warmup_epochs = warmup_epochs
+        self.patience_epochs = patience_epochs
+        self.rollback_patience = rollback_patience
+        self.gradient_momentum = gradient_momentum
+        self.analysis_window = analysis_window
+        self.enable_rollback = enable_rollback
+        self.enable_dependency_analysis = enable_dependency_analysis
+        
+        # State tracking
+        self.unfrozen_layers = set()
+        self.layers_in_warmup = {}  # {layer_name: warmup_epoch}
+        self.layer_performance_history = {}  # {layer_name: [performance_after_unfreeze]}
+        self.layer_importance_smooth = {}  # Smoothed importance scores
+        self.performance_history = []
+        self.last_unfreeze_epoch = -999
+        self.epochs_since_last_unfreeze = 0
+        self.rollback_candidates = {}  # Layers that might need rollback
+        
+        # Analysis data
+        self.gradient_stats = {}  # More detailed gradient statistics
+        self.activation_stats = {}  # Track activation patterns
+        self.layer_dependencies = {}  # Inter-layer dependency scores
+        
+        # Register enhanced hooks
+        self._register_analysis_hooks()
+        
+        # Initialize layer groups and importance tracking
+        self.layer_groups = self.get_enhanced_backbone_layer_groups()
+        self._initialize_tracking()
+        
+        logger.info(f"[ADVANCED_FREEZING] Initialized with enhanced multi-metric analysis")
+        logger.info(f"  - Base importance threshold: {base_importance_threshold}")
+        logger.info(f"  - Performance threshold: {performance_threshold}")
+        logger.info(f"  - Analysis window: {analysis_window} epochs")
+        logger.info(f"  - Rollback enabled: {enable_rollback}")
+        logger.info(f"  - Dependency analysis: {enable_dependency_analysis}")
+    
+    def _register_analysis_hooks(self):
+        """Register comprehensive hooks for gradient and activation analysis."""
+        self.forward_hooks = []
+        self.backward_hooks = []
+        
+        for name, module in self.actual_model.backbone.named_modules():
+            if len(list(module.parameters(recurse=False))) == 0:
+                continue
+            
+            # Forward hook for activation statistics
+            def make_forward_hook(layer_name):
+                def forward_hook(module, input, output):
+                    if self.training:
+                        # Track activation statistics
+                        if isinstance(output, torch.Tensor):
+                            activation_std = output.std().item()
+                            activation_mean = output.mean().item()
+                            
+                            if layer_name not in self.activation_stats:
+                                self.activation_stats[layer_name] = {
+                                    'std': [], 'mean': [], 'magnitude': []
+                                }
+                            
+                            self.activation_stats[layer_name]['std'].append(activation_std)
+                            self.activation_stats[layer_name]['mean'].append(activation_mean)
+                            self.activation_stats[layer_name]['magnitude'].append(
+                                output.abs().mean().item()
+                            )
+                return forward_hook
+            
+            hook = module.register_forward_hook(make_forward_hook(name))
+            self.forward_hooks.append(hook)
+            
+            # Enhanced gradient hooks for parameters
+            for param_name, param in module.named_parameters(recurse=False):
+                full_param_name = f"{name}.{param_name}"
+                
+                # Initialize enhanced gradient tracking
+                if not hasattr(param, 'grad_stats'):
+                    param.grad_stats = {
+                        'magnitude_history': [],
+                        'variance_history': [],
+                        'direction_changes': 0,
+                        'last_grad_direction': None,
+                        'importance_score': 0.0,
+                        'samples_seen': 0
+                    }
+                
+                # Register gradient hook
+                def make_grad_hook(param_name):
+                    def grad_hook(grad):
+                        if grad is not None and hasattr(param, 'grad_stats'):
+                            # Calculate gradient statistics
+                            grad_magnitude = grad.abs().mean().item()
+                            grad_variance = grad.var().item()
+                            grad_direction = grad.sign().mean().item()
+                            
+                            stats = param.grad_stats
+                            stats['magnitude_history'].append(grad_magnitude)
+                            stats['variance_history'].append(grad_variance)
+                            stats['samples_seen'] += 1
+                            
+                            # Track gradient direction changes (indicates learning dynamics)
+                            if stats['last_grad_direction'] is not None:
+                                if (stats['last_grad_direction'] > 0) != (grad_direction > 0):
+                                    stats['direction_changes'] += 1
+                            stats['last_grad_direction'] = grad_direction
+                            
+                            # Update smoothed importance score
+                            current_importance = grad_magnitude * (1 + grad_variance)
+                            if stats['importance_score'] == 0:
+                                stats['importance_score'] = current_importance
+                            else:
+                                stats['importance_score'] = (
+                                    self.gradient_momentum * stats['importance_score'] + 
+                                    (1 - self.gradient_momentum) * current_importance
+                                )
+                        
+                        return grad
+                    return grad_hook
+                
+                param.register_hook(make_grad_hook(full_param_name))
+    
+    def _initialize_tracking(self):
+        """Initialize tracking structures for all layers."""
+        for layer_name in self.layer_groups.keys():
+            self.layer_importance_smooth[layer_name] = 0.0
+            self.layer_performance_history[layer_name] = []
+            self.gradient_stats[layer_name] = {
+                'recent_importance': [],
+                'stability_score': 0.0,
+                'learning_progress': 0.0
+            }
+    
+    def get_enhanced_backbone_layer_groups(self):
+        """Get enhanced layer grouping with hierarchical structure and dependencies."""
+        backbone = self.actual_model.backbone.backbone
+        layer_groups = {}
+        
+        # Create hierarchical layer structure
+        layer_sequence = []
+        
+        # Early layers
+        if hasattr(backbone, 'conv1'):
+            layer_groups['conv1'] = {
+                'module': backbone.conv1,
+                'type': 'conv',
+                'depth': 0,
+                'dependencies': [],
+                'children': {}
+            }
+            layer_sequence.append('conv1')
+        
+        # ResNet blocks
+        for block_num in [1, 2, 3, 4]:
+            block_name = f'layer{block_num}'
+            if hasattr(backbone, block_name):
+                layer_groups[block_name] = {
+                    'module': getattr(backbone, block_name),
+                    'type': 'residual_block',
+                    'depth': block_num,
+                    'dependencies': layer_sequence[-2:] if len(layer_sequence) >= 2 else layer_sequence,
+                    'children': {}
+                }
+                layer_sequence.append(block_name)
+                
+                # Add sub-blocks for fine-grained control
+                for i, sub_block in enumerate(getattr(backbone, block_name)):
+                    sub_name = f'{block_name}.{i}'
+                    layer_groups[sub_name] = {
+                        'module': sub_block,
+                        'type': 'residual_sub_block',
+                        'depth': block_num + i/10,
+                        'dependencies': [block_name] if i == 0 else [f'{block_name}.{i-1}'],
+                        'parent': block_name
+                    }
+        
+        return layer_groups
+    
+    def freeze_all_backbone(self):
+        """Freeze all backbone parameters with enhanced tracking."""
+        frozen_params = 0
+        
+        for name, param in self.actual_model.backbone.named_parameters():
+            param.requires_grad = False
+            frozen_params += param.numel()
+            
+            # Initialize enhanced tracking for this parameter
+            if not hasattr(param, 'grad_stats'):
+                param.grad_stats = {
+                    'magnitude_history': [],
+                    'variance_history': [],
+                    'direction_changes': 0,
+                    'last_grad_direction': None,
+                    'importance_score': 0.0,
+                    'samples_seen': 0
+                }
+        
+        logger.info(f"[ADVANCED_FREEZING] Froze entire backbone ({frozen_params:,} parameters)")
+        logger.info(f"[ADVANCED_FREEZING] Enhanced gradient tracking enabled for {len(list(self.actual_model.backbone.parameters()))} parameters")
+        
+        return frozen_params
+    
+    def analyze_multi_metric_importance(self, epoch):
+        """
+        Comprehensive importance analysis using multiple metrics:
+        1. Gradient magnitude and variance
+        2. Activation patterns
+        3. Learning stability
+        4. Inter-layer dependencies
+        """
+        layer_scores = {}
+        
+        for layer_name, layer_info in self.layer_groups.items():
+            if layer_name in self.unfrozen_layers:
+                continue  # Skip already unfrozen layers
+            
+            metrics = self._calculate_layer_metrics(layer_name, layer_info)
+            
+            # Combine metrics with learned weights
+            importance_score = (
+                0.4 * metrics['gradient_importance'] +
+                0.3 * metrics['activation_variance'] +
+                0.2 * metrics['learning_potential'] +
+                0.1 * metrics['dependency_pressure']
+            )
+            
+            # Apply dynamic threshold adjustment
+            adjusted_threshold = self._get_adaptive_threshold(epoch, layer_name)
+            
+            layer_scores[layer_name] = {
+                'total_score': importance_score,
+                'threshold': adjusted_threshold,
+                'should_unfreeze': importance_score > adjusted_threshold,
+                'metrics': metrics
+            }
+            
+            # Update smoothed importance
+            if layer_name in self.layer_importance_smooth:
+                self.layer_importance_smooth[layer_name] = (
+                    0.7 * self.layer_importance_smooth[layer_name] + 
+                    0.3 * importance_score
+                )
+            else:
+                self.layer_importance_smooth[layer_name] = importance_score
+        
+        return layer_scores
+    
+    def _calculate_layer_metrics(self, layer_name, layer_info):
+        """Calculate comprehensive metrics for a layer."""
+        module = layer_info['module']
+        
+        # 1. Gradient-based importance
+        gradient_importance = 0.0
+        gradient_variance = 0.0
+        param_count = 0
+        
+        for param in module.parameters():
+            if hasattr(param, 'grad_stats') and param.grad_stats['samples_seen'] > 0:
+                gradient_importance += param.grad_stats['importance_score']
+                
+                if param.grad_stats['variance_history']:
+                    gradient_variance += np.mean(param.grad_stats['variance_history'][-10:])
+                
+                param_count += 1
+        
+        if param_count > 0:
+            gradient_importance /= param_count
+            gradient_variance /= param_count
+        
+        # 2. Activation-based metrics
+        activation_variance = 0.0
+        if layer_name in self.activation_stats:
+            stats = self.activation_stats[layer_name]
+            if stats['std']:
+                activation_variance = np.mean(stats['std'][-10:])  # Recent activation variance
+        
+        # 3. Learning potential (based on gradient direction changes)
+        learning_potential = 0.0
+        total_direction_changes = 0
+        for param in module.parameters():
+            if hasattr(param, 'grad_stats'):
+                total_direction_changes += param.grad_stats['direction_changes']
+        
+        if param_count > 0:
+            learning_potential = total_direction_changes / max(param_count, 1)
+        
+        # 4. Dependency pressure (how much dependent layers need this one)
+        dependency_pressure = 0.0
+        if self.enable_dependency_analysis:
+            # Count how many unfrozen layers depend on this one
+            for other_layer, other_info in self.layer_groups.items():
+                if (other_layer in self.unfrozen_layers and 
+                    layer_name in other_info.get('dependencies', [])):
+                    dependency_pressure += 0.5
+        
+        return {
+            'gradient_importance': gradient_importance,
+            'gradient_variance': gradient_variance,
+            'activation_variance': activation_variance,
+            'learning_potential': learning_potential,
+            'dependency_pressure': dependency_pressure
+        }
+    
+    def _get_adaptive_threshold(self, epoch, layer_name):
+        """Calculate adaptive threshold based on training progress and layer characteristics."""
+        # Base threshold decreases over time (easier to unfreeze later)
+        time_factor = max(0.5, 1.0 - epoch / 50)  # Decrease over 50 epochs
+        
+        # Layer depth factor (deeper layers need higher threshold)
+        depth_factor = 1.0
+        if layer_name in self.layer_groups:
+            depth = self.layer_groups[layer_name].get('depth', 0)
+            depth_factor = 1.0 + depth * 0.1  # Increase threshold for deeper layers
+        
+        # Performance factor (if we're doing well, be more conservative)
+        performance_factor = 1.0
+        if len(self.performance_history) >= 2:
+            recent_trend = self.performance_history[-1] - self.performance_history[-2]
+            if recent_trend > 0.01:  # Good improvement
+                performance_factor = 1.2  # Be more conservative
+            elif recent_trend < -0.005:  # Performance declining
+                performance_factor = 0.8  # Be more aggressive
+        
+        return self.base_importance_threshold * time_factor * depth_factor * performance_factor
+    
+    def select_optimal_layers_to_unfreeze(self, epoch, val_performance):
+        """
+        Advanced layer selection using ensemble decision making.
+        Multiple criteria must agree for a layer to be unfrozen.
+        """
+        if self.epochs_since_last_unfreeze < self.patience_epochs:
+            self.epochs_since_last_unfreeze += 1
+            return []
+        
+        # Wait for sufficient analysis data
+        if epoch < self.analysis_window:
+            return []
+        
+        # Analyze all layers
+        layer_scores = self.analyze_multi_metric_importance(epoch)
+        
+        # Filter candidates that meet all criteria
+        candidates = []
+        for layer_name, analysis in layer_scores.items():
+            if analysis['should_unfreeze']:
+                # Additional criteria for robust selection
+                metrics = analysis['metrics']
+                
+                # Must have sufficient gradient activity
+                if metrics['gradient_importance'] > self.base_importance_threshold * 0.5:
+                    # Must show learning potential
+                    if metrics['learning_potential'] > 0.1:
+                        # Must not conflict with recently unfrozen layers
+                        if not self._conflicts_with_recent_unfreeze(layer_name):
+                            candidates.append((
+                                layer_name,
+                                analysis['total_score'],
+                                analysis['metrics']
+                            ))
+        
+        # Sort by total importance score
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        
+        # Select top candidates up to max_layers_per_step
+        selected = []
+        for layer_name, score, metrics in candidates[:self.max_layers_per_step]:
+            selected.append(layer_name)
+            
+            logger.info(f"[ADVANCED_FREEZING] Selected {layer_name} for unfreezing:")
+            logger.info(f"  - Total score: {score:.6f}")
+            logger.info(f"  - Gradient importance: {metrics['gradient_importance']:.6f}")
+            logger.info(f"  - Activation variance: {metrics['activation_variance']:.6f}")
+            logger.info(f"  - Learning potential: {metrics['learning_potential']:.6f}")
+            logger.info(f"  - Dependency pressure: {metrics['dependency_pressure']:.6f}")
+        
+        return selected
+    
+    def _conflicts_with_recent_unfreeze(self, layer_name):
+        """Check if unfreezing this layer conflicts with recently unfrozen layers."""
+        # Don't unfreeze adjacent layers too quickly
+        if layer_name in self.layer_groups:
+            layer_info = self.layer_groups[layer_name]
+            for warmup_layer in self.layers_in_warmup.keys():
+                # Check if layers are adjacent in the architecture
+                if warmup_layer in self.layer_groups:
+                    warmup_info = self.layer_groups[warmup_layer]
+                    depth_diff = abs(layer_info.get('depth', 0) - warmup_info.get('depth', 0))
+                    if depth_diff < 1.0:  # Adjacent layers
+                        return True
+        return False
+    
+    def unfreeze_layers_with_enhanced_warmup(self, layer_names):
+        """Unfreeze layers with layer-specific warmup strategies."""
+        if not layer_names:
+            return 0
+        
+        unfrozen_params = 0
+        
+        for layer_name in layer_names:
+            if layer_name in self.layer_groups and layer_name not in self.unfrozen_layers:
+                layer_info = self.layer_groups[layer_name]
+                module = layer_info['module']
+                
+                # Unfreeze parameters
+                layer_params = 0
+                for param in module.parameters():
+                    if not param.requires_grad:
+                        param.requires_grad = True
+                        layer_params += param.numel()
+                        unfrozen_params += param.numel()
+                
+                # Setup enhanced warmup based on layer characteristics
+                warmup_config = self._get_layer_warmup_config(layer_name, layer_info)
+                
+                self.unfrozen_layers.add(layer_name)
+                self.layers_in_warmup[layer_name] = {
+                    'epoch': 0,
+                    'config': warmup_config,
+                    'performance_before': self.performance_history[-1] if self.performance_history else 0.0
+                }
+                
+                logger.info(f"[ADVANCED_FREEZING] Unfroze {layer_name} ({layer_params:,} parameters)")
+                logger.info(f"  - Warmup strategy: {warmup_config['strategy']}")
+                logger.info(f"  - Warmup duration: {warmup_config['duration']} epochs")
+        
+        if unfrozen_params > 0:
+            self.epochs_since_last_unfreeze = 0
+            self.last_unfreeze_epoch = len(self.performance_history)
+        
+        return unfrozen_params
+    
+    def _get_layer_warmup_config(self, layer_name, layer_info):
+        """Get layer-specific warmup configuration."""
+        layer_type = layer_info.get('type', 'unknown')
+        depth = layer_info.get('depth', 0)
+        
+        if layer_type == 'conv':
+            # Convolutional layers need gentle warmup
+            return {
+                'strategy': 'exponential',
+                'duration': self.warmup_epochs + 1,
+                'start_factor': 0.05,
+                'growth_rate': 1.5
+            }
+        elif 'residual' in layer_type:
+            # Residual blocks can handle more aggressive warmup
+            return {
+                'strategy': 'linear',
+                'duration': max(2, self.warmup_epochs - 1),
+                'start_factor': 0.1,
+                'growth_rate': 1.0
+            }
+        else:
+            # Default strategy
+            return {
+                'strategy': 'linear',
+                'duration': self.warmup_epochs,
+                'start_factor': 0.1,
+                'growth_rate': 1.0
+            }
+    
+    def create_advanced_optimizer_param_groups(self, head_lr, backbone_lr):
+        """Create sophisticated parameter groups with layer-specific learning rates."""
+        param_groups = []
+        
+        # 1. Head parameters (highest LR)
+        head_params = []
+        head_params.extend(self.actual_model.severity_head.parameters())
+        head_params.extend(self.actual_model.action_type_head.parameters())
+        head_params.extend(self.actual_model.embedding_manager.parameters())
+        head_params.extend(self.actual_model.view_aggregator.parameters())
+        
+        param_groups.append({
+            'params': head_params,
+            'lr': head_lr,
+            'name': 'heads',
+            'weight_decay': 1e-4  # Standard weight decay for heads
+        })
+        
+        # 2. Layers in warmup (custom LR based on warmup strategy)
+        for layer_name, warmup_info in self.layers_in_warmup.items():
+            if layer_name in self.layer_groups:
+                layer_info = self.layer_groups[layer_name]
+                layer_params = [p for p in layer_info['module'].parameters() if p.requires_grad]
+                
+                if layer_params:
+                    warmup_lr = self._calculate_warmup_lr(
+                        backbone_lr, 
+                        warmup_info['epoch'],
+                        warmup_info['config']
+                    )
+                    
+                    param_groups.append({
+                        'params': layer_params,
+                        'lr': warmup_lr,
+                        'name': f'warmup_{layer_name}',
+                        'weight_decay': self._get_layer_weight_decay(layer_name)
+                    })
+        
+        # 3. Fully unfrozen layers (full backbone LR with depth-based scaling)
+        for layer_name in self.unfrozen_layers:
+            if (layer_name not in self.layers_in_warmup and 
+                layer_name in self.layer_groups):
+                
+                layer_info = self.layer_groups[layer_name]
+                layer_params = [p for p in layer_info['module'].parameters() if p.requires_grad]
+                
+                if layer_params:
+                    # Scale learning rate based on layer depth
+                    depth = layer_info.get('depth', 0)
+                    depth_factor = max(0.5, 1.0 - depth * 0.1)  # Deeper layers get lower LR
+                    layer_lr = backbone_lr * depth_factor
+                    
+                    param_groups.append({
+                        'params': layer_params,
+                        'lr': layer_lr,
+                        'name': f'backbone_{layer_name}',
+                        'weight_decay': self._get_layer_weight_decay(layer_name)
+                    })
+        
+        return param_groups
+    
+    def _calculate_warmup_lr(self, base_lr, warmup_epoch, warmup_config):
+        """Calculate learning rate for layer in warmup."""
+        strategy = warmup_config['strategy']
+        duration = warmup_config['duration']
+        start_factor = warmup_config['start_factor']
+        
+        progress = min(1.0, warmup_epoch / duration)
+        
+        if strategy == 'linear':
+            factor = start_factor + (1.0 - start_factor) * progress
+        elif strategy == 'exponential':
+            growth_rate = warmup_config.get('growth_rate', 1.5)
+            factor = start_factor * (growth_rate ** progress)
+            factor = min(factor, 1.0)
+        else:
+            factor = start_factor + (1.0 - start_factor) * progress
+        
+        return base_lr * factor
+    
+    def _get_layer_weight_decay(self, layer_name):
+        """Get layer-specific weight decay."""
+        if layer_name in self.layer_groups:
+            layer_type = self.layer_groups[layer_name].get('type', 'unknown')
+            if layer_type == 'conv':
+                return 5e-5  # Lower weight decay for early conv layers
+            elif 'residual' in layer_type:
+                return 1e-4  # Standard weight decay for residual blocks
+        return 1e-4  # Default
+    
+    def update_after_epoch(self, val_metric, epoch):
+        """Comprehensive update with performance monitoring and rollback capability."""
+        update_info = {
+            'rebuild_optimizer': False,
+            'unfrozen_layers': [],
+            'warmup_updates': {},
+            'rollback_performed': False
+        }
+        
+        # Store performance history
+        self.performance_history.append(val_metric)
+        
+        # 1. Check for rollback opportunities
+        if self.enable_rollback and len(self.performance_history) >= self.rollback_patience + 1:
+            rollback_performed = self._check_and_perform_rollback(epoch)
+            if rollback_performed:
+                update_info['rollback_performed'] = True
+                update_info['rebuild_optimizer'] = True
+        
+        # 2. Update warmup progress
+        warmup_updates = {}
+        for layer_name, warmup_info in list(self.layers_in_warmup.items()):
+            new_epoch = warmup_info['epoch'] + 1
+            duration = warmup_info['config']['duration']
+            
+            if new_epoch >= duration:
+                # Warmup complete
+                logger.info(f"[ADVANCED_FREEZING] Completed warmup for {layer_name}")
+                del self.layers_in_warmup[layer_name]
+                warmup_updates[layer_name] = 'completed'
+                update_info['rebuild_optimizer'] = True
+            else:
+                # Continue warmup
+                self.layers_in_warmup[layer_name]['epoch'] = new_epoch
+                warmup_updates[layer_name] = new_epoch
+        
+        update_info['warmup_updates'] = warmup_updates
+        
+        # 3. Consider unfreezing new layers
+        if not update_info['rollback_performed']:  # Don't unfreeze if we just rolled back
+            selected_layers = self.select_optimal_layers_to_unfreeze(epoch, val_metric)
+            if selected_layers:
+                self.unfreeze_layers_with_enhanced_warmup(selected_layers)
+                update_info['unfrozen_layers'] = selected_layers
+                update_info['rebuild_optimizer'] = True
+        
+        return update_info
+    
+    def _check_and_perform_rollback(self, epoch):
+        """Check if we should rollback recent unfreezing decisions."""
+        if len(self.performance_history) < self.rollback_patience + 1:
+            return False
+        
+        # Check recent performance trend
+        recent_performance = self.performance_history[-self.rollback_patience:]
+        trend = recent_performance[-1] - recent_performance[0]
+        
+        # If performance has decreased significantly since last unfreeze
+        if (trend < -self.performance_threshold and 
+            self.last_unfreeze_epoch >= 0 and
+            epoch - self.last_unfreeze_epoch <= self.rollback_patience):
+            
+            # Find layers unfrozen recently that might be causing issues
+            rollback_candidates = []
+            for layer_name in list(self.unfrozen_layers):
+                if layer_name in self.layers_in_warmup:
+                    # Layer is still in warmup, good candidate for rollback
+                    rollback_candidates.append(layer_name)
+            
+            if rollback_candidates:
+                # Rollback the most recently unfrozen layer
+                layer_to_rollback = rollback_candidates[0]  # Most recent
+                self._rollback_layer(layer_to_rollback)
+                
+                logger.info(f"[ADVANCED_FREEZING] ROLLBACK: Re-froze {layer_to_rollback} due to performance decline")
+                logger.info(f"  - Performance trend: {trend:.6f}")
+                logger.info(f"  - Epochs since unfreeze: {epoch - self.last_unfreeze_epoch}")
+                
+                return True
+        
+        return False
+    
+    def _rollback_layer(self, layer_name):
+        """Rollback (re-freeze) a specific layer."""
+        if layer_name in self.layer_groups and layer_name in self.unfrozen_layers:
+            layer_info = self.layer_groups[layer_name]
+            
+            # Re-freeze parameters
+            frozen_params = 0
+            for param in layer_info['module'].parameters():
+                if param.requires_grad:
+                    param.requires_grad = False
+                    frozen_params += param.numel()
+            
+            # Remove from tracking
+            self.unfrozen_layers.discard(layer_name)
+            if layer_name in self.layers_in_warmup:
+                del self.layers_in_warmup[layer_name]
+            
+            logger.info(f"[ADVANCED_FREEZING] Rolled back {layer_name} ({frozen_params:,} parameters)")
+    
+    def log_comprehensive_status(self, epoch):
+        """Log comprehensive status including all metrics and decisions."""
+        # Basic status
+        total_params = sum(p.numel() for p in self.actual_model.backbone.parameters())
+        unfrozen_params = sum(p.numel() for p in self.actual_model.backbone.parameters() if p.requires_grad)
+        
+        logger.info(f"[ADVANCED_FREEZING] Epoch {epoch} comprehensive status:")
+        logger.info(f"  🔓 Unfrozen layers: {sorted(self.unfrozen_layers)}")
+        logger.info(f"  🔄 Layers in warmup: {list(self.layers_in_warmup.keys())}")
+        logger.info(f"  📊 Parameters: {unfrozen_params:,}/{total_params:,} unfrozen ({unfrozen_params/total_params*100:.1f}%)")
+        
+        # Performance trend
+        if len(self.performance_history) >= 3:
+            recent_trend = self.performance_history[-1] - self.performance_history[-3]
+            trend_emoji = "📈" if recent_trend > 0 else "📉" if recent_trend < -0.001 else "➡️"
+            logger.info(f"  {trend_emoji} Performance trend (3 epochs): {recent_trend:+.6f}")
+        
+        # Adaptive threshold status
+        logger.info(f"  🎯 Current importance threshold: {self.current_importance_threshold:.6f}")
+        
+        # Top candidate layers
+        if epoch >= self.analysis_window:
+            layer_scores = self.analyze_multi_metric_importance(epoch)
+            top_candidates = sorted(
+                [(name, analysis['total_score']) for name, analysis in layer_scores.items()],
+                key=lambda x: x[1], reverse=True
+            )[:3]
+            
+            if top_candidates:
+                logger.info("  🏆 Top unfreeze candidates:")
+                for layer_name, score in top_candidates:
+                    logger.info(f"    - {layer_name}: {score:.6f}")
+
+
 def create_model(args, vocab_sizes, device, num_gpus=1):
     """Create and initialize the model with proper configuration."""
     
@@ -862,6 +1585,34 @@ def setup_freezing_strategy(args, model):
     if args.freezing_strategy == 'none':
         # No freezing - train all parameters from start
         logger.info("❄️  No parameter freezing - training all parameters from start")
+        log_trainable_parameters(model)
+        
+    elif args.freezing_strategy == 'advanced':
+        # Advanced multi-metric freezing strategy
+        logger.info("🚀 Using ADVANCED multi-metric freezing strategy")
+        logger.info(f"   - Base importance threshold: {args.base_importance_threshold}")
+        logger.info(f"   - Performance threshold: {args.performance_threshold}")
+        logger.info(f"   - Analysis window: {args.analysis_window} epochs")
+        logger.info(f"   - Rollback enabled: {args.enable_rollback}")
+        logger.info(f"   - Dependency analysis: {args.enable_dependency_analysis}")
+        logger.info(f"   - Gradient momentum: {args.gradient_momentum}")
+        
+        freezing_manager = AdvancedFreezingManager(
+            model,
+            base_importance_threshold=args.base_importance_threshold,
+            performance_threshold=args.performance_threshold,
+            max_layers_per_step=args.max_layers_per_step,
+            warmup_epochs=args.warmup_epochs,
+            patience_epochs=args.unfreeze_patience,
+            rollback_patience=args.rollback_patience,
+            gradient_momentum=args.gradient_momentum,
+            analysis_window=args.analysis_window,
+            enable_rollback=args.enable_rollback,
+            enable_dependency_analysis=args.enable_dependency_analysis
+        )
+        
+        # Start with backbone frozen
+        freezing_manager.freeze_all_backbone()
         log_trainable_parameters(model)
         
     elif args.freezing_strategy == 'gradient_guided':

@@ -94,8 +94,8 @@ def parse_args():
     
     # === ENHANCED FREEZING STRATEGY OPTIONS ===
     parser.add_argument('--freezing_strategy', type=str, default='fixed', 
-                       choices=['none', 'fixed', 'adaptive', 'progressive', 'gradient_guided'],
-                       help='Strategy for parameter freezing (none=no freezing, fixed=timed phases, adaptive/progressive/gradient_guided)')
+                       choices=['none', 'fixed', 'adaptive', 'progressive', 'gradient_guided', 'advanced'],
+                       help='Strategy for parameter freezing (none=no freezing, fixed=timed phases, adaptive/progressive/gradient_guided/advanced)')
     parser.add_argument('--adaptive_patience', type=int, default=3,
                        help='Epochs to wait before unfreezing the next layer in adaptive mode')
     parser.add_argument('--adaptive_min_improvement', type=float, default=0.001,
@@ -112,6 +112,22 @@ def parse_args():
                         help='Maximum number of layers to unfreeze in a single step')
     parser.add_argument('--sampling_epochs', type=int, default=2,
                         help='Number of epochs to sample gradients before first unfreezing decision')
+    
+    # Advanced freezing specific parameters
+    parser.add_argument('--base_importance_threshold', type=float, default=0.005,
+                        help='Base importance threshold for advanced freezing (will adapt dynamically)')
+    parser.add_argument('--performance_threshold', type=float, default=0.002,
+                        help='Minimum performance improvement threshold for advanced freezing decisions')
+    parser.add_argument('--rollback_patience', type=int, default=2,
+                        help='Epochs to wait before performing rollback in advanced freezing')
+    parser.add_argument('--gradient_momentum', type=float, default=0.9,
+                        help='Momentum factor for smoothing gradient importance in advanced freezing')
+    parser.add_argument('--analysis_window', type=int, default=3,
+                        help='Number of epochs to analyze before making unfreezing decisions')
+    parser.add_argument('--enable_rollback', action='store_true', default=True,
+                        help='Enable performance-based rollback in advanced freezing')
+    parser.add_argument('--enable_dependency_analysis', action='store_true', default=True,
+                        help='Enable layer dependency analysis in advanced freezing')
     
     # === GRADUAL FINE-TUNING (LEGACY/FIXED MODE) ===
     parser.add_argument('--gradual_finetuning', action='store_true', default=True, 

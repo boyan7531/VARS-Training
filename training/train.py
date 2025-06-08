@@ -23,7 +23,7 @@ from .config import parse_args, log_configuration_summary
 from .data import create_datasets, create_dataloaders, create_gpu_augmentation, log_dataset_recommendations
 from .model_utils import (
     create_model, setup_freezing_strategy, calculate_class_weights,
-    SmartFreezingManager, GradientGuidedFreezingManager, get_phase_info, setup_discriminative_optimizer,
+    SmartFreezingManager, GradientGuidedFreezingManager, AdvancedFreezingManager, get_phase_info, setup_discriminative_optimizer,
     unfreeze_backbone_gradually, log_trainable_parameters
 )
 from .training_utils import (
@@ -98,6 +98,16 @@ def setup_optimizer_and_scheduler(args, model, freezing_manager=None):
         param_groups = freezing_manager.get_discriminative_lr_groups(args.head_lr, args.backbone_lr)
         optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
         logger.info("🔄 Using discriminative learning rates from freezing manager")
+    
+    # For AdvancedFreezingManager
+    elif isinstance(freezing_manager, AdvancedFreezingManager):
+        # Use advanced parameter groups with layer-specific learning rates
+        param_groups = freezing_manager.create_advanced_optimizer_param_groups(
+            head_lr=args.head_lr,
+            backbone_lr=args.backbone_lr
+        )
+        optimizer = optim.AdamW(param_groups, betas=(0.9, 0.999))  # Weight decay handled per-group
+        logger.info("🚀 Using advanced multi-metric parameter groups for optimizer")
     
     # For GradientGuidedFreezingManager
     elif isinstance(freezing_manager, GradientGuidedFreezingManager):
@@ -175,6 +185,27 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
             # Monitor gradients for debugging/analysis
             freezing_manager.monitor_gradients(epoch)
         
+        elif isinstance(freezing_manager, AdvancedFreezingManager):
+            # Advanced multi-metric freezing manager
+            if epoch > 0 and val_metric is not None:
+                # Update freezing status based on comprehensive analysis
+                update_info = freezing_manager.update_after_epoch(val_metric, epoch)
+                
+                # Log comprehensive status
+                if epoch % 2 == 0:  # Log every 2 epochs to avoid spam
+                    freezing_manager.log_comprehensive_status(epoch)
+                
+                # Check if we need to rebuild optimizer
+                if update_info['rebuild_optimizer']:
+                    rebuild_optimizer = True
+                    logger.info(f"[ADVANCED_FREEZING] Rebuilding optimizer due to layer changes")
+                    
+                    if update_info['unfrozen_layers']:
+                        logger.info(f"[ADVANCED_FREEZING] Newly unfrozen layers: {update_info['unfrozen_layers']}")
+                    
+                    if update_info['rollback_performed']:
+                        logger.info(f"[ADVANCED_FREEZING] Performance rollback performed")
+        
         elif isinstance(freezing_manager, GradientGuidedFreezingManager):
             # New GradientGuidedFreezingManager
             if epoch > 0 and val_metric is not None:
@@ -212,11 +243,21 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
         # Get LR from current optimizer
         current_head_lr = optimizer.param_groups[0]['lr']
         
-        if isinstance(freezing_manager, GradientGuidedFreezingManager):
+        if isinstance(freezing_manager, AdvancedFreezingManager):
+            # Use advanced param groups for multi-metric freezing
+            param_groups = freezing_manager.create_advanced_optimizer_param_groups(
+                head_lr=current_head_lr,
+                backbone_lr=current_head_lr * args.backbone_lr_ratio if hasattr(args, 'backbone_lr_ratio') else args.backbone_lr
+            )
+            
+            optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.999))
+            logger.info(f"Rebuilt optimizer with advanced parameter groups")
+            
+        elif isinstance(freezing_manager, GradientGuidedFreezingManager):
             # Use specialized param groups for gradient-guided freezing
             param_groups = freezing_manager.create_optimizer_param_groups(
                 head_lr=current_head_lr,
-                backbone_lr=current_head_lr * args.backbone_lr_ratio
+                backbone_lr=current_head_lr * args.backbone_lr_ratio if hasattr(args, 'backbone_lr_ratio') else args.backbone_lr
             )
             
             optimizer = torch.optim.AdamW(
@@ -230,7 +271,7 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
             param_groups = setup_discriminative_optimizer(
                 model, 
                 head_lr=current_head_lr,
-                backbone_lr=args.backbone_lr if args.backbone_lr > 0 else current_head_lr * args.backbone_lr_ratio
+                backbone_lr=args.backbone_lr if args.backbone_lr > 0 else current_head_lr * args.backbone_lr_ratio if hasattr(args, 'backbone_lr_ratio') else current_head_lr * 0.1
             )
             
             optimizer = torch.optim.AdamW(
