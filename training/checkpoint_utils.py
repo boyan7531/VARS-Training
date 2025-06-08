@@ -172,10 +172,22 @@ def log_configuration_summary(args, train_dataset, val_dataset):
         logger.info(f"Gradual Fine-tuning: Phase1={args.phase1_epochs}e@{args.head_lr:.1e}, Phase2={args.phase2_epochs}e@{args.backbone_lr:.1e}")
     
     logger.info(f"Freezing Strategy: {args.freezing_strategy}")
-    logger.info(f"Loss Function: {args.loss_function}")
-    logger.info(f"Class Balancing: {'Enabled' if args.use_class_balanced_sampler else 'Disabled'}")
     
-    # Augmentation level
+    # Show advanced class balancing settings
+    logger.info(f"Class Balancing: {'Enabled' if args.use_class_balanced_sampler else 'Disabled'}")
+    if args.use_class_balanced_sampler:
+        if args.progressive_class_balancing:
+            logger.info(f"  - Progressive Sampling: {args.oversample_factor_start}x → {args.oversample_factor}x over {args.progressive_duration_epochs} epochs")
+        else:
+            logger.info(f"  - Fixed Oversampling: {args.oversample_factor}x")
+    
+    # Show loss function settings
+    if args.adaptive_focal_loss:
+        logger.info(f"Loss Function: Adaptive Focal Loss (class-specific gamma values)")
+    else:
+        logger.info(f"Loss Function: {args.loss_function}")
+    
+    # Show augmentation settings
     aug_level = "None"
     if args.extreme_augmentation:
         aug_level = "Extreme"
@@ -183,7 +195,10 @@ def log_configuration_summary(args, train_dataset, val_dataset):
         aug_level = "Aggressive"
     elif not args.disable_augmentation:
         aug_level = "Standard"
+    
     logger.info(f"Augmentation: {aug_level}")
+    if args.severity_aware_augmentation:
+        logger.info(f"  - Using Severity-Aware Augmentation (class-specific strengths)")
     
     logger.info(f"Dataset: Train={len(train_dataset)}, Val={len(val_dataset)}")
     logger.info("=" * 80)

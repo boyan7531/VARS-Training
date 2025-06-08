@@ -79,6 +79,16 @@ def parse_args():
     parser.add_argument('--oversample_factor', type=float, default=4.0,
                        help='Factor by which to oversample minority classes (higher = more aggressive)')
     
+    # === NEW STRATEGIES FOR CLASS IMBALANCE ===
+    parser.add_argument('--progressive_class_balancing', action='store_true', default=False,
+                       help='Use progressive class balancing that gradually increases minority class representation')
+    parser.add_argument('--progressive_duration_epochs', type=int, default=15,
+                       help='Number of epochs for progressive class balancing to reach target sampling ratio')
+    parser.add_argument('--severity_aware_augmentation', action='store_true', default=False,
+                       help='Apply class-specific augmentation strength based on severity level')
+    parser.add_argument('--adaptive_focal_loss', action='store_true', default=False,
+                       help='Use adaptive focal loss with class-specific gamma values for more focused learning')
+    
     # === ENHANCED FREEZING STRATEGY OPTIONS ===
     parser.add_argument('--freezing_strategy', type=str, default='fixed', 
                        choices=['fixed', 'adaptive', 'progressive', 'none'],

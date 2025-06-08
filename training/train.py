@@ -307,6 +307,25 @@ def main():
             train_dataset, 6, device, args.class_weighting_strategy, args.max_weight_ratio
         )
 
+    # Update loss function to adaptive focal loss if enabled
+    if args.adaptive_focal_loss:
+        args.loss_function = 'adaptive_focal'
+        logger.info("🔥 Using adaptive focal loss with class-specific gamma values")
+        # Define class-specific gamma values (higher for rare classes)
+        class_gamma_map = {
+            0: 2.0,  # Medium frequency
+            1: 1.5,  # Majority class - less focus needed
+            2: 2.0,  # Medium frequency
+            3: 2.0,  # Medium frequency
+            4: 3.0,  # Very rare - high focus
+            5: 3.5   # Extremely rare - highest focus
+        }
+        logger.info("Class-specific gamma values:")
+        for cls, gamma in class_gamma_map.items():
+            logger.info(f"  Class {cls}: gamma={gamma:.1f}")
+    else:
+        class_gamma_map = None
+
     # GPU augmentation setup
     gpu_augmentation = create_gpu_augmentation(args, device)
 
@@ -343,6 +362,11 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         epoch_start_time = time.time()
         
+        # Update progressive sampler epoch if enabled
+        if args.progressive_class_balancing and hasattr(train_loader.sampler, 'set_epoch'):
+            train_loader.sampler.set_epoch(epoch)
+            logger.debug(f"Updated progressive sampler for epoch {epoch}")
+        
         # Handle gradual fine-tuning transitions
         optimizer, scheduler = handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoch)
         
@@ -354,7 +378,8 @@ def main():
                 'weights': args.main_task_weights,
                 'label_smoothing': args.label_smoothing,
                 'focal_gamma': args.focal_gamma,
-                'severity_class_weights': severity_class_weights
+                'severity_class_weights': severity_class_weights,
+                'class_gamma_map': class_gamma_map
             },
             scaler=scaler, 
             max_batches=num_batches_to_run, 

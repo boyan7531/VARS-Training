@@ -191,6 +191,93 @@ class GPUAugmentationPipeline(nn.Module):
         return video
 
 
+class SeverityAwareGPUAugmentation(nn.Module):
+    """
+    Class-specific augmentation pipeline that applies different augmentation
+    strengths based on the severity class of each sample in the batch.
+    
+    This approach increases augmentation intensity for minority classes (higher severity)
+    while using gentler augmentation for majority classes.
+    """
+    def __init__(self, 
+                 device,
+                 temporal_jitter_strength=3,
+                 color_strength_base=0.3,
+                 noise_strength_base=0.06,
+                 dropout_prob_base=0.1,
+                 hflip_prob=0.5,
+                 severity_multipliers=None):
+        super().__init__()
+        self.device = device
+        
+        # Default severity multipliers if not provided
+        # Higher severity classes get stronger augmentation
+        if severity_multipliers is None:
+            self.severity_multipliers = {
+                0: 1.0,   # Severity 0 - standard augmentation
+                1: 0.8,   # Severity 1 (majority class) - gentler augmentation
+                2: 1.1,   # Severity 2 - slightly stronger
+                3: 1.2,   # Severity 3 - stronger
+                4: 1.5,   # Severity 4 (rare) - much stronger
+                5: 1.7    # Severity 5 (very rare) - most aggressive
+            }
+        else:
+            self.severity_multipliers = severity_multipliers
+            
+        logger.info("Using Severity-Aware GPU Augmentation:")
+        for severity, multiplier in self.severity_multipliers.items():
+            logger.info(f"  Severity {severity}: {multiplier:.1f}x augmentation strength")
+        
+        # Base augmentation parameters
+        self.temporal_jitter_strength = temporal_jitter_strength
+        self.color_strength_base = color_strength_base
+        self.noise_strength_base = noise_strength_base
+        self.dropout_prob_base = dropout_prob_base
+        self.hflip_prob = hflip_prob
+        
+        # Create augmentation modules for each severity level
+        self.augmentation_pipelines = nn.ModuleDict()
+        for severity, multiplier in self.severity_multipliers.items():
+            self.augmentation_pipelines[str(severity)] = GPUAugmentationPipeline(
+                temporal_jitter_strength=int(temporal_jitter_strength * multiplier),
+                color_strength=color_strength_base * multiplier,
+                noise_strength=noise_strength_base * multiplier,
+                dropout_prob=min(dropout_prob_base * multiplier, 0.5),  # Cap at 0.5
+                hflip_prob=hflip_prob,
+                aggressive=True  # Always use aggressive for this pipeline
+            )
+    
+    def forward(self, video, severity_labels):
+        """
+        Apply severity-specific augmentation to each sample in the batch.
+        
+        Args:
+            video: Video tensor with shape (B, V, C, T, H, W) or (B, C, T, H, W)
+            severity_labels: Tensor of severity labels for each sample in batch
+        
+        Returns:
+            Augmented video tensor with same shape as input
+        """
+        if not self.training:
+            return video
+            
+        # Create an output tensor of the same shape as input
+        B = video.shape[0]
+        out = video.clone()
+        
+        # Apply appropriate augmentation to each sample based on its severity
+        for i in range(B):
+            severity = severity_labels[i].item()
+            severity_key = str(min(max(severity, 0), 5))  # Ensure severity is in [0,5]
+            
+            if severity_key in self.augmentation_pipelines:
+                # Get sample and apply corresponding augmentation
+                sample = video[i:i+1]  # Keep batch dimension
+                out[i:i+1] = self.augmentation_pipelines[severity_key](sample)
+                
+        return out
+
+
 # Define transforms locally instead of importing from test file
 class ConvertToFloatAndScale(torch.nn.Module):
     """Converts a uint8 video tensor (C, T, H, W) from [0, 255] to float32 [0, 1]."""
@@ -342,8 +429,23 @@ def create_gpu_augmentation(args, device):
     """Create GPU-based augmentation pipeline if enabled."""
     if not args.gpu_augmentation:
         return None
+    
+    # Check if we should use severity-aware augmentation
+    if args.severity_aware_augmentation:
+        # Severity-aware augmentation with adaptive strength per class
+        gpu_augmentation = SeverityAwareGPUAugmentation(
+            device=device,
+            temporal_jitter_strength=args.temporal_jitter_strength,
+            color_strength_base=args.color_aug_strength,
+            noise_strength_base=args.noise_strength,
+            dropout_prob_base=args.dropout_prob,
+            hflip_prob=0.7 if args.extreme_augmentation else (0.6 if args.aggressive_augmentation else 0.5),
+            severity_multipliers=None  # Use default multipliers
+        )
+        logger.info("🔥 Using severity-aware GPU augmentation pipeline!")
+        return gpu_augmentation
         
-    # GPU augmentation will be applied in the training loop
+    # Standard GPU augmentation (same for all samples)
     gpu_augmentation = GPUAugmentationPipeline(
         temporal_jitter_strength=args.temporal_jitter_strength,
         color_strength=args.color_aug_strength,
@@ -410,11 +512,30 @@ def create_dataloaders(args, train_dataset, val_dataset):
     
     # Setup training loader with optional class balancing
     if args.use_class_balanced_sampler and not args.test_run:
-        logger.info("🎯 Using ClassBalancedSampler to address class imbalance!")
-        train_sampler = ClassBalancedSampler(
-            train_dataset, 
-            oversample_factor=args.oversample_factor
-        )
+        # Choose between progressive or standard class balancing
+        if args.progressive_class_balancing:
+            logger.info("🚀 Using ProgressiveClassBalancedSampler for dynamic class balancing!")
+            train_sampler = ProgressiveClassBalancedSampler(
+                train_dataset,
+                oversample_factor_start=2.0,  # Start with mild oversampling
+                oversample_factor_end=args.oversample_factor,  # End with full oversampling
+                duration_epochs=args.progressive_duration_epochs,  # Duration of progression
+                current_epoch=0  # Start at epoch 0
+            )
+            
+            logger.info(f"   - Progressive balancing from 2.0x to {args.oversample_factor}x")
+            logger.info(f"   - Duration: {args.progressive_duration_epochs} epochs")
+            logger.info(f"   - Initial samples per epoch: {len(train_sampler)}")
+            
+        else:
+            logger.info("🎯 Using ClassBalancedSampler to address class imbalance!")
+            train_sampler = ClassBalancedSampler(
+                train_dataset, 
+                oversample_factor=args.oversample_factor
+            )
+            
+            logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority classes")
+            logger.info(f"   - Effective training samples per epoch: {len(train_sampler)}")
         
         train_loader = DataLoader(
             train_dataset, 
@@ -428,9 +549,6 @@ def create_dataloaders(args, train_dataset, val_dataset):
             collate_fn=variable_views_collate_fn,
             worker_init_fn=worker_init_fn  # Ensure reproducibility
         )
-        
-        logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority classes")
-        logger.info(f"   - Effective training samples per epoch: {len(train_sampler)}")
         
     else:
         # Standard random sampling
@@ -499,4 +617,137 @@ def log_dataset_recommendations(train_dataset):
     elif dataset_size < 1000:
         logger.info("💡 RECOMMENDATION: Medium-sized dataset - current settings should work well")
     else:
-        logger.info("💡 Large dataset detected - consider reducing augmentation intensity") 
+        logger.info("💡 Large dataset detected - consider reducing augmentation intensity")
+
+
+class ProgressiveClassBalancedSampler(torch.utils.data.Sampler):
+    """
+    Progressive balanced sampler that gradually increases the representation
+    of minority classes over the course of training.
+    
+    This addresses class imbalance while avoiding convergence issues by:
+    1. Starting with a mild oversampling of minority classes
+    2. Progressively increasing minority class representation
+    3. Reaching a final balanced distribution by a target epoch
+    
+    Args:
+        dataset: Dataset to sample from
+        oversample_factor_start: Initial oversampling factor for minority classes
+        oversample_factor_end: Final oversampling factor for minority classes
+        duration_epochs: Number of epochs over which to progress from start to end factor
+        current_epoch: Current epoch counter (updated externally)
+        max_targets_multiplier: Maximum multiplier for minority class representation
+    """
+    def __init__(
+        self, 
+        dataset, 
+        oversample_factor_start=2.0,
+        oversample_factor_end=5.0,
+        duration_epochs=15,
+        current_epoch=0,
+        max_targets_multiplier=5.0
+    ):
+        self.dataset = dataset
+        self.oversample_factor_start = oversample_factor_start
+        self.oversample_factor_end = oversample_factor_end
+        self.duration_epochs = duration_epochs
+        self.current_epoch = current_epoch
+        self.max_targets_multiplier = max_targets_multiplier
+        
+        # Get class labels from dataset
+        self.severity_labels = []
+        for action in dataset.actions:
+            self.severity_labels.append(action["label_severity"])
+        
+        # Compute the number of samples per severity level
+        self.class_counts = {}
+        for i in range(6):  # 6 severity levels (0-5)
+            self.class_counts[i] = self.severity_labels.count(i)
+        
+        # Remove empty classes
+        self.class_counts = {k: v for k, v in self.class_counts.items() if v > 0}
+        
+        # Compute the majority class count
+        self.majority_count = max(self.class_counts.values())
+        
+        # Log initial class distribution
+        logger.info("Initial class distribution for ProgressiveClassBalancedSampler:")
+        for cls, count in sorted(self.class_counts.items()):
+            logger.info(f"  Class {cls}: {count} samples")
+        
+        # Calculate current oversample factor based on epoch
+        self._update_targets()
+        
+    def _update_targets(self):
+        """Update target counts based on current epoch."""
+        # Calculate the current oversample factor
+        progress = min(self.current_epoch / self.duration_epochs, 1.0)
+        current_factor = self.oversample_factor_start + progress * (self.oversample_factor_end - self.oversample_factor_start)
+        
+        # Calculate target counts for each class
+        self.targets_per_class = {}
+        for cls, count in self.class_counts.items():
+            if count == self.majority_count:
+                # Majority class - no oversampling
+                self.targets_per_class[cls] = count
+            else:
+                # Minority class - progressive oversampling
+                # Class-specific factor based on rarity
+                minority_ratio = count / self.majority_count
+                class_specific_factor = current_factor * (1.0 / minority_ratio)
+                
+                # Cap the maximum oversampling
+                class_specific_factor = min(class_specific_factor, self.max_targets_multiplier)
+                
+                # Calculate targets (but ensure at least the original count)
+                target_count = max(int(count * class_specific_factor), count)
+                self.targets_per_class[cls] = target_count
+        
+        # Calculate indices to sample
+        self.indices_per_class = {cls: [] for cls in self.class_counts.keys()}
+        for i, label in enumerate(self.severity_labels):
+            if label in self.indices_per_class:
+                self.indices_per_class[label].append(i)
+        
+        self.total_size = sum(self.targets_per_class.values())
+    
+    def set_epoch(self, epoch):
+        """Update the current epoch - must be called at the start of each epoch."""
+        self.current_epoch = epoch
+        self._update_targets()
+        
+        # Log current sampling strategy
+        if epoch % 5 == 0:  # Log every 5 epochs to avoid spam
+            progress = min(self.current_epoch / self.duration_epochs, 1.0)
+            current_factor = self.oversample_factor_start + progress * (self.oversample_factor_end - self.oversample_factor_start)
+            logger.info(f"Epoch {epoch}: Progressive sampling at {progress*100:.0f}% ({current_factor:.2f}x factor)")
+            logger.info("Current target distribution:")
+            for cls, target in sorted(self.targets_per_class.items()):
+                logger.info(f"  Class {cls}: {self.class_counts[cls]} → {target} samples ({target/self.class_counts[cls]:.1f}x)")
+    
+    def __iter__(self):
+        """Return an iterator over the indices."""
+        # Create a list of indices to sample
+        indices = []
+        for cls, count in self.targets_per_class.items():
+            # Oversample class to reach target count
+            class_indices = self.indices_per_class[cls]
+            samples_needed = self.targets_per_class[cls]
+            
+            # Full cycles first
+            full_cycles = samples_needed // len(class_indices)
+            for _ in range(full_cycles):
+                indices.extend(class_indices)
+            
+            # Then add remaining samples randomly
+            remaining = samples_needed % len(class_indices)
+            if remaining > 0:
+                indices.extend(random.sample(class_indices, remaining))
+        
+        # Shuffle indices
+        random.shuffle(indices)
+        return iter(indices)
+    
+    def __len__(self):
+        """Return the total size of the sampler."""
+        return self.total_size 

@@ -74,6 +74,82 @@ class FocalLoss(nn.Module):
             return focal_loss
 
 
+class AdaptiveFocalLoss(nn.Module):
+    """
+    Enhanced Focal Loss with class-specific gamma values.
+    
+    Adapts the focusing parameter (gamma) per class to give more
+    emphasis to rare classes and hard examples.
+    
+    Args:
+        class_gamma_map: Dictionary mapping class indices to gamma values
+        class_alpha_map: Optional dictionary mapping class indices to alpha weights
+        reduction: Reduction mode ('mean', 'sum', or 'none')
+        label_smoothing: Label smoothing parameter
+    """
+    def __init__(self, class_gamma_map=None, class_alpha_map=None, reduction='mean', label_smoothing=0.0):
+        super().__init__()
+        
+        # Default gamma values (higher = more focus on hard examples)
+        if class_gamma_map is None:
+            self.class_gamma_map = {
+                0: 2.0,  # Medium frequency
+                1: 1.5,  # Majority class - less focus needed
+                2: 2.0,  # Medium frequency
+                3: 2.0,  # Medium frequency
+                4: 3.0,  # Very rare - high focus
+                5: 3.5   # Extremely rare - highest focus
+            }
+        else:
+            self.class_gamma_map = class_gamma_map
+            
+        # Optional per-class alpha weighting (complementary to sampling)
+        self.class_alpha_map = class_alpha_map
+        self.reduction = reduction
+        self.label_smoothing = label_smoothing
+        
+        logger.info("Using AdaptiveFocalLoss with class-specific gamma values:")
+        for cls, gamma in self.class_gamma_map.items():
+            logger.info(f"  Class {cls}: gamma={gamma:.1f}")
+    
+    def forward(self, inputs, targets):
+        # Standard cross entropy component
+        ce_loss = F.cross_entropy(
+            inputs, targets, 
+            reduction='none', 
+            weight=self._get_alpha_weights(targets) if self.class_alpha_map else None,
+            label_smoothing=self.label_smoothing
+        )
+        
+        # Calculate pt (model confidence for correct class)
+        pt = torch.exp(-ce_loss)
+        
+        # Apply class-specific gamma focusing
+        batch_gammas = torch.tensor(
+            [self.class_gamma_map.get(t.item(), 2.0) for t in targets],
+            device=targets.device
+        )
+        
+        # Apply focal term with class-specific gamma: (1-pt)^gamma_c
+        focal_weights = torch.pow(1 - pt, batch_gammas)
+        focal_loss = focal_weights * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+    
+    def _get_alpha_weights(self, targets):
+        # Convert class-specific alpha values to tensor weights
+        # This creates a weight tensor matching the target shape
+        return torch.tensor(
+            [self.class_alpha_map.get(t.item(), 1.0) for t in targets],
+            device=targets.device
+        )
+
+
 def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: dict):
     """
     Calculate weighted multi-task loss based on a configuration dictionary.
@@ -83,7 +159,7 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
         act_logits: Action type classification logits  
         batch_data: Batch data containing labels
         loss_config (dict): Configuration for the loss function.
-            - 'function': 'focal', 'weighted', or 'plain'
+            - 'function': 'focal', 'weighted', 'adaptive_focal', or 'plain'
             - 'weights': [severity_weight, action_weight] for main tasks
             - 'label_smoothing': Label smoothing factor
             - 'focal_gamma': Focal Loss gamma parameter
@@ -98,7 +174,22 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
     main_weights = loss_config.get('weights', [1.0, 1.0])
     label_smoothing = loss_config.get('label_smoothing', 0.0)
     
-    if loss_function == 'focal':
+    if loss_function == 'adaptive_focal':
+        # Use adaptive focal loss with class-specific gamma values
+        class_gamma_map = loss_config.get('class_gamma_map', None)
+        severity_class_weights = loss_config.get('severity_class_weights', None)
+        
+        adaptive_focal_criterion = AdaptiveFocalLoss(
+            class_gamma_map=class_gamma_map,
+            class_alpha_map=None,  # We already use severity_class_weights
+            label_smoothing=label_smoothing
+        )
+        loss_sev = adaptive_focal_criterion(sev_logits, batch_data["label_severity"]) * main_weights[0]
+        
+        # Action type loss is typically less imbalanced, so standard CE is fine
+        loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
+    
+    elif loss_function == 'focal':
         focal_gamma = loss_config.get('focal_gamma', 2.0)
         # When using Focal Loss with a balanced sampler, alpha (class weights) is often omitted.
         severity_class_weights = loss_config.get('severity_class_weights', None) 
@@ -127,7 +218,7 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
         loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
     
     else:
-        raise ValueError(f"Unknown loss_function: {loss_function}. Must be 'focal', 'weighted', or 'plain'")
+        raise ValueError(f"Unknown loss_function: {loss_function}. Must be 'adaptive_focal', 'focal', 'weighted', or 'plain'")
     
     total_loss = loss_sev + loss_act
     
@@ -200,6 +291,17 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
         # Mixed precision forward pass (fixed deprecation warning)
         if scaler is not None:
             with torch.amp.autocast('cuda'):
+                # Apply GPU augmentation if provided
+                if gpu_augmentation is not None:
+                    # Check if this is a severity-aware augmentation
+                    if hasattr(gpu_augmentation, 'severity_multipliers'):
+                        # This is a SeverityAwareGPUAugmentation
+                        clips = gpu_augmentation(batch_data["clips"], batch_data["label_severity"])
+                        batch_data["clips"] = clips
+                    else:
+                        # Standard augmentation
+                        batch_data["clips"] = gpu_augmentation(batch_data["clips"])
+                
                 sev_logits, act_logits = model(batch_data)
                 total_loss, _, _ = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_config
@@ -215,6 +317,17 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
             scaler.step(optimizer)
             scaler.update()
         else:
+            # Apply GPU augmentation if provided
+            if gpu_augmentation is not None:
+                # Check if this is a severity-aware augmentation
+                if hasattr(gpu_augmentation, 'severity_multipliers'):
+                    # This is a SeverityAwareGPUAugmentation
+                    clips = gpu_augmentation(batch_data["clips"], batch_data["label_severity"])
+                    batch_data["clips"] = clips
+                else:
+                    # Standard augmentation
+                    batch_data["clips"] = gpu_augmentation(batch_data["clips"])
+                    
             sev_logits, act_logits = model(batch_data)
             total_loss, _, _ = calculate_multitask_loss(
                 sev_logits, act_logits, batch_data, loss_config
