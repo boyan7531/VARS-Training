@@ -91,16 +91,24 @@ def parse_args():
     
     # === ENHANCED FREEZING STRATEGY OPTIONS ===
     parser.add_argument('--freezing_strategy', type=str, default='fixed', 
-                       choices=['fixed', 'adaptive', 'progressive', 'none'],
-                       help='Freezing strategy: fixed (original), adaptive (plateau-based), progressive (layer-wise), none (no freezing)')
+                       choices=['none', 'fixed', 'adaptive', 'progressive', 'gradient_guided'],
+                       help='Strategy for parameter freezing (none=no freezing, fixed=timed phases, adaptive/progressive/gradient_guided)')
     parser.add_argument('--adaptive_patience', type=int, default=3,
-                       help='Patience for adaptive unfreezing (epochs without improvement before unfreezing next layer)')
+                       help='Epochs to wait before unfreezing the next layer in adaptive mode')
     parser.add_argument('--adaptive_min_improvement', type=float, default=0.001,
-                       help='Minimum validation accuracy improvement to reset adaptive patience')
-    parser.add_argument('--exponential_lr_decay', action='store_true', default=False,
-                       help='Use exponential LR decay for backbone layers (each layer gets 0.5x previous layer LR)')
-    parser.add_argument('--compare_freezing', action='store_true', default=False,
-                       help='Run comparison between freezing and no-freezing strategies (experimental)')
+                       help='Minimum validation improvement to reset patience counter in adaptive mode')
+    
+    # Gradient-guided freezing specific parameters
+    parser.add_argument('--importance_threshold', type=float, default=0.01,
+                        help='Minimum gradient importance threshold for unfreezing layers in gradient-guided mode')
+    parser.add_argument('--warmup_epochs', type=int, default=3,
+                        help='Number of epochs to warmup newly unfrozen layers with reduced learning rate')
+    parser.add_argument('--unfreeze_patience', type=int, default=2,
+                        help='Minimum epochs between layer unfreezing operations')
+    parser.add_argument('--max_layers_per_step', type=int, default=1,
+                        help='Maximum number of layers to unfreeze in a single step')
+    parser.add_argument('--sampling_epochs', type=int, default=2,
+                        help='Number of epochs to sample gradients before first unfreezing decision')
     
     # === GRADUAL FINE-TUNING (LEGACY/FIXED MODE) ===
     parser.add_argument('--gradual_finetuning', action='store_true', default=True, 

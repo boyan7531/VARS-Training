@@ -90,54 +90,39 @@ def setup_device_and_scaling(args):
 def setup_optimizer_and_scheduler(args, model, freezing_manager=None):
     """Setup optimizer and learning rate scheduler."""
     
-    # Setup optimizer based on freezing strategy
-    if args.freezing_strategy == 'none':
-        # Standard training - all parameters trainable
-        optimizer = optim.AdamW(
-            model.parameters(), 
-            lr=args.lr, 
-            weight_decay=args.weight_decay,
-            betas=(0.9, 0.999)
+    # For SmartFreezingManager
+    if isinstance(freezing_manager, SmartFreezingManager) and args.freezing_strategy in ['adaptive', 'progressive'] and args.exponential_lr_decay:
+        # Use discriminative learning rates from freezing manager
+        param_groups = freezing_manager.get_discriminative_lr_groups(args.head_lr, args.backbone_lr)
+        optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
+        logger.info("🔄 Using discriminative learning rates from freezing manager")
+    
+    # For GradientGuidedFreezingManager
+    elif isinstance(freezing_manager, GradientGuidedFreezingManager):
+        # Use specialized parameter groups from gradient-guided freezing manager
+        param_groups = freezing_manager.create_optimizer_param_groups(
+            head_lr=args.head_lr,
+            backbone_lr=args.backbone_lr
         )
-        
-    elif args.freezing_strategy in ['adaptive', 'progressive'] and freezing_manager:
-        # Smart freezing strategies
-        if args.exponential_lr_decay:
-            param_groups = freezing_manager.get_discriminative_lr_groups(args.head_lr, args.backbone_lr)
-            optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
-            logger.info("🔄 Using exponential LR decay for backbone layers")
-        else:
-            optimizer = optim.AdamW(
-                [p for p in model.parameters() if p.requires_grad], 
-                lr=args.head_lr, 
-                weight_decay=args.weight_decay,
-                betas=(0.9, 0.999)
-            )
-        
-        logger.info(f"[SMART] Initial optimizer setup with head LR={args.head_lr:.1e}")
-        
-    elif args.gradual_finetuning:
-        # Original gradual fine-tuning (fixed strategy)
-        optimizer = optim.AdamW(
-            [p for p in model.parameters() if p.requires_grad], 
-            lr=args.head_lr, 
-            weight_decay=args.weight_decay,
-            betas=(0.9, 0.999)
-        )
-        logger.info(f"[PHASE1] Phase 1 optimizer initialized with LR={args.head_lr:.1e}")
+        optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
+        logger.info("🔄 Using gradient-guided parameter groups for optimizer")
+    
+    # For standard discriminative learning rates
+    elif args.discriminative_lr:
+        # Manually setup discriminative learning rates
+        param_groups = setup_discriminative_optimizer(model, args.head_lr, args.backbone_lr)
+        optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
+        logger.info(f"🔄 Using discriminative learning rates: Head={args.head_lr:.1e}, Backbone={args.backbone_lr:.1e}")
+    
+    # Standard (uniform) learning rate
     else:
-        # Fallback to standard training
-        optimizer = optim.AdamW(
-            model.parameters(), 
-            lr=args.lr, 
-            weight_decay=args.weight_decay,
-            betas=(0.9, 0.999)
-        )
-
-    # Setup learning rate scheduler
+        optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.999))
+        logger.info(f"🔄 Using uniform learning rate: {args.lr:.1e}")
+    
+    # Initialize schedulers
     scheduler = None
     phase1_scheduler = None
-    scheduler_info = "None"
+    scheduler_info = "None (constant learning rate)"
 
     if args.gradual_finetuning:
         # Phase 1 will use ReduceLROnPlateau
@@ -170,58 +155,124 @@ def setup_optimizer_and_scheduler(args, model, freezing_manager=None):
     return optimizer, scheduler, phase1_scheduler, scheduler_info
 
 
-def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoch):
-    """Handle transition from Phase 1 to Phase 2 in gradual fine-tuning."""
+def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoch, freezing_manager=None, val_metric=None, train_loader=None):
+    """
+    Handle phase transitions for gradual fine-tuning or freezing strategy adjustments.
+    Returns updated optimizer and scheduler.
+    """
+    rebuild_optimizer = False
+    rebuild_scheduler = False
     
-    if not args.gradual_finetuning:
-        return optimizer, scheduler
+    if freezing_manager is not None:
+        if isinstance(freezing_manager, SmartFreezingManager):
+            # Original SmartFreezingManager
+            if epoch > 0 and val_metric is not None and args.freezing_strategy == 'adaptive':
+                if freezing_manager.adaptive_unfreeze_step(val_metric, epoch):
+                    rebuild_optimizer = True
+            
+            # Monitor gradients for debugging/analysis
+            freezing_manager.monitor_gradients(epoch)
         
-    current_phase, _ = get_phase_info(epoch, args.phase1_epochs, args.epochs)
+        elif isinstance(freezing_manager, GradientGuidedFreezingManager):
+            # New GradientGuidedFreezingManager
+            if epoch > 0 and val_metric is not None:
+                # Update freezing status based on gradient analysis
+                update_info = freezing_manager.update_after_epoch(val_metric, epoch)
+                
+                # Log current freezing status
+                freezing_manager.log_status(epoch)
+                
+                # Check if we need to rebuild optimizer
+                if update_info['rebuild_optimizer']:
+                    rebuild_optimizer = True
+                    logger.info(f"[GRADIENT_GUIDED] Rebuilding optimizer due to layer changes")
+                    
+                    if update_info['unfrozen_layers']:
+                        logger.info(f"[GRADIENT_GUIDED] Newly unfrozen layers: {update_info['unfrozen_layers']}")
     
-    # Transition from Phase 1 to Phase 2
-    if epoch == args.phase1_epochs and current_phase == 2:
-        logger.info("[PHASE2] " + "="*60)
-        logger.info("[PHASE2] TRANSITIONING TO PHASE 2: Gradual Unfreezing")
-        logger.info("[PHASE2] " + "="*60)
+    # Traditional gradual fine-tuning with fixed phases
+    elif args.gradual_finetuning:
+        current_phase, phase_name = get_phase_info(epoch, args.phase1_epochs, args.epochs)
+        prev_phase, _ = get_phase_info(epoch-1, args.phase1_epochs, args.epochs) if epoch > 0 else (current_phase, "")
         
-        # Unfreeze backbone layers gradually
-        unfreeze_backbone_gradually(model, args.unfreeze_blocks)
+        # Handle phase transition
+        if epoch > 0 and current_phase != prev_phase:
+            logger.info(f"Transitioning to {phase_name}")
+            
+            if current_phase == 2:
+                # Phase 1 -> Phase 2: Start unfreezing backbone gradually
+                unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=args.unfreeze_blocks)
+                log_trainable_parameters(model)
+                rebuild_optimizer = True
+    
+    # Rebuild optimizer if needed
+    if rebuild_optimizer:
+        # Get LR from current optimizer
+        current_head_lr = optimizer.param_groups[0]['lr']
         
-        # Setup discriminative learning rates for Phase 2
-        actual_phase2_backbone_lr = args.backbone_lr * args.phase2_backbone_lr_scale_factor
-        phase2_head_lr = actual_phase2_backbone_lr * args.phase2_head_lr_ratio
+        if isinstance(freezing_manager, GradientGuidedFreezingManager):
+            # Use specialized param groups for gradient-guided freezing
+            param_groups = freezing_manager.create_optimizer_param_groups(
+                head_lr=current_head_lr,
+                backbone_lr=current_head_lr * args.backbone_lr_ratio
+            )
+            
+            optimizer = torch.optim.AdamW(
+                param_groups,
+                weight_decay=args.weight_decay
+            )
+            logger.info(f"Rebuilt optimizer with gradient-guided parameter groups")
+            
+        elif args.discriminative_lr:
+            # Use discriminative learning rates
+            param_groups = setup_discriminative_optimizer(
+                model, 
+                head_lr=current_head_lr,
+                backbone_lr=args.backbone_lr if args.backbone_lr > 0 else current_head_lr * args.backbone_lr_ratio
+            )
+            
+            optimizer = torch.optim.AdamW(
+                param_groups,
+                weight_decay=args.weight_decay
+            )
+            logger.info(f"Rebuilt optimizer with discriminative learning rates")
+            
+        else:
+            # Standard optimizer
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=current_head_lr,
+                weight_decay=args.weight_decay
+            )
+            logger.info(f"Rebuilt optimizer with uniform learning rate: {current_head_lr:.2e}")
         
-        param_groups = setup_discriminative_optimizer(model, phase2_head_lr, actual_phase2_backbone_lr)
-        logger.info(f"[PHASE2_LR_SETUP] Phase 2 LRs: Backbone={actual_phase2_backbone_lr:.1e}, Head={phase2_head_lr:.1e}")
-        
-        # Recreate optimizer with new parameter groups
-        optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
-        
-        # Initialize main scheduler for Phase 2
+        rebuild_scheduler = True
+    
+    # Rebuild scheduler if needed
+    if rebuild_scheduler and scheduler is not None:
         remaining_epochs = args.epochs - epoch
         if args.scheduler == 'cosine':
-            scheduler = CosineAnnealingLR(optimizer, T_max=remaining_epochs, eta_min=actual_phase2_backbone_lr * 0.01)
-        elif args.scheduler == 'onecycle':
-            scheduler = OneCycleLR(
-                optimizer,
-                max_lr=[pg['lr'] for pg in param_groups],
-                epochs=remaining_epochs,
-                steps_per_epoch=1,  # Will be updated with actual steps
-                pct_start=(args.warmup_epochs / remaining_epochs) if remaining_epochs > 0 and args.warmup_epochs < remaining_epochs else 0.1
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, 
+                T_max=remaining_epochs
             )
-        elif args.scheduler == 'step':
-            scheduler = StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
-        elif args.scheduler == 'exponential':
-            scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.gamma)
-        elif args.scheduler == 'reduce_on_plateau':
-            scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=args.gamma,
-                                        patience=args.plateau_patience, min_lr=args.min_lr)
-        else:
-            scheduler = None
+            logger.info(f"Rebuilt cosine scheduler for remaining {remaining_epochs} epochs")
             
-        log_trainable_parameters(model)
-        logger.info("[PHASE2] Phase 2 setup complete!")
-        logger.info("[PHASE2] " + "="*60)
+        elif args.scheduler == 'onecycle':
+            if train_loader is not None:
+                steps_per_epoch = len(train_loader)
+                scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                    optimizer,
+                    max_lr=[group['lr'] for group in optimizer.param_groups],
+                    epochs=remaining_epochs,
+                    steps_per_epoch=steps_per_epoch,
+                    pct_start=0.1  # Short warmup for rebuilding
+                )
+                logger.info(f"Rebuilt OneCycleLR scheduler for remaining {remaining_epochs} epochs")
+            else:
+                logger.warning("Cannot rebuild OneCycleLR scheduler: train_loader not provided")
+            
+        # Add more scheduler types here if needed
         
     return optimizer, scheduler
 
@@ -286,19 +337,21 @@ def main():
     # Setup freezing strategy
     freezing_manager = setup_freezing_strategy(args, model)
     
-    # Setup optimizer and scheduler
+    # Setup optimizer and scheduler (after dataloader creation for OneCycleLR)
     optimizer, scheduler, phase1_scheduler, scheduler_info = setup_optimizer_and_scheduler(args, model, freezing_manager)
     
-    # Update OneCycleLR with actual steps per epoch
-    if args.scheduler == 'onecycle' and scheduler is None and not args.gradual_finetuning:
+    # Initialize OneCycleLR after dataloader creation to get steps_per_epoch
+    if args.scheduler == 'onecycle' and scheduler is None:
         steps_per_epoch = len(train_loader)
-        scheduler = OneCycleLR(
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer, 
             max_lr=args.lr,
             epochs=args.epochs,
             steps_per_epoch=steps_per_epoch,
             pct_start=args.warmup_epochs / args.epochs if args.epochs > 0 else 0.1
         )
+        scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, steps_per_epoch={steps_per_epoch}, warmup={args.warmup_epochs}e)"
+        logger.info(f"Initialized OneCycleLR scheduler with {steps_per_epoch} steps per epoch")
 
     # Calculate class weights for severity classification
     severity_class_weights = None
@@ -367,9 +420,6 @@ def main():
             train_loader.sampler.set_epoch(epoch)
             logger.debug(f"Updated progressive sampler for epoch {epoch}")
         
-        # Handle gradual fine-tuning transitions
-        optimizer, scheduler = handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoch)
-        
         # Training
         train_metrics = train_one_epoch(
             model, train_loader, optimizer, device,
@@ -407,30 +457,13 @@ def main():
         model.train()
         cleanup_memory()
 
-        # Smart freezing logic
-        optimizer_updated = False
-        if freezing_manager is not None:
-            val_combined_acc = (val_metrics[1] + val_metrics[2]) / 2  # sev_acc + act_acc
-            
-            # Monitor gradients
-            freezing_manager.monitor_gradients(epoch)
-            
-            # Check for adaptive unfreezing
-            if freezing_manager.adaptive_unfreeze_step(val_combined_acc, epoch):
-                # Update optimizer with newly unfrozen parameters
-                if args.exponential_lr_decay:
-                    param_groups = freezing_manager.get_discriminative_lr_groups(args.head_lr, args.backbone_lr)
-                    optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
-                    logger.info("🔄 Updated optimizer with new unfrozen layers (exponential LR)")
-                else:
-                    # Add new parameters to existing optimizer
-                    new_params = [p for p in model.parameters() if p.requires_grad and id(p) not in [id(p2) for group in optimizer.param_groups for p2 in group['params']]]
-                    if new_params:
-                        optimizer.add_param_group({'params': new_params, 'lr': args.backbone_lr})
-                        logger.info(f"➕ Added {len(new_params)} newly unfrozen parameters to optimizer")
-                
-                optimizer_updated = True
-                log_trainable_parameters(model)
+        # Handle freezing strategy updates with validation results
+        optimizer, scheduler = handle_gradual_finetuning_transition(
+            args, model, optimizer, scheduler, epoch,
+            freezing_manager=freezing_manager, 
+            val_metric=val_metrics['severity_accuracy'],
+            train_loader=train_loader
+        )
 
         # Update learning rate
         if scheduler is not None:
@@ -459,7 +492,7 @@ def main():
         # Log epoch summary and get validation accuracy
         val_combined_acc = log_epoch_summary(
             epoch, args.epochs, epoch_time, train_metrics, val_metrics,
-            current_lr, prev_lr, best_val_acc, phase_info, optimizer_updated
+            current_lr, prev_lr, best_val_acc, phase_info, True
         )
 
         # Update training history
