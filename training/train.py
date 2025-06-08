@@ -348,20 +348,33 @@ def main():
         
         # Training
         train_metrics = train_one_epoch(
-            model, train_loader, criterion_severity, criterion_action, optimizer, device,
-            scaler=scaler, max_batches=num_batches_to_run, 
-            loss_weights=args.main_task_weights, gradient_clip_norm=args.gradient_clip_norm, 
-            label_smoothing=args.label_smoothing, severity_class_weights=severity_class_weights, 
-            loss_function=args.loss_function, focal_gamma=args.focal_gamma,
-            gpu_augmentation=gpu_augmentation, memory_cleanup_interval=args.memory_cleanup_interval
+            model, train_loader, optimizer, device,
+            loss_config={
+                'function': args.loss_function,
+                'weights': args.main_task_weights,
+                'label_smoothing': args.label_smoothing,
+                'focal_gamma': args.focal_gamma,
+                'severity_class_weights': severity_class_weights
+            },
+            scaler=scaler, 
+            max_batches=num_batches_to_run, 
+            gradient_clip_norm=args.gradient_clip_norm, 
+            memory_cleanup_interval=args.memory_cleanup_interval,
+            scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
+            gpu_augmentation=gpu_augmentation
         )
         
         # Validation
         val_metrics = validate_one_epoch(
-            model, val_loader, criterion_severity, criterion_action, device,
-            max_batches=num_batches_to_run, loss_weights=args.main_task_weights, 
-            label_smoothing=args.label_smoothing, severity_class_weights=severity_class_weights, 
-            loss_function=args.loss_function, focal_gamma=args.focal_gamma,
+            model, val_loader, device,
+            loss_config={
+                'function': args.loss_function,
+                'weights': args.main_task_weights,
+                'label_smoothing': args.label_smoothing,
+                'focal_gamma': args.focal_gamma,
+                'severity_class_weights': severity_class_weights
+            },
+            max_batches=num_batches_to_run,
             memory_cleanup_interval=args.memory_cleanup_interval
         )
         
@@ -405,7 +418,7 @@ def main():
                 if isinstance(scheduler, ReduceLROnPlateau):
                     val_combined_acc = (val_metrics[1] + val_metrics[2]) / 2
                     scheduler.step(val_combined_acc)
-                elif not isinstance(scheduler, OneCycleLR):
+                elif not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
                     scheduler.step()
             
         # Calculate epoch metrics and log summary

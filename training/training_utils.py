@@ -7,6 +7,7 @@ This module handles training loops, validation, loss functions, and metrics calc
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.optim.lr_scheduler
 import time
 import logging
 from sklearn.metrics import f1_score
@@ -166,7 +167,8 @@ class EarlyStopping:
 
 
 def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, scaler=None, 
-                   max_batches=None, gradient_clip_norm=1.0, memory_cleanup_interval=20):
+                   max_batches=None, gradient_clip_norm=1.0, memory_cleanup_interval=20, scheduler=None,
+                   gpu_augmentation=None):
     """Train the model for one epoch."""
     model.train()
     running_loss = 0.0
@@ -225,6 +227,10 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
             
             optimizer.step()
+            
+        # Step the OneCycleLR scheduler after each batch
+        if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+            scheduler.step()
 
         # Calculate metrics
         running_loss += total_loss.item() * batch_data["clips"].size(0)
