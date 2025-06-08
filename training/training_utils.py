@@ -127,7 +127,8 @@ class AdaptiveFocalLoss(nn.Module):
         # Apply class-specific gamma focusing
         batch_gammas = torch.tensor(
             [self.class_gamma_map.get(t.item(), 2.0) for t in targets],
-            device=targets.device
+            device=targets.device,
+            dtype=inputs.dtype  # Ensure dtype consistency for mixed precision
         )
         
         # Apply focal term with class-specific gamma: (1-pt)^gamma_c
@@ -146,7 +147,8 @@ class AdaptiveFocalLoss(nn.Module):
         # This creates a weight tensor matching the target shape
         return torch.tensor(
             [self.class_alpha_map.get(t.item(), 1.0) for t in targets],
-            device=targets.device
+            device=targets.device,
+            dtype=torch.float32  # Keep alpha weights in float32 for stability
         )
 
 
@@ -473,6 +475,10 @@ def debug_class_weights_impact(sev_logits, severity_labels, class_weights=None):
     This helps identify if class weights are being applied incorrectly.
     """
     import torch.nn.functional as F
+    
+    # Ensure type consistency for mixed precision training
+    if class_weights is not None:
+        class_weights = class_weights.to(sev_logits.dtype)
     
     # Calculate per-sample losses without weights
     ce_loss_no_weight = F.cross_entropy(sev_logits, severity_labels, reduction='none')
