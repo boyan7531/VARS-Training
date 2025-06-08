@@ -494,7 +494,7 @@ def main():
         optimizer, scheduler = handle_gradual_finetuning_transition(
             args, model, optimizer, scheduler, epoch,
             freezing_manager=freezing_manager, 
-            val_metric=val_metrics['severity_accuracy'],
+            val_metric=val_metrics['sev_acc'],  # Use the correct key from validation metrics
             train_loader=train_loader
         )
 
@@ -503,11 +503,11 @@ def main():
             current_phase_for_scheduler = get_phase_info(epoch, args.phase1_epochs, args.epochs)[0] if args.gradual_finetuning else None
 
             if args.gradual_finetuning and current_phase_for_scheduler == 1 and phase1_scheduler is not None:
-                val_combined_acc = (val_metrics[1] + val_metrics[2]) / 2
+                val_combined_acc = (val_metrics['sev_acc'] + val_metrics['act_acc']) / 2
                 phase1_scheduler.step(val_combined_acc)
             elif scheduler is not None:
                 if isinstance(scheduler, ReduceLROnPlateau):
-                    val_combined_acc = (val_metrics[1] + val_metrics[2]) / 2
+                    val_combined_acc = (val_metrics['sev_acc'] + val_metrics['act_acc']) / 2
                     scheduler.step(val_combined_acc)
                 elif not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
                     scheduler.step()
@@ -543,12 +543,12 @@ def main():
                     'epoch': best_epoch,
                     'best_val_acc': best_val_acc,
                     'best_epoch': best_epoch,
-                    'train_loss': train_metrics[0],
-                    'val_loss': val_metrics[0],
-                    'train_sev_acc': train_metrics[1],
-                    'train_act_acc': train_metrics[2],
-                    'val_sev_acc': val_metrics[1],
-                    'val_act_acc': val_metrics[2]
+                    'train_loss': train_metrics['loss'],
+                    'val_loss': val_metrics['loss'],
+                    'train_sev_acc': train_metrics['sev_acc'],
+                    'train_act_acc': train_metrics['act_acc'],
+                    'val_sev_acc': val_metrics['sev_acc'],
+                    'val_act_acc': val_metrics['act_acc']
                 }
                 
                 save_path = os.path.join(args.save_dir, f'best_model_epoch_{best_epoch}.pth')
@@ -567,12 +567,12 @@ def main():
                     'epoch': epoch + 1,
                     'best_val_acc': best_val_acc,
                     'best_epoch': best_epoch,
-                    'current_train_loss': train_metrics[0],
-                    'current_val_loss': val_metrics[0],
-                    'current_train_sev_acc': train_metrics[1],
-                    'current_train_act_acc': train_metrics[2],
-                    'current_val_sev_acc': val_metrics[1],
-                    'current_val_act_acc': val_metrics[2]
+                    'current_train_loss': train_metrics['loss'],
+                    'current_val_loss': val_metrics['loss'],
+                    'current_train_sev_acc': train_metrics['sev_acc'],
+                    'current_train_act_acc': train_metrics['act_acc'],
+                    'current_val_sev_acc': val_metrics['sev_acc'],
+                    'current_val_act_acc': val_metrics['act_acc']
                 }
                 save_checkpoint(model, optimizer, scheduler, scaler, epoch + 1, metrics, checkpoint_path)
                 logger.info(f"[CHECKPOINT] Checkpoint saved at epoch {epoch + 1} (best so far: {best_val_acc:.4f})")

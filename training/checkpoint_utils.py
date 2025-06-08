@@ -127,8 +127,18 @@ def log_epoch_summary(epoch, total_epochs, epoch_time, train_metrics, val_metric
                      current_lr, prev_lr, best_val_acc, phase_info=None, optimizer_updated=False):
     """Log a comprehensive epoch summary."""
     
-    train_loss, train_sev_acc, train_act_acc, train_sev_f1, train_act_f1 = train_metrics
-    val_loss, val_sev_acc, val_act_acc, val_sev_f1, val_act_f1 = val_metrics
+    # Extract metrics from dictionaries
+    train_loss = train_metrics['loss'] 
+    train_sev_acc = train_metrics['sev_acc']
+    train_act_acc = train_metrics['act_acc']
+    train_sev_f1 = train_metrics['sev_f1']
+    train_act_f1 = train_metrics['act_f1']
+    
+    val_loss = val_metrics['loss']
+    val_sev_acc = val_metrics['sev_acc']
+    val_act_acc = val_metrics['act_acc']
+    val_sev_f1 = val_metrics['sev_f1'] 
+    val_act_f1 = val_metrics['act_f1']
     
     # Calculate combined metrics
     train_combined_acc = (train_sev_acc + train_act_acc) / 2
@@ -211,8 +221,18 @@ def create_training_history():
 
 def update_training_history(history, train_metrics, val_metrics, current_lr):
     """Update training history with current epoch metrics."""
-    train_loss, train_sev_acc, train_act_acc, train_sev_f1, train_act_f1 = train_metrics
-    val_loss, val_sev_acc, val_act_acc, val_sev_f1, val_act_f1 = val_metrics
+    # Extract metrics from dictionaries
+    train_loss = train_metrics['loss']
+    train_sev_acc = train_metrics['sev_acc']
+    train_act_acc = train_metrics['act_acc']
+    train_sev_f1 = train_metrics['sev_f1']
+    train_act_f1 = train_metrics['act_f1']
+    
+    val_loss = val_metrics['loss']
+    val_sev_acc = val_metrics['sev_acc']
+    val_act_acc = val_metrics['act_acc']
+    val_sev_f1 = val_metrics['sev_f1']
+    val_act_f1 = val_metrics['act_f1']
     
     # Store history (including learning rate)
     history['train_loss'].append(train_loss)
