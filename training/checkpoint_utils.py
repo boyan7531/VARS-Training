@@ -187,7 +187,7 @@ def log_configuration_summary(args, train_dataset, val_dataset):
     logger.info(f"Class Balancing: {'Enabled' if args.use_class_balanced_sampler else 'Disabled'}")
     if args.use_class_balanced_sampler:
         if args.progressive_class_balancing:
-            logger.info(f"  - Progressive Sampling: {args.oversample_factor_start}x → {args.oversample_factor}x over {args.progressive_duration_epochs} epochs")
+            logger.info(f"  - Progressive Sampling: 2.0x → {args.oversample_factor}x over {args.progressive_duration_epochs} epochs")
         else:
             logger.info(f"  - Fixed Oversampling: {args.oversample_factor}x")
     
