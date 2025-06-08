@@ -429,7 +429,7 @@ def create_gpu_augmentation(args, device):
     """Create GPU-based augmentation pipeline if enabled."""
     if not args.gpu_augmentation:
         return None
-    
+        
     # Check if we should use severity-aware augmentation
     if args.severity_aware_augmentation:
         # Severity-aware augmentation with adaptive strength per class
@@ -528,11 +528,11 @@ def create_dataloaders(args, train_dataset, val_dataset):
             logger.info(f"   - Initial samples per epoch: {len(train_sampler)}")
             
         else:
-            logger.info("🎯 Using ClassBalancedSampler to address class imbalance!")
-            train_sampler = ClassBalancedSampler(
-                train_dataset, 
-                oversample_factor=args.oversample_factor
-            )
+        logger.info("🎯 Using ClassBalancedSampler to address class imbalance!")
+        train_sampler = ClassBalancedSampler(
+            train_dataset, 
+            oversample_factor=args.oversample_factor
+        )
             
             logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority classes")
             logger.info(f"   - Effective training samples per epoch: {len(train_sampler)}")
@@ -617,7 +617,7 @@ def log_dataset_recommendations(train_dataset):
     elif dataset_size < 1000:
         logger.info("💡 RECOMMENDATION: Medium-sized dataset - current settings should work well")
     else:
-        logger.info("💡 Large dataset detected - consider reducing augmentation intensity")
+        logger.info("💡 Large dataset detected - consider reducing augmentation intensity") 
 
 
 class ProgressiveClassBalancedSampler(torch.utils.data.Sampler):

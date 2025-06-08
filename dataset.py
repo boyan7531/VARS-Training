@@ -185,7 +185,7 @@ class RandomBrightnessContrast(torch.nn.Module):
         original_dtype = clip.dtype
         if clip.dtype == torch.uint8:
             clip = clip.float() / 255.0
-            
+        
         C, T, H, W = clip.shape
         
         # Apply different brightness/contrast to each frame for more variation
@@ -275,7 +275,7 @@ class RandomGaussianNoise(torch.nn.Module):
         # Convert to float32 first if it's uint8
         if clip.dtype == torch.uint8:
             clip = clip.float() / 255.0
-            
+        
         noise_std = random.uniform(*self.std_range)
         noise = torch.randn_like(clip) * noise_std
         return torch.clamp(clip + noise, 0, 1)

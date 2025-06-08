@@ -345,12 +345,16 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
             if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
                 scheduler.step()
 
+        # Debug class weights impact for first 3 batches
+        if i < 3 and loss_config.get('severity_class_weights') is not None:
+            debug_class_weights_impact(sev_logits, severity_labels, loss_config.get('severity_class_weights'))
+
         # Calculate metrics
         running_loss += total_loss.item() * batch_data["clips"].size(0)
         sev_acc = calculate_accuracy(sev_logits, severity_labels)
         act_acc = calculate_accuracy(act_logits, action_labels)
-        sev_f1 = calculate_f1_score(sev_logits, severity_labels, 5)  # 5 severity classes
-        act_f1 = calculate_f1_score(act_logits, action_labels, 9)  # 9 action classes
+        sev_f1 = calculate_f1_score(sev_logits, severity_labels, 6)  # 6 severity classes (0-5)
+        act_f1 = calculate_f1_score(act_logits, action_labels, 10)  # 10 action classes (0-9)
         
         running_sev_acc += sev_acc
         running_act_acc += act_acc
@@ -433,8 +437,8 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
             act_acc = calculate_accuracy(act_logits, action_labels)
             running_sev_acc += sev_acc
             running_act_acc += act_acc
-            running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 5)
-            running_act_f1 += calculate_f1_score(act_logits, action_labels, 9)  # 9 action classes
+            running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 6)  # 6 severity classes (0-5)
+            running_act_f1 += calculate_f1_score(act_logits, action_labels, 10)  # 10 action classes (0-9)
             processed_batches += 1
             
             # Clean up batch data explicitly
@@ -461,3 +465,54 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
         'sev_f1': epoch_sev_f1,
         'act_f1': epoch_act_f1
     } 
+
+
+def debug_class_weights_impact(sev_logits, severity_labels, class_weights=None):
+    """
+    Debug function to check how class weights affect the loss for each class.
+    This helps identify if class weights are being applied incorrectly.
+    """
+    import torch.nn.functional as F
+    
+    # Calculate per-sample losses without weights
+    ce_loss_no_weight = F.cross_entropy(sev_logits, severity_labels, reduction='none')
+    
+    # Calculate per-sample losses with weights
+    if class_weights is not None:
+        ce_loss_with_weight = F.cross_entropy(sev_logits, severity_labels, weight=class_weights, reduction='none')
+    else:
+        ce_loss_with_weight = ce_loss_no_weight
+    
+    # Get predictions and calculate class-wise statistics
+    _, predictions = torch.max(sev_logits, 1)
+    
+    logger.info("🔍 CLASS WEIGHT DEBUG ANALYSIS:")
+    logger.info(f"Batch size: {severity_labels.size(0)}")
+    
+    unique_labels = torch.unique(severity_labels)
+    for label_class in unique_labels:
+        mask = (severity_labels == label_class)
+        if mask.sum() == 0:
+            continue
+            
+        count = mask.sum().item()
+        
+        # Average losses for this class
+        avg_loss_no_weight = ce_loss_no_weight[mask].mean().item()
+        avg_loss_with_weight = ce_loss_with_weight[mask].mean().item()
+        
+        # Class weight
+        weight = class_weights[label_class].item() if class_weights is not None else 1.0
+        
+        # Predictions for this class
+        predicted_as_this = (predictions == label_class).sum().item()
+        
+        logger.info(f"  Class {label_class}: {count} samples, weight={weight:.2f}")
+        logger.info(f"    Loss without weight: {avg_loss_no_weight:.4f}")
+        logger.info(f"    Loss with weight: {avg_loss_with_weight:.4f}")
+        logger.info(f"    Predicted as this class: {predicted_as_this}")
+        
+        # Check if weighting is working as expected
+        expected_weighted_loss = avg_loss_no_weight * weight
+        if abs(avg_loss_with_weight - expected_weighted_loss) > 0.001:
+            logger.warning(f"    ⚠️  Weight application mismatch! Expected: {expected_weighted_loss:.4f}") 

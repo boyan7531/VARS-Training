@@ -90,6 +90,8 @@ def setup_device_and_scaling(args):
 def setup_optimizer_and_scheduler(args, model, freezing_manager=None):
     """Setup optimizer and learning rate scheduler."""
     
+    optimizer = None  # Initialize optimizer variable
+    
     # For SmartFreezingManager
     if isinstance(freezing_manager, SmartFreezingManager) and args.freezing_strategy in ['adaptive', 'progressive'] and args.exponential_lr_decay:
         # Use discriminative learning rates from freezing manager
@@ -262,14 +264,14 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
             if train_loader is not None:
                 steps_per_epoch = len(train_loader)
                 scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                    optimizer,
+                optimizer,
                     max_lr=[group['lr'] for group in optimizer.param_groups],
-                    epochs=remaining_epochs,
+                epochs=remaining_epochs,
                     steps_per_epoch=steps_per_epoch,
                     pct_start=0.1  # Short warmup for rebuilding
                 )
                 logger.info(f"Rebuilt OneCycleLR scheduler for remaining {remaining_epochs} epochs")
-            else:
+        else:
                 logger.warning("Cannot rebuild OneCycleLR scheduler: train_loader not provided")
             
         # Add more scheduler types here if needed
