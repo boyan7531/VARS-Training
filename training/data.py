@@ -691,10 +691,17 @@ class ProgressiveClassBalancedSampler(torch.utils.data.Sampler):
                 # Majority class - no oversampling
                 self.targets_per_class[cls] = count
             else:
-                # Minority class - progressive oversampling
-                # Class-specific factor based on rarity
+                # Only oversample truly minority classes (< 50% of majority)
                 minority_ratio = count / self.majority_count
-                class_specific_factor = current_factor * (1.0 / minority_ratio)
+                
+                if minority_ratio >= 0.5:
+                    # Medium-sized classes: minimal or no oversampling
+                    class_specific_factor = max(1.0, current_factor * 0.5)
+                else:
+                    # True minority classes: progressive oversampling
+                    # Inverse relationship: rarer classes get more oversampling
+                    rarity_boost = min(current_factor, self.max_targets_multiplier * minority_ratio)
+                    class_specific_factor = current_factor / max(minority_ratio, 0.1)
                 
                 # Cap the maximum oversampling
                 class_specific_factor = min(class_specific_factor, self.max_targets_multiplier)
