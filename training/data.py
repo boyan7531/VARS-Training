@@ -542,7 +542,7 @@ def create_dataloaders(args, train_dataset, val_dataset):
             sampler=train_sampler,  # Use custom sampler
             num_workers=args.num_workers,
             pin_memory=True,
-            persistent_workers=True,  # Enable persistent workers to reduce startup overhead
+            persistent_workers=True if args.num_workers > 0 else False,  # Only enable if num_workers > 0
             prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
             drop_last=True,  # Better for training stability
             collate_fn=variable_views_collate_fn,
@@ -557,7 +557,7 @@ def create_dataloaders(args, train_dataset, val_dataset):
             shuffle=True, 
             num_workers=args.num_workers,
             pin_memory=True,
-            persistent_workers=True,  # Enable persistent workers to reduce startup overhead
+            persistent_workers=True if args.num_workers > 0 else False,  # Only enable if num_workers > 0
             prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
             drop_last=True,  # Better for training stability
             collate_fn=variable_views_collate_fn,
@@ -580,7 +580,7 @@ def create_dataloaders(args, train_dataset, val_dataset):
         shuffle=False, 
         num_workers=val_num_workers,
         pin_memory=True,
-        persistent_workers=True,  # Enable persistent workers to reduce startup overhead
+        persistent_workers=True if val_num_workers > 0 else False,  # Only enable if num_workers > 0
         prefetch_factor=args.prefetch_factor if val_num_workers > 0 else None,
         collate_fn=variable_views_collate_fn,
         # worker_init_fn=worker_init_fn  # Ensure reproducibility

@@ -363,7 +363,7 @@ def main():
     try:
         if mp.get_start_method(allow_none=True) is None:
             mp.set_start_method('spawn', force=True)
-            logger.info("🔧 Set multiprocessing start method to 'spawn' for stability")
+            logger.info("Set multiprocessing start method to 'spawn' for stability")
     except RuntimeError as e:
         logger.warning(f"Could not set multiprocessing method: {e}")
     
