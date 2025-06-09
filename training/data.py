@@ -641,11 +641,11 @@ class ProgressiveClassBalancedSampler(torch.utils.data.Sampler):
     def __init__(
         self, 
         dataset, 
-        oversample_factor_start=2.0,
-        oversample_factor_end=5.0,
+        oversample_factor_start=1.5,
+        oversample_factor_end=3.0,
         duration_epochs=15,
         current_epoch=0,
-        max_targets_multiplier=5.0
+        max_targets_multiplier=3.0
     ):
         self.dataset = dataset
         self.oversample_factor_start = oversample_factor_start

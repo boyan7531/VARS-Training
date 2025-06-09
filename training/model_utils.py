@@ -826,14 +826,14 @@ class AdvancedFreezingManager:
     def __init__(
         self,
         model,
-        base_importance_threshold=0.005,  # Lower base threshold, will adapt
-        performance_threshold=0.002,     # Min performance improvement to continue
+        base_importance_threshold=0.002,  # Much lower threshold for faster activation
+        performance_threshold=0.001,     # Reduced minimum improvement needed
         max_layers_per_step=1,
         warmup_epochs=4,
         patience_epochs=3,
         rollback_patience=2,             # Epochs to wait before rollback
         gradient_momentum=0.9,           # For smoothing gradient importance
-        analysis_window=3,               # Epochs to analyze before decision
+        analysis_window=2,               # Reduced epochs for faster decisions
         enable_rollback=True,
         enable_dependency_analysis=True
     ):
@@ -1527,6 +1527,56 @@ class AdvancedFreezingManager:
                 logger.info("  🏆 Top unfreeze candidates:")
                 for layer_name, score in top_candidates:
                     logger.info(f"    - {layer_name}: {score:.6f}")
+
+    def emergency_unfreeze(self, min_layers=2):
+        """
+        Emergency unfreezing when normal criteria aren't met.
+        Forces unfreezing of the most promising layers.
+        """
+        # Get all frozen backbone layers
+        frozen_backbone_layers = []
+        for layer_name, layer_info in self.layer_groups.items():
+            if ('layer' in layer_name and 
+                layer_name not in self.unfrozen_layers and
+                layer_info['type'] in ['residual_block', 'residual_sub_block']):
+                frozen_backbone_layers.append(layer_name)
+        
+        # Sort by importance score (if available) or use predefined order
+        if any(self.layer_importance_smooth.get(name, 0) > 0 for name in frozen_backbone_layers):
+            frozen_backbone_layers.sort(
+                key=lambda x: self.layer_importance_smooth.get(x, 0), 
+                reverse=True
+            )
+        else:
+            # Default order: later layers first (closer to head)
+            layer_priorities = ['layer4', 'layer3', 'layer2', 'layer1']
+            frozen_backbone_layers.sort(
+                key=lambda x: next((i for i, p in enumerate(layer_priorities) if p in x), 999)
+            )
+        
+        # Unfreeze top candidates
+        unfrozen_count = 0
+        for layer_name in frozen_backbone_layers[:min_layers]:
+            if layer_name in self.layer_groups:
+                layer_info = self.layer_groups[layer_name]
+                
+                # Unfreeze parameters
+                unfrozen_params = 0
+                for param in layer_info['module'].parameters():
+                    if not param.requires_grad:
+                        param.requires_grad = True
+                        unfrozen_params += param.numel()
+                
+                if unfrozen_params > 0:
+                    self.unfrozen_layers.add(layer_name)
+                    unfrozen_count += 1
+                    logger.info(f"[EMERGENCY_UNFREEZE] Unfroze layer: {layer_name} ({unfrozen_params:,} parameters)")
+        
+        if unfrozen_count > 0:
+            logger.info(f"[EMERGENCY_UNFREEZE] Successfully unfroze {unfrozen_count} layers")
+            return True
+        
+        return False
 
 
 def create_model(args, vocab_sizes, device, num_gpus=1):
