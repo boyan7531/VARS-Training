@@ -245,19 +245,42 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
         
         if isinstance(freezing_manager, AdvancedFreezingManager):
             # Use advanced param groups for multi-metric freezing
-            param_groups = freezing_manager.create_advanced_optimizer_param_groups(
-                head_lr=current_head_lr,
-                backbone_lr=current_head_lr * args.backbone_lr_ratio if hasattr(args, 'backbone_lr_ratio') else args.backbone_lr
-            )
-            
-            optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.999))
-            logger.info(f"Rebuilt optimizer with advanced parameter groups")
+            try:
+                param_groups = freezing_manager.create_advanced_optimizer_param_groups(
+                    head_lr=current_head_lr,
+                    backbone_lr=args.backbone_lr
+                )
+                
+                # Validate parameter groups before creating optimizer
+                all_params = set()
+                for i, group in enumerate(param_groups):
+                    for param in group['params']:
+                        param_id = id(param)
+                        if param_id in all_params:
+                            logger.error(f"Parameter overlap detected in group {i} ({group['name']})")
+                            raise ValueError("Parameter overlap in parameter groups")
+                        all_params.add(param_id)
+                
+                optimizer = torch.optim.AdamW(param_groups, betas=(0.9, 0.999))
+                logger.info(f"Rebuilt optimizer with advanced parameter groups ({len(param_groups)} groups)")
+                
+            except Exception as e:
+                logger.error(f"Failed to create advanced optimizer: {e}")
+                logger.warning("Falling back to simple optimizer rebuild")
+                
+                # Fallback: Use all trainable parameters with current LR
+                optimizer = torch.optim.AdamW(
+                    [p for p in model.parameters() if p.requires_grad],
+                    lr=current_head_lr,
+                    weight_decay=args.weight_decay
+                )
+                logger.info(f"Created fallback optimizer with uniform LR: {current_head_lr:.2e}")
             
         elif isinstance(freezing_manager, GradientGuidedFreezingManager):
             # Use specialized param groups for gradient-guided freezing
             param_groups = freezing_manager.create_optimizer_param_groups(
                 head_lr=current_head_lr,
-                backbone_lr=current_head_lr * args.backbone_lr_ratio if hasattr(args, 'backbone_lr_ratio') else args.backbone_lr
+                backbone_lr=args.backbone_lr
             )
             
             optimizer = torch.optim.AdamW(
@@ -271,7 +294,7 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
             param_groups = setup_discriminative_optimizer(
                 model, 
                 head_lr=current_head_lr,
-                backbone_lr=args.backbone_lr if args.backbone_lr > 0 else current_head_lr * args.backbone_lr_ratio if hasattr(args, 'backbone_lr_ratio') else current_head_lr * 0.1
+                backbone_lr=args.backbone_lr if args.backbone_lr > 0 else current_head_lr * 0.1
             )
             
             optimizer = torch.optim.AdamW(

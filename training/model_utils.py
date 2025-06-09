@@ -1242,9 +1242,16 @@ class AdvancedFreezingManager:
         unfrozen_params = 0
         
         for layer_name in layer_names:
-            if layer_name in self.layer_groups and layer_name not in self.unfrozen_layers:
+            if layer_name in self.layer_groups:
                 layer_info = self.layer_groups[layer_name]
                 module = layer_info['module']
+                
+                # Check if this layer is already unfrozen
+                already_unfrozen = all(p.requires_grad for p in module.parameters() if p.numel() > 0)
+                
+                if already_unfrozen and layer_name in self.unfrozen_layers:
+                    logger.info(f"[ADVANCED_FREEZING] Layer {layer_name} already unfrozen, skipping")
+                    continue
                 
                 # Unfreeze parameters
                 layer_params = 0
@@ -1254,19 +1261,21 @@ class AdvancedFreezingManager:
                         layer_params += param.numel()
                         unfrozen_params += param.numel()
                 
-                # Setup enhanced warmup based on layer characteristics
-                warmup_config = self._get_layer_warmup_config(layer_name, layer_info)
-                
-                self.unfrozen_layers.add(layer_name)
-                self.layers_in_warmup[layer_name] = {
-                    'epoch': 0,
-                    'config': warmup_config,
-                    'performance_before': self.performance_history[-1] if self.performance_history else 0.0
-                }
-                
-                logger.info(f"[ADVANCED_FREEZING] Unfroze {layer_name} ({layer_params:,} parameters)")
-                logger.info(f"  - Warmup strategy: {warmup_config['strategy']}")
-                logger.info(f"  - Warmup duration: {warmup_config['duration']} epochs")
+                # Setup enhanced warmup based on layer characteristics only if we actually unfroze something
+                # or if the layer wasn't being tracked yet
+                if layer_params > 0 or layer_name not in self.unfrozen_layers:
+                    warmup_config = self._get_layer_warmup_config(layer_name, layer_info)
+                    
+                    self.unfrozen_layers.add(layer_name)
+                    self.layers_in_warmup[layer_name] = {
+                        'epoch': 0,
+                        'config': warmup_config,
+                        'performance_before': self.performance_history[-1] if self.performance_history else 0.0
+                    }
+                    
+                    logger.info(f"[ADVANCED_FREEZING] Unfroze {layer_name} ({layer_params:,} parameters)")
+                    logger.info(f"  - Warmup strategy: {warmup_config['strategy']}")
+                    logger.info(f"  - Warmup duration: {warmup_config['duration']} epochs")
         
         if unfrozen_params > 0:
             self.epochs_since_last_unfreeze = 0
@@ -1307,6 +1316,7 @@ class AdvancedFreezingManager:
     def create_advanced_optimizer_param_groups(self, head_lr, backbone_lr):
         """Create sophisticated parameter groups with layer-specific learning rates."""
         param_groups = []
+        used_params = set()  # Track used parameters to avoid duplicates
         
         # 1. Head parameters (highest LR)
         head_params = []
@@ -1314,6 +1324,10 @@ class AdvancedFreezingManager:
         head_params.extend(self.actual_model.action_type_head.parameters())
         head_params.extend(self.actual_model.embedding_manager.parameters())
         head_params.extend(self.actual_model.view_aggregator.parameters())
+        
+        # Track head parameters as used
+        for param in head_params:
+            used_params.add(id(param))
         
         param_groups.append({
             'params': head_params,
@@ -1326,9 +1340,14 @@ class AdvancedFreezingManager:
         for layer_name, warmup_info in self.layers_in_warmup.items():
             if layer_name in self.layer_groups:
                 layer_info = self.layer_groups[layer_name]
-                layer_params = [p for p in layer_info['module'].parameters() if p.requires_grad]
+                layer_params = [p for p in layer_info['module'].parameters() 
+                              if p.requires_grad and id(p) not in used_params]
                 
                 if layer_params:
+                    # Track these parameters as used
+                    for param in layer_params:
+                        used_params.add(id(param))
+                    
                     warmup_lr = self._calculate_warmup_lr(
                         backbone_lr, 
                         warmup_info['epoch'],
@@ -1348,9 +1367,14 @@ class AdvancedFreezingManager:
                 layer_name in self.layer_groups):
                 
                 layer_info = self.layer_groups[layer_name]
-                layer_params = [p for p in layer_info['module'].parameters() if p.requires_grad]
+                layer_params = [p for p in layer_info['module'].parameters() 
+                              if p.requires_grad and id(p) not in used_params]
                 
                 if layer_params:
+                    # Track these parameters as used
+                    for param in layer_params:
+                        used_params.add(id(param))
+                    
                     # Scale learning rate based on layer depth
                     depth = layer_info.get('depth', 0)
                     depth_factor = max(0.5, 1.0 - depth * 0.1)  # Deeper layers get lower LR
@@ -1362,6 +1386,27 @@ class AdvancedFreezingManager:
                         'name': f'backbone_{layer_name}',
                         'weight_decay': self._get_layer_weight_decay(layer_name)
                     })
+        
+        # 4. Any remaining unfrozen backbone parameters not in specific layers
+        remaining_params = []
+        for name, param in self.actual_model.backbone.named_parameters():
+            if param.requires_grad and id(param) not in used_params:
+                remaining_params.append(param)
+                used_params.add(id(param))
+        
+        if remaining_params:
+            param_groups.append({
+                'params': remaining_params,
+                'lr': backbone_lr,
+                'name': 'backbone_remaining',
+                'weight_decay': 1e-4
+            })
+        
+        # Log parameter group summary
+        logger.debug(f"[ADVANCED_FREEZING] Created {len(param_groups)} parameter groups:")
+        for i, group in enumerate(param_groups):
+            param_count = sum(p.numel() for p in group['params'])
+            logger.debug(f"  Group {i+1} ({group['name']}): {len(group['params'])} tensors, {param_count:,} params, LR={group['lr']:.2e}")
         
         return param_groups
     
@@ -1571,12 +1616,40 @@ class AdvancedFreezingManager:
                     self.unfrozen_layers.add(layer_name)
                     unfrozen_count += 1
                     logger.info(f"[EMERGENCY_UNFREEZE] Unfroze layer: {layer_name} ({unfrozen_params:,} parameters)")
+                    
+                    # Also mark any sub-layers as unfrozen (to avoid conflicts)
+                    for sub_layer_name in self.layer_groups:
+                        if sub_layer_name.startswith(layer_name + '.'):
+                            self.unfrozen_layers.add(sub_layer_name)
+                            logger.debug(f"[EMERGENCY_UNFREEZE] Marked sub-layer as unfrozen: {sub_layer_name}")
         
         if unfrozen_count > 0:
             logger.info(f"[EMERGENCY_UNFREEZE] Successfully unfroze {unfrozen_count} layers")
+            # Sync unfrozen layer tracking
+            self._sync_unfrozen_layers()
             return True
         
         return False
+    
+    def _sync_unfrozen_layers(self):
+        """Synchronize unfrozen layer tracking with actual parameter states."""
+        synced_layers = set()
+        
+        for layer_name, layer_info in self.layer_groups.items():
+            # Check if any parameters in this layer are unfrozen
+            has_unfrozen_params = any(p.requires_grad for p in layer_info['module'].parameters())
+            
+            if has_unfrozen_params:
+                synced_layers.add(layer_name)
+        
+        # Update tracking
+        old_count = len(self.unfrozen_layers)
+        self.unfrozen_layers = synced_layers
+        new_count = len(self.unfrozen_layers)
+        
+        if new_count != old_count:
+            logger.debug(f"[SYNC] Updated unfrozen layer tracking: {old_count} -> {new_count} layers")
+            logger.debug(f"[SYNC] Currently unfrozen layers: {sorted(self.unfrozen_layers)}")
 
 
 def create_model(args, vocab_sizes, device, num_gpus=1):
