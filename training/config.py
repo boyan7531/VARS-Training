@@ -84,13 +84,19 @@ def parse_args():
     
     # === NEW STRATEGIES FOR CLASS IMBALANCE ===
     parser.add_argument('--progressive_class_balancing', action='store_true', default=False,
-                       help='Use progressive class balancing that gradually increases minority class representation')
-    parser.add_argument('--progressive_duration_epochs', type=int, default=15,
-                       help='Number of epochs for progressive class balancing to reach target sampling ratio')
-    parser.add_argument('--severity_aware_augmentation', action='store_true', default=False,
-                       help='Apply class-specific augmentation strength based on severity level')
-    parser.add_argument('--adaptive_focal_loss', action='store_true', default=False,
-                       help='Use adaptive focal loss with class-specific gamma values for more focused learning')
+                       help='Enable progressive class-balanced sampling that increases minority representation over time')
+    parser.add_argument('--progressive_start_factor', type=float, default=1.5,
+                       help='Starting balancing factor for progressive sampling (default: 1.5)')
+    parser.add_argument('--progressive_end_factor', type=float, default=3.0,
+                       help='Ending balancing factor for progressive sampling (default: 3.0)')
+    parser.add_argument('--progressive_epochs', type=int, default=15,
+                       help='Number of epochs for progressive sampling transition')
+
+    # Emergency unfreezing
+    parser.add_argument('--emergency_unfreeze_epoch', type=int, default=6,
+                       help='Epoch to force unfreeze if no layers unfrozen yet (default: 6)')
+    parser.add_argument('--min_unfreeze_layers', type=int, default=2,
+                       help='Minimum number of backbone layers to unfreeze (default: 2)')
     
     # === ENHANCED FREEZING STRATEGY OPTIONS ===
     parser.add_argument('--freezing_strategy', type=str, default='fixed', 

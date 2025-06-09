@@ -528,11 +528,11 @@ def create_dataloaders(args, train_dataset, val_dataset):
             logger.info(f"   - Initial samples per epoch: {len(train_sampler)}")
             
         else:
-            logger.info("🎯 Using ClassBalancedSampler to address class imbalance!")
-            train_sampler = ClassBalancedSampler(
-                train_dataset, 
-                oversample_factor=args.oversample_factor
-            )
+        logger.info("🎯 Using ClassBalancedSampler to address class imbalance!")
+        train_sampler = ClassBalancedSampler(
+            train_dataset, 
+            oversample_factor=args.oversample_factor
+        )
             
             logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority classes")
             logger.info(f"   - Effective training samples per epoch: {len(train_sampler)}")

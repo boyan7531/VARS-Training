@@ -533,6 +533,36 @@ def main():
         model.train()
         cleanup_memory()
 
+        # Emergency unfreezing check for stuck training
+        if (freezing_manager is not None and 
+            epoch >= args.emergency_unfreeze_epoch and 
+            len(getattr(freezing_manager, 'unfrozen_layers', set())) == 0):
+            
+            logger.warning(f"[EMERGENCY] No layers unfrozen by epoch {epoch}! Force unfreezing backbone layers...")
+            
+            if hasattr(freezing_manager, 'emergency_unfreeze'):
+                freezing_manager.emergency_unfreeze(args.min_unfreeze_layers)
+                optimizer, scheduler = handle_gradual_finetuning_transition(
+                    args, model, optimizer, scheduler, epoch,
+                    freezing_manager=freezing_manager, 
+                    val_metric=val_metrics['sev_acc'],
+                    train_loader=train_loader
+                )
+            else:
+                # Fallback: unfreeze first few backbone layers manually
+                unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=args.min_unfreeze_layers)
+                log_trainable_parameters(model)
+                
+                # Rebuild optimizer with new parameters
+                current_lr = optimizer.param_groups[0]['lr']
+                if args.discriminative_lr:
+                    param_groups = setup_discriminative_optimizer(model, current_lr, args.backbone_lr)
+                    optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
+                else:
+                    optimizer = torch.optim.AdamW(model.parameters(), lr=current_lr, weight_decay=args.weight_decay)
+                
+                logger.info(f"[EMERGENCY] Manually unfroze {args.min_unfreeze_layers} backbone layers")
+
         # Handle freezing strategy updates with validation results
         optimizer, scheduler = handle_gradual_finetuning_transition(
             args, model, optimizer, scheduler, epoch,
