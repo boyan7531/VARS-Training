@@ -192,8 +192,8 @@ def log_configuration_summary(args, train_dataset, val_dataset):
             logger.info(f"  - Fixed Oversampling: {args.oversample_factor}x")
     
     # Show loss function settings
-    if args.adaptive_focal_loss:
-        logger.info(f"Loss Function: Adaptive Focal Loss (class-specific gamma values)")
+    if args.loss_function == 'focal':
+        logger.info(f"Loss Function: Focal Loss (class-specific gamma values)")
     else:
         logger.info(f"Loss Function: {args.loss_function}")
     

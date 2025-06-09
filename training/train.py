@@ -429,9 +429,8 @@ def main():
         )
 
     # Update loss function to adaptive focal loss if enabled
-    if args.adaptive_focal_loss:
-        args.loss_function = 'adaptive_focal'
-        logger.info("🔥 Using adaptive focal loss with class-specific gamma values")
+    if args.loss_function == 'focal':
+        logger.info("🔥 Using focal loss with class-specific gamma values")
         # Define class-specific gamma values (higher for rare classes)
         class_gamma_map = {
             0: 2.0,  # Medium frequency
