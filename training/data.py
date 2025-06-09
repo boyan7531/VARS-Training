@@ -519,12 +519,12 @@ def create_dataloaders(args, train_dataset, val_dataset):
                 train_dataset,
                 oversample_factor_start=2.0,  # Start with mild oversampling
                 oversample_factor_end=args.oversample_factor,  # End with full oversampling
-                duration_epochs=args.progressive_duration_epochs,  # Duration of progression
+                duration_epochs=args.progressive_epochs,  # Duration of progression
                 current_epoch=0  # Start at epoch 0
             )
             
             logger.info(f"   - Progressive balancing from 2.0x to {args.oversample_factor}x")
-            logger.info(f"   - Duration: {args.progressive_duration_epochs} epochs")
+            logger.info(f"   - Duration: {args.progressive_epochs} epochs")
             logger.info(f"   - Initial samples per epoch: {len(train_sampler)}")
         else:
             logger.info("🎯 Using ClassBalancedSampler to address class imbalance!")
