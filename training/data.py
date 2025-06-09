@@ -506,9 +506,18 @@ def create_datasets(args):
 
 
 def create_dataloaders(args, train_dataset, val_dataset):
-    """Create training and validation dataloaders."""
+    """Create training and validation dataloaders with optimization features."""
     
     logger.info("Creating data loaders...")
+    
+    # Import optimization features if available
+    try:
+        from .data_optimization import create_optimized_dataloader, DataLoadingProfiler
+        use_optimization = getattr(args, 'enable_data_optimization', True)
+        logger.info(f"Data loading optimization: {'Enabled' if use_optimization else 'Disabled'}")
+    except ImportError:
+        logger.warning("Data optimization module not available, using standard DataLoader")
+        use_optimization = False
     
     # Setup training loader with optional class balancing
     if args.use_class_balanced_sampler and not args.test_run:
@@ -536,33 +545,62 @@ def create_dataloaders(args, train_dataset, val_dataset):
             logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority classes")
             logger.info(f"   - Effective training samples per epoch: {len(train_sampler)}")
         
-        train_loader = DataLoader(
-            train_dataset, 
-            batch_size=args.batch_size, 
-            sampler=train_sampler,  # Use custom sampler
-            num_workers=args.num_workers,
-            pin_memory=True,
-            persistent_workers=True if args.num_workers > 0 else False,  # Only enable if num_workers > 0
-            prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
-            drop_last=True,  # Better for training stability
-            collate_fn=variable_views_collate_fn,
-            worker_init_fn=worker_init_fn  # Ensure reproducibility
-        )
+        # Use optimized dataloader if available
+        if use_optimization:
+            train_loader = create_optimized_dataloader(
+                dataset=train_dataset, 
+                batch_size=args.batch_size, 
+                sampler=train_sampler,  # Use custom sampler
+                num_workers=args.num_workers,
+                pin_memory=True,
+                prefetch_factor=args.prefetch_factor,
+                drop_last=True,  # Better for training stability
+                collate_fn=variable_views_collate_fn,
+                worker_init_fn=worker_init_fn,  # Ensure reproducibility
+                enable_optimizations=True
+            )
+        else:
+            train_loader = DataLoader(
+                train_dataset, 
+                batch_size=args.batch_size, 
+                sampler=train_sampler,  # Use custom sampler
+                num_workers=args.num_workers,
+                pin_memory=True,
+                persistent_workers=True if args.num_workers > 0 else False,  # Only enable if num_workers > 0
+                prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+                drop_last=True,  # Better for training stability
+                collate_fn=variable_views_collate_fn,
+                worker_init_fn=worker_init_fn  # Ensure reproducibility
+            )
         
     else:
         # Standard random sampling
-        train_loader = DataLoader(
-            train_dataset, 
-            batch_size=args.batch_size, 
-            shuffle=True, 
-            num_workers=args.num_workers,
-            pin_memory=True,
-            persistent_workers=True if args.num_workers > 0 else False,  # Only enable if num_workers > 0
-            prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
-            drop_last=True,  # Better for training stability
-            collate_fn=variable_views_collate_fn,
-            worker_init_fn=worker_init_fn  # Ensure reproducibility
-        )
+        if use_optimization:
+            train_loader = create_optimized_dataloader(
+                dataset=train_dataset, 
+                batch_size=args.batch_size, 
+                shuffle=True, 
+                num_workers=args.num_workers,
+                pin_memory=True,
+                prefetch_factor=args.prefetch_factor,
+                drop_last=True,  # Better for training stability
+                collate_fn=variable_views_collate_fn,
+                worker_init_fn=worker_init_fn,  # Ensure reproducibility
+                enable_optimizations=True
+            )
+        else:
+            train_loader = DataLoader(
+                train_dataset, 
+                batch_size=args.batch_size, 
+                shuffle=True, 
+                num_workers=args.num_workers,
+                pin_memory=True,
+                persistent_workers=True if args.num_workers > 0 else False,  # Only enable if num_workers > 0
+                prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+                drop_last=True,  # Better for training stability
+                collate_fn=variable_views_collate_fn,
+                worker_init_fn=worker_init_fn  # Ensure reproducibility
+            )
     
     # Determine number of workers for validation DataLoader
     if args.num_workers == 0:
@@ -574,17 +612,30 @@ def create_dataloaders(args, train_dataset, val_dataset):
     else: # args.num_workers >= 4
         val_num_workers = args.num_workers // 2
         
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=args.batch_size,
-        shuffle=False, 
-        num_workers=val_num_workers,
-        pin_memory=True,
-        persistent_workers=True if val_num_workers > 0 else False,  # Only enable if num_workers > 0
-        prefetch_factor=args.prefetch_factor if val_num_workers > 0 else None,
-        collate_fn=variable_views_collate_fn,
-        # worker_init_fn=worker_init_fn  # Ensure reproducibility
-    )
+    # Create validation loader (optimization less critical for validation)
+    if use_optimization:
+        val_loader = create_optimized_dataloader(
+            dataset=val_dataset, 
+            batch_size=args.batch_size,
+            shuffle=False, 
+            num_workers=val_num_workers,
+            pin_memory=True,
+            prefetch_factor=args.prefetch_factor,
+            collate_fn=variable_views_collate_fn,
+            enable_optimizations=False  # Disable adaptive features for validation
+        )
+    else:
+        val_loader = DataLoader(
+            val_dataset, 
+            batch_size=args.batch_size,
+            shuffle=False, 
+            num_workers=val_num_workers,
+            pin_memory=True,
+            persistent_workers=True if val_num_workers > 0 else False,  # Only enable if num_workers > 0
+            prefetch_factor=args.prefetch_factor if val_num_workers > 0 else None,
+            collate_fn=variable_views_collate_fn,
+            # worker_init_fn=worker_init_fn  # Ensure reproducibility
+        )
     
     # Log data loading optimization details
     if args.num_workers > 0:

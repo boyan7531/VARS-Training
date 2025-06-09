@@ -16,6 +16,14 @@ from .model_utils import create_model, setup_freezing_strategy, SmartFreezingMan
 from .training_utils import train_one_epoch, validate_one_epoch, EarlyStopping
 from .checkpoint_utils import save_checkpoint, load_checkpoint, save_training_history
 
+# Import optimization and error recovery if available
+try:
+    from .data_optimization import DataLoadingProfiler, IntelligentBatchSizer, create_optimized_dataloader
+    from .error_recovery import OOMRecoveryManager, ConfigValidator, RobustTrainingWrapper
+    _OPTIMIZATION_AVAILABLE = True
+except ImportError:
+    _OPTIMIZATION_AVAILABLE = False
+
 __version__ = "1.0.0"
 __author__ = "VARS Training Team"
 
@@ -44,4 +52,18 @@ __all__ = [
     'save_checkpoint',
     'load_checkpoint',
     'save_training_history',
-] 
+]
+
+# Add optimization and error recovery to exports if available
+if _OPTIMIZATION_AVAILABLE:
+    __all__.extend([
+        # Data optimization
+        'DataLoadingProfiler',
+        'IntelligentBatchSizer', 
+        'create_optimized_dataloader',
+        
+        # Error recovery
+        'OOMRecoveryManager',
+        'ConfigValidator',
+        'RobustTrainingWrapper',
+    ]) 

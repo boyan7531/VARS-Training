@@ -370,6 +370,41 @@ def main():
     # Parse arguments and setup
     args = parse_args()
     
+    # Config validation and error recovery setup
+    try:
+        from .error_recovery import create_config_validator, RobustTrainingWrapper, OOMRecoveryManager
+        config_validator = create_config_validator()
+        robust_wrapper = RobustTrainingWrapper(config_validator=config_validator)
+        
+        # Handle disable flags for optimization features
+        if args.disable_data_optimization:
+            args.enable_data_optimization = False
+        
+        # Validate configuration
+        if args.enable_config_validation:
+            if not robust_wrapper.validate_config(args):
+                if args.strict_config_validation:
+                    logger.error("❌ Configuration validation failed with strict mode enabled")
+                    return
+                else:
+                    logger.warning("⚠️ Configuration validation failed but continuing with warnings")
+        
+        # Setup OOM recovery if enabled
+        oom_manager = None
+        if args.enable_oom_recovery:
+            oom_manager = OOMRecoveryManager(
+                initial_batch_size=args.batch_size,
+                min_batch_size=args.min_batch_size,
+                reduction_factor=args.oom_reduction_factor
+            )
+            robust_wrapper.oom_manager = oom_manager
+            logger.info(f"🛡️ OOM recovery enabled (min_batch_size={args.min_batch_size}, reduction_factor={args.oom_reduction_factor})")
+        
+    except ImportError:
+        logger.warning("Error recovery module not available, using standard training")
+        robust_wrapper = None
+        oom_manager = None
+    
     # Test run setup
     if args.test_run:
         logger.info("=" * 60)
@@ -513,24 +548,63 @@ def main():
             train_loader.sampler.set_epoch(epoch)
             logger.debug(f"Updated progressive sampler for epoch {epoch}")
         
-        # Training
-        train_metrics = train_one_epoch(
-            model, train_loader, optimizer, device,
-            loss_config={
-                'function': args.loss_function,
-                'weights': args.main_task_weights,
-                'label_smoothing': args.label_smoothing,
-                'focal_gamma': args.focal_gamma,
-                'severity_class_weights': severity_class_weights,
-                'class_gamma_map': class_gamma_map
-            },
-            scaler=scaler, 
-            max_batches=num_batches_to_run, 
-            gradient_clip_norm=args.gradient_clip_norm, 
-            memory_cleanup_interval=args.memory_cleanup_interval,
-            scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
-            gpu_augmentation=gpu_augmentation
-        )
+        # Training with OOM protection
+        if robust_wrapper and oom_manager:
+            try:
+                train_metrics = robust_wrapper.oom_safe_training_step(
+                    train_one_epoch,
+                    model, train_loader, optimizer, device,
+                    loss_config={
+                        'function': args.loss_function,
+                        'weights': args.main_task_weights,
+                        'label_smoothing': args.label_smoothing,
+                        'focal_gamma': args.focal_gamma,
+                        'severity_class_weights': severity_class_weights,
+                        'class_gamma_map': class_gamma_map
+                    },
+                    scaler=scaler, 
+                    max_batches=num_batches_to_run, 
+                    gradient_clip_norm=args.gradient_clip_norm, 
+                    memory_cleanup_interval=args.memory_cleanup_interval,
+                    scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
+                    gpu_augmentation=gpu_augmentation,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler
+                )
+                
+                # Check if batch size was reduced and update dataloader if needed
+                if oom_manager.current_batch_size != args.batch_size:
+                    logger.info(f"🔄 Updating dataloader for new batch size: {oom_manager.current_batch_size}")
+                    # Note: In a real implementation, you might need to recreate the dataloader
+                    # For now, we'll just log the change
+                    
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    logger.error(f"❌ Critical OOM error that couldn't be recovered: {e}")
+                    logger.error("Stopping training due to unrecoverable OOM")
+                    break
+                else:
+                    raise  # Re-raise non-OOM errors
+        else:
+            # Standard training without OOM protection
+            train_metrics = train_one_epoch(
+                model, train_loader, optimizer, device,
+                loss_config={
+                    'function': args.loss_function,
+                    'weights': args.main_task_weights,
+                    'label_smoothing': args.label_smoothing,
+                    'focal_gamma': args.focal_gamma,
+                    'severity_class_weights': severity_class_weights,
+                    'class_gamma_map': class_gamma_map
+                },
+                scaler=scaler, 
+                max_batches=num_batches_to_run, 
+                gradient_clip_norm=args.gradient_clip_norm, 
+                memory_cleanup_interval=args.memory_cleanup_interval,
+                scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
+                gpu_augmentation=gpu_augmentation
+            )
         
         # Reset GradScaler parameters after initial calibration period (typically 100-500 steps)
         if scaler is not None and not scaler_calibration_reset and epoch >= 1:

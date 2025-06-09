@@ -202,6 +202,24 @@ def parse_args():
     parser.add_argument('--memory_cleanup_interval', type=int, default=20,
                        help='Interval (in batches) for calling memory cleanup. 0 or negative to disable in train/val loops.')
     
+    # === DATA LOADING OPTIMIZATION ===
+    parser.add_argument('--enable_data_optimization', action='store_true', default=True,
+                       help='Enable data loading optimization features')
+    parser.add_argument('--disable_data_optimization', action='store_true', default=False,
+                       help='Disable data loading optimization features')
+    
+    # === ERROR RECOVERY ===
+    parser.add_argument('--enable_oom_recovery', action='store_true', default=True,
+                       help='Enable automatic OOM recovery')
+    parser.add_argument('--oom_reduction_factor', type=float, default=0.75,
+                       help='Factor to reduce batch size on OOM (default: 0.75)')
+    parser.add_argument('--min_batch_size', type=int, default=1,
+                       help='Minimum batch size for OOM recovery')
+    parser.add_argument('--enable_config_validation', action='store_true', default=True,
+                       help='Enable configuration validation')
+    parser.add_argument('--strict_config_validation', action='store_true', default=False,
+                       help='Treat config warnings as errors')
+    
     # === TESTING AND DEVELOPMENT ===
     parser.add_argument('--test_run', action='store_true', help='Perform a quick test run (1 epoch, few batches, no saving)')
     parser.add_argument('--test_batches', type=int, default=2, help='Number of batches to run in test mode')
