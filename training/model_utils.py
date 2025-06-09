@@ -1429,6 +1429,38 @@ class AdvancedFreezingManager:
         
         return base_lr * factor
     
+    def detect_overfitting_risk(self, train_loss_history, val_loss_history, window=3):
+        """
+        Detect early signs of overfitting by comparing training and validation loss trends.
+        Returns True if overfitting risk is detected.
+        """
+        if len(train_loss_history) < window or len(val_loss_history) < window:
+            return False
+        
+        # Check recent trends
+        train_trend = train_loss_history[-1] - train_loss_history[-window]
+        val_trend = val_loss_history[-1] - val_loss_history[-window]
+        
+        # Overfitting indicators:
+        # 1. Training loss decreasing while validation loss increasing
+        # 2. Growing gap between training and validation loss
+        train_decreasing = train_trend < -0.1
+        val_increasing = val_trend > 0.05
+        
+        current_gap = val_loss_history[-1] - train_loss_history[-1]
+        past_gap = val_loss_history[-window] - train_loss_history[-window]
+        gap_widening = current_gap > past_gap + 0.5
+        
+        overfitting_risk = (train_decreasing and val_increasing) or gap_widening
+        
+        if overfitting_risk:
+            logger.info(f"[OVERFITTING_RISK] Detected potential overfitting:")
+            logger.info(f"  - Train loss trend: {train_trend:+.3f}")
+            logger.info(f"  - Val loss trend: {val_trend:+.3f}")
+            logger.info(f"  - Current gap: {current_gap:.3f}")
+        
+        return overfitting_risk
+    
     def _get_layer_weight_decay(self, layer_name):
         """Get layer-specific weight decay."""
         if layer_name in self.layer_groups:
@@ -1573,58 +1605,129 @@ class AdvancedFreezingManager:
                 for layer_name, score in top_candidates:
                     logger.info(f"    - {layer_name}: {score:.6f}")
 
-    def emergency_unfreeze(self, min_layers=2):
+    def emergency_unfreeze(self, min_layers=1, use_gradual=True):
         """
         Emergency unfreezing when normal criteria aren't met.
-        Forces unfreezing of the most promising layers.
+        Uses progressive unfreezing to avoid parameter explosion.
         """
-        # Get all frozen backbone layers
-        frozen_backbone_layers = []
-        for layer_name, layer_info in self.layer_groups.items():
-            if ('layer' in layer_name and 
-                layer_name not in self.unfrozen_layers and
-                layer_info['type'] in ['residual_block', 'residual_sub_block']):
-                frozen_backbone_layers.append(layer_name)
+        # Get all frozen backbone layers, prioritizing sub-blocks for gradual unfreezing
+        frozen_candidates = []
         
-        # Sort by importance score (if available) or use predefined order
-        if any(self.layer_importance_smooth.get(name, 0) > 0 for name in frozen_backbone_layers):
-            frozen_backbone_layers.sort(
-                key=lambda x: self.layer_importance_smooth.get(x, 0), 
+        if use_gradual:
+            # Prioritize sub-blocks for smoother unfreezing
+            for layer_name, layer_info in self.layer_groups.items():
+                if (layer_name not in self.unfrozen_layers and
+                    layer_info['type'] == 'residual_sub_block' and
+                    'layer4' in layer_name):  # Start with layer4 sub-blocks
+                    frozen_candidates.append((layer_name, layer_info, 'sub_block'))
+            
+            # If no sub-blocks available, fall back to full blocks
+            if not frozen_candidates:
+                for layer_name, layer_info in self.layer_groups.items():
+                    if (layer_name not in self.unfrozen_layers and
+                        layer_info['type'] == 'residual_block' and
+                        'layer4' in layer_name):
+                        frozen_candidates.append((layer_name, layer_info, 'full_block'))
+        else:
+            # Traditional approach - unfreeze full layers
+            for layer_name, layer_info in self.layer_groups.items():
+                if ('layer' in layer_name and 
+                    layer_name not in self.unfrozen_layers and
+                    layer_info['type'] in ['residual_block']):
+                    frozen_candidates.append((layer_name, layer_info, 'full_block'))
+        
+        if not frozen_candidates:
+            logger.warning("[EMERGENCY_UNFREEZE] No suitable candidates found for unfreezing")
+            return False
+        
+        # Sort by importance or default priority
+        if any(self.layer_importance_smooth.get(name, 0) > 0 for name, _, _ in frozen_candidates):
+            frozen_candidates.sort(
+                key=lambda x: self.layer_importance_smooth.get(x[0], 0), 
                 reverse=True
             )
         else:
-            # Default order: later layers first (closer to head)
-            layer_priorities = ['layer4', 'layer3', 'layer2', 'layer1']
-            frozen_backbone_layers.sort(
-                key=lambda x: next((i for i, p in enumerate(layer_priorities) if p in x), 999)
-            )
+            # Default order: layer4 sub-blocks first, then layer3, etc.
+            def priority_key(item):
+                name, _, block_type = item
+                if 'layer4' in name:
+                    base_priority = 1000
+                elif 'layer3' in name:
+                    base_priority = 2000
+                elif 'layer2' in name:
+                    base_priority = 3000
+                else:
+                    base_priority = 4000
+                
+                # Sub-blocks get higher priority than full blocks
+                if block_type == 'sub_block':
+                    base_priority -= 100
+                
+                # Extract sub-block number for ordering
+                if '.' in name:
+                    try:
+                        sub_num = int(name.split('.')[-1])
+                        base_priority += sub_num  # Later sub-blocks first
+                    except:
+                        pass
+                
+                return base_priority
+            
+            frozen_candidates.sort(key=priority_key)
         
-        # Unfreeze top candidates
+        # Unfreeze candidates gradually
         unfrozen_count = 0
-        for layer_name in frozen_backbone_layers[:min_layers]:
-            if layer_name in self.layer_groups:
-                layer_info = self.layer_groups[layer_name]
+        total_unfrozen_params = 0
+        
+        for layer_name, layer_info, block_type in frozen_candidates[:min_layers]:
+            # Unfreeze parameters
+            unfrozen_params = 0
+            for param in layer_info['module'].parameters():
+                if not param.requires_grad:
+                    param.requires_grad = True
+                    unfrozen_params += param.numel()
+            
+            if unfrozen_params > 0:
+                self.unfrozen_layers.add(layer_name)
+                unfrozen_count += 1
+                total_unfrozen_params += unfrozen_params
                 
-                # Unfreeze parameters
-                unfrozen_params = 0
-                for param in layer_info['module'].parameters():
-                    if not param.requires_grad:
-                        param.requires_grad = True
-                        unfrozen_params += param.numel()
+                # Setup warmup for this layer with extra-conservative settings
+                warmup_config = {
+                    'strategy': 'exponential',
+                    'duration': 6,  # Longer warmup for emergency unfreezing
+                    'start_factor': 0.01,  # Very conservative start
+                    'growth_rate': 1.3
+                }
                 
-                if unfrozen_params > 0:
-                    self.unfrozen_layers.add(layer_name)
-                    unfrozen_count += 1
-                    logger.info(f"[EMERGENCY_UNFREEZE] Unfroze layer: {layer_name} ({unfrozen_params:,} parameters)")
-                    
-                    # Also mark any sub-layers as unfrozen (to avoid conflicts)
-                    for sub_layer_name in self.layer_groups:
-                        if sub_layer_name.startswith(layer_name + '.'):
-                            self.unfrozen_layers.add(sub_layer_name)
-                            logger.debug(f"[EMERGENCY_UNFREEZE] Marked sub-layer as unfrozen: {sub_layer_name}")
+                self.layers_in_warmup[layer_name] = {
+                    'epoch': 0,
+                    'config': warmup_config,
+                    'performance_before': self.performance_history[-1] if self.performance_history else 0.0
+                }
+                
+                logger.info(f"[EMERGENCY_UNFREEZE] Unfroze {block_type}: {layer_name} ({unfrozen_params:,} parameters)")
+                logger.info(f"  - Using extra-conservative warmup: {warmup_config['duration']} epochs, start_factor={warmup_config['start_factor']}")
+                
+                # Mark related layers appropriately
+                if block_type == 'sub_block':
+                    parent_layer = '.'.join(layer_name.split('.')[:-1])
+                    if parent_layer in self.layer_groups:
+                        # Check if all sub-blocks of parent are now unfrozen
+                        all_sub_blocks_unfrozen = True
+                        for sub_name in self.layer_groups:
+                            if (sub_name.startswith(parent_layer + '.') and 
+                                sub_name not in self.unfrozen_layers):
+                                all_sub_blocks_unfrozen = False
+                                break
+                        
+                        if all_sub_blocks_unfrozen:
+                            self.unfrozen_layers.add(parent_layer)
+                            logger.debug(f"[EMERGENCY_UNFREEZE] Marked parent layer as unfrozen: {parent_layer}")
         
         if unfrozen_count > 0:
-            logger.info(f"[EMERGENCY_UNFREEZE] Successfully unfroze {unfrozen_count} layers")
+            logger.info(f"[EMERGENCY_UNFREEZE] Successfully unfroze {unfrozen_count} {'sub-blocks' if use_gradual else 'layers'}")
+            logger.info(f"[EMERGENCY_UNFREEZE] Total parameters unfrozen: {total_unfrozen_params:,}")
             # Sync unfrozen layer tracking
             self._sync_unfrozen_layers()
             return True

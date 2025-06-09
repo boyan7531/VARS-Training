@@ -679,9 +679,11 @@ class ProgressiveClassBalancedSampler(torch.utils.data.Sampler):
         
     def _update_targets(self):
         """Update target counts based on current epoch."""
-        # Calculate the current oversample factor
+        # Calculate the current oversample factor with smoother progression
         progress = min(self.current_epoch / self.duration_epochs, 1.0)
-        current_factor = self.oversample_factor_start + progress * (self.oversample_factor_end - self.oversample_factor_start)
+        # Use exponential smoothing for more gradual progression
+        smooth_progress = 1 - (1 - progress) ** 2  # Quadratic easing
+        current_factor = self.oversample_factor_start + smooth_progress * (self.oversample_factor_end - self.oversample_factor_start)
         
         # Calculate target counts for each class
         self.targets_per_class = {}

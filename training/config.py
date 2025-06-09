@@ -93,10 +93,14 @@ def parse_args():
                        help='Number of epochs for progressive sampling transition')
 
     # Emergency unfreezing
-    parser.add_argument('--emergency_unfreeze_epoch', type=int, default=6,
-                       help='Epoch to force unfreeze if no layers unfrozen yet (default: 6)')
-    parser.add_argument('--min_unfreeze_layers', type=int, default=2,
-                       help='Minimum number of backbone layers to unfreeze (default: 2)')
+    parser.add_argument('--emergency_unfreeze_epoch', type=int, default=4,
+                       help='Epoch to force unfreeze if no layers unfrozen yet (default: 4)')
+    parser.add_argument('--min_unfreeze_layers', type=int, default=1,
+                       help='Minimum number of backbone layers to unfreeze (default: 1)')
+    parser.add_argument('--emergency_unfreeze_gradual', action='store_true', default=True,
+                       help='Use gradual emergency unfreezing (sub-blocks instead of full layers)')
+    parser.add_argument('--validation_plateau_patience', type=int, default=2,
+                       help='Epochs to wait before treating validation performance as plateaued')
     
     # === ENHANCED FREEZING STRATEGY OPTIONS ===
     parser.add_argument('--freezing_strategy', type=str, default='fixed', 

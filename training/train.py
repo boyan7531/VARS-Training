@@ -563,13 +563,18 @@ def main():
             logger.warning(f"[EMERGENCY] No layers unfrozen by epoch {epoch}! Force unfreezing backbone layers...")
             
             if hasattr(freezing_manager, 'emergency_unfreeze'):
-                freezing_manager.emergency_unfreeze(args.min_unfreeze_layers)
-                optimizer, scheduler = handle_gradual_finetuning_transition(
-                    args, model, optimizer, scheduler, epoch,
-                    freezing_manager=freezing_manager, 
-                    val_metric=val_metrics['sev_acc'],
-                    train_loader=train_loader
+                emergency_success = freezing_manager.emergency_unfreeze(
+                    min_layers=args.min_unfreeze_layers,
+                    use_gradual=getattr(args, 'emergency_unfreeze_gradual', True)
                 )
+                
+                if emergency_success:
+                    optimizer, scheduler = handle_gradual_finetuning_transition(
+                        args, model, optimizer, scheduler, epoch,
+                        freezing_manager=freezing_manager, 
+                        val_metric=val_metrics['sev_acc'],
+                        train_loader=train_loader
+                    )
             else:
                 # Fallback: unfreeze first few backbone layers manually
                 unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=args.min_unfreeze_layers)
@@ -584,6 +589,35 @@ def main():
                     optimizer = torch.optim.AdamW(model.parameters(), lr=current_lr, weight_decay=args.weight_decay)
                 
                 logger.info(f"[EMERGENCY] Manually unfroze {args.min_unfreeze_layers} backbone layers")
+        
+        # Check for validation plateau-based early unfreezing
+        elif (freezing_manager is not None and 
+              hasattr(freezing_manager, 'emergency_unfreeze') and
+              epoch >= getattr(args, 'validation_plateau_patience', 2) and
+              len(getattr(freezing_manager, 'unfrozen_layers', set())) == 0):
+            
+            # Check if validation performance has plateaued
+            if (hasattr(freezing_manager, 'performance_history') and 
+                len(freezing_manager.performance_history) >= args.validation_plateau_patience + 1):
+                
+                recent_performance = freezing_manager.performance_history[-args.validation_plateau_patience-1:]
+                performance_trend = recent_performance[-1] - recent_performance[0]
+                
+                # If performance hasn't improved significantly in recent epochs
+                if performance_trend < 0.005:  # Less than 0.5% improvement
+                    logger.info(f"[PLATEAU] Validation performance plateaued (trend: {performance_trend:+.4f}). Triggering early unfreezing...")
+                    emergency_success = freezing_manager.emergency_unfreeze(
+                        min_layers=1,  # More conservative for plateau-based unfreezing
+                        use_gradual=True
+                    )
+                    
+                    if emergency_success:
+                        optimizer, scheduler = handle_gradual_finetuning_transition(
+                            args, model, optimizer, scheduler, epoch,
+                            freezing_manager=freezing_manager, 
+                            val_metric=val_metrics['sev_acc'],
+                            train_loader=train_loader
+                        )
 
         # Handle freezing strategy updates with validation results
         optimizer, scheduler = handle_gradual_finetuning_transition(
