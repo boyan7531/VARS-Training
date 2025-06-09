@@ -93,11 +93,11 @@ def setup_optimizer_and_scheduler(args, model, freezing_manager=None):
     optimizer = None  # Initialize optimizer variable
     
     # For SmartFreezingManager
-    if isinstance(freezing_manager, SmartFreezingManager) and args.freezing_strategy in ['adaptive', 'progressive'] and args.exponential_lr_decay:
+    if isinstance(freezing_manager, SmartFreezingManager) and args.freezing_strategy in ['adaptive', 'progressive']:
         # Use discriminative learning rates from freezing manager
-            param_groups = freezing_manager.get_discriminative_lr_groups(args.head_lr, args.backbone_lr)
-            optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
-            logger.info("🔄 Using discriminative learning rates from freezing manager")
+        param_groups = freezing_manager.get_discriminative_lr_groups(args.head_lr, args.backbone_lr)
+        optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
+        logger.info("🔄 Using discriminative learning rates from freezing manager")
     
     # For AdvancedFreezingManager
     elif isinstance(freezing_manager, AdvancedFreezingManager):

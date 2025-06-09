@@ -517,13 +517,13 @@ def create_dataloaders(args, train_dataset, val_dataset):
             logger.info("🚀 Using ProgressiveClassBalancedSampler for dynamic class balancing!")
             train_sampler = ProgressiveClassBalancedSampler(
                 train_dataset,
-                oversample_factor_start=2.0,  # Start with mild oversampling
-                oversample_factor_end=args.oversample_factor,  # End with full oversampling
+                oversample_factor_start=args.progressive_start_factor,  # Start with mild oversampling
+                oversample_factor_end=args.progressive_end_factor,  # End with full oversampling
                 duration_epochs=args.progressive_epochs,  # Duration of progression
                 current_epoch=0  # Start at epoch 0
             )
             
-            logger.info(f"   - Progressive balancing from 2.0x to {args.oversample_factor}x")
+            logger.info(f"   - Progressive balancing from {args.progressive_start_factor}x to {args.progressive_end_factor}x")
             logger.info(f"   - Duration: {args.progressive_epochs} epochs")
             logger.info(f"   - Initial samples per epoch: {len(train_sampler)}")
         else:

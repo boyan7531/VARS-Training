@@ -120,15 +120,15 @@ def parse_args():
                         help='Number of epochs to sample gradients before first unfreezing decision')
     
     # Advanced freezing specific parameters
-    parser.add_argument('--base_importance_threshold', type=float, default=0.005,
+    parser.add_argument('--base_importance_threshold', type=float, default=0.002,
                         help='Base importance threshold for advanced freezing (will adapt dynamically)')
-    parser.add_argument('--performance_threshold', type=float, default=0.002,
+    parser.add_argument('--performance_threshold', type=float, default=0.001,
                         help='Minimum performance improvement threshold for advanced freezing decisions')
     parser.add_argument('--rollback_patience', type=int, default=2,
                         help='Epochs to wait before performing rollback in advanced freezing')
     parser.add_argument('--gradient_momentum', type=float, default=0.9,
                         help='Momentum factor for smoothing gradient importance in advanced freezing')
-    parser.add_argument('--analysis_window', type=int, default=3,
+    parser.add_argument('--analysis_window', type=int, default=2,
                         help='Number of epochs to analyze before making unfreezing decisions')
     parser.add_argument('--enable_rollback', action='store_true', default=True,
                         help='Enable performance-based rollback in advanced freezing')
@@ -177,6 +177,8 @@ def parse_args():
                        help='Maximum Gaussian noise standard deviation')
     parser.add_argument('--gpu_augmentation', action='store_true', default=False,
                        help='Use GPU-based augmentation instead of CPU augmentation (recommended for dual GPU setups)')
+    parser.add_argument('--severity_aware_augmentation', action='store_true', default=False,
+                       help='Use severity-aware augmentation with class-specific strengths')
     
     # === DEBUGGING & FLEXIBILITY OPTIONS ===
     parser.add_argument('--simple_training', action='store_true', default=False,
