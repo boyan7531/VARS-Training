@@ -265,7 +265,7 @@ class EarlyStopping:
 def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, scaler=None, 
                    max_batches=None, gradient_clip_norm=1.0, memory_cleanup_interval=20, scheduler=None,
                    gpu_augmentation=None):
-    """Train the model for one epoch."""
+    """Train the model for one epoch with optional GPU-based augmentation."""
     model.train()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -273,29 +273,31 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
     running_sev_f1 = 0.0
     running_act_f1 = 0.0
     processed_batches = 0
+    total_samples = 0  # Track actual number of samples processed
 
     start_time = time.time()
-    
-    # Clean training without progress bar spam
     total_batches = max_batches if max_batches else len(dataloader)
     
     for i, batch_data in enumerate(dataloader):
         if max_batches is not None and (i + 1) > max_batches:
-            break 
+            break
         
         # Move all tensors in the batch to the device
         for key in batch_data:
             if isinstance(batch_data[key], torch.Tensor):
                 batch_data[key] = batch_data[key].to(device, non_blocking=True)
-        
+                
         severity_labels = batch_data["label_severity"]
         action_labels = batch_data["label_type"]
+        
+        current_batch_size = batch_data["clips"].size(0)
+        total_samples += current_batch_size
 
         optimizer.zero_grad()
-
-        # Mixed precision forward pass with explicit dtype configuration
+        
+        # Use autocast for mixed precision if scaler is provided
         if scaler is not None:
-            with torch.amp.autocast('cuda', dtype=torch.float16):  # Explicitly use float16 for maximum speed
+            with torch.amp.autocast('cuda'):
                 # Apply GPU augmentation if provided
                 if gpu_augmentation is not None:
                     # Check if this is a severity-aware augmentation
@@ -306,21 +308,25 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                     else:
                         # Standard augmentation
                         batch_data["clips"] = gpu_augmentation(batch_data["clips"])
-                
+                        
                 sev_logits, act_logits = model(batch_data)
                 total_loss, _, _ = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_config
                 )
 
             scaler.scale(total_loss).backward()
-            scaler.unscale_(optimizer)
             
             # Gradient clipping
             if gradient_clip_norm > 0:
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
             
             scaler.step(optimizer)
             scaler.update()
+            
+            # Stepping the OneCycleLR scheduler after optimizer.step()
+            if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                scheduler.step()
         else:
             # Apply GPU augmentation if provided
             if gpu_augmentation is not None:
@@ -353,7 +359,7 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
         # Debug removed for cleaner training logs
 
         # Calculate metrics
-        running_loss += total_loss.item() * batch_data["clips"].size(0)
+        running_loss += total_loss.item() * current_batch_size
         sev_acc = calculate_accuracy(sev_logits, severity_labels)
         act_acc = calculate_accuracy(act_logits, action_labels)
         sev_f1 = calculate_f1_score(sev_logits, severity_labels, 6)  # 6 severity classes (0-5)
@@ -371,14 +377,14 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
         
         # Only print progress every 25% of batches
         if (i + 1) % max(1, total_batches // 4) == 0:
-            current_avg_loss = running_loss / (processed_batches * batch_data["clips"].size(0))
+            current_avg_loss = running_loss / total_samples
             current_avg_sev_acc = running_sev_acc / processed_batches
             current_avg_act_acc = running_act_acc / processed_batches
             progress = (i + 1) / total_batches * 100
             logger.info(f"  Training Progress: {progress:.0f}% | Loss: {current_avg_loss:.3f} | SevAcc: {current_avg_sev_acc:.3f} | ActAcc: {current_avg_act_acc:.3f}")
     
-    num_samples_processed = len(dataloader.dataset) if max_batches is None else processed_batches * dataloader.batch_size 
-    epoch_loss = running_loss / num_samples_processed if num_samples_processed > 0 else 0
+    # Use the actual number of samples we processed for loss calculation
+    epoch_loss = running_loss / total_samples if total_samples > 0 else 0
     epoch_sev_acc = running_sev_acc / processed_batches if processed_batches > 0 else 0
     epoch_act_acc = running_act_acc / processed_batches if processed_batches > 0 else 0
     epoch_sev_f1 = running_sev_f1 / processed_batches if processed_batches > 0 else 0
@@ -402,6 +408,7 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
     running_sev_f1 = 0.0
     running_act_f1 = 0.0
     processed_batches = 0
+    total_samples = 0  # Track actual number of samples processed
 
     start_time = time.time()
     
@@ -420,6 +427,9 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
                 
             severity_labels = batch_data["label_severity"]
             action_labels = batch_data["label_type"]
+            
+            current_batch_size = batch_data["clips"].size(0)
+            total_samples += current_batch_size
 
             # Apply autocast for validation to match training config
             # Consistently use autocast with explicit dtype for validation when on CUDA
@@ -435,7 +445,7 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
                     sev_logits, act_logits, batch_data, loss_config
                 )
 
-            running_loss += total_loss.item() * batch_data["clips"].size(0)
+            running_loss += total_loss.item() * current_batch_size
             sev_acc = calculate_accuracy(sev_logits, severity_labels)
             act_acc = calculate_accuracy(act_logits, action_labels)
             running_sev_acc += sev_acc
@@ -451,8 +461,8 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
             if memory_cleanup_interval > 0 and (i + 1) % memory_cleanup_interval == 0:
                 cleanup_memory()
 
-    num_samples_processed = len(dataloader.dataset) if max_batches is None else processed_batches * dataloader.batch_size
-    epoch_loss = running_loss / num_samples_processed if num_samples_processed > 0 else 0
+    # Use the actual number of samples we processed for loss calculation
+    epoch_loss = running_loss / total_samples if total_samples > 0 else 0
     epoch_sev_acc = running_sev_acc / processed_batches if processed_batches > 0 else 0
     epoch_act_acc = running_act_acc / processed_batches if processed_batches > 0 else 0
     epoch_sev_f1 = running_sev_f1 / processed_batches if processed_batches > 0 else 0
@@ -467,7 +477,7 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
         'act_acc': epoch_act_acc,
         'sev_f1': epoch_sev_f1,
         'act_f1': epoch_act_f1
-    } 
+    }
 
 
 def debug_class_weights_impact(sev_logits, severity_labels, class_weights=None):
