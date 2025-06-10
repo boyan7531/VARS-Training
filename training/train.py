@@ -544,9 +544,12 @@ def main():
         epoch_start_time = time.time()
         
         # Update progressive sampler epoch if enabled
-        if args.progressive_class_balancing and hasattr(train_loader.sampler, 'set_epoch'):
-            train_loader.sampler.set_epoch(epoch)
-            logger.debug(f"Updated progressive sampler for epoch {epoch}")
+        if args.progressive_class_balancing:
+            # For OptimizedDataLoader, access the original dataloader's sampler
+            actual_loader = getattr(train_loader, 'dataloader', train_loader)
+            if hasattr(actual_loader, 'sampler') and hasattr(actual_loader.sampler, 'set_epoch'):
+                actual_loader.sampler.set_epoch(epoch)
+                logger.debug(f"Updated progressive sampler for epoch {epoch}")
         
         # Training with OOM protection
         if robust_wrapper and oom_manager:
