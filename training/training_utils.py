@@ -276,7 +276,16 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
     total_samples = 0  # Track actual number of samples processed
 
     start_time = time.time()
-    total_batches = max_batches if max_batches else len(dataloader)
+    # Handle OptimizedDataLoader which may not have len()
+    if max_batches:
+        total_batches = max_batches
+    else:
+        try:
+            total_batches = len(dataloader)
+        except TypeError:
+            # OptimizedDataLoader doesn't support len(), use underlying dataloader
+            actual_loader = getattr(dataloader, 'dataloader', dataloader)
+            total_batches = len(actual_loader) if hasattr(actual_loader, '__len__') else 1000  # fallback
     
     for i, batch_data in enumerate(dataloader):
         if max_batches is not None and (i + 1) > max_batches:
@@ -412,8 +421,16 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
 
     start_time = time.time()
     
-    # Clean validation without progress bar spam
-    total_batches = max_batches if max_batches else len(dataloader)
+    # Handle OptimizedDataLoader which may not have len()
+    if max_batches:
+        total_batches = max_batches
+    else:
+        try:
+            total_batches = len(dataloader)
+        except TypeError:
+            # OptimizedDataLoader doesn't support len(), use underlying dataloader
+            actual_loader = getattr(dataloader, 'dataloader', dataloader)
+            total_batches = len(actual_loader) if hasattr(actual_loader, '__len__') else 1000  # fallback
     
     with torch.no_grad():
         for i, batch_data in enumerate(dataloader):
