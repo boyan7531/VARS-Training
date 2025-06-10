@@ -1,0 +1,202 @@
+"""
+Base utilities for model parameter management and basic freezing operations.
+
+This module contains fundamental utilities for class weight calculation,
+basic freezing/unfreezing operations, and parameter management.
+"""
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def calculate_class_weights(dataset, num_classes, device, weighting_strategy='balanced_capped', max_weight_ratio=10.0):
+    """
+    Calculate class weights for loss balancing with multiple safe strategies.
+    
+    Args:
+        dataset: Training dataset
+        num_classes: Number of classes
+        device: Device to put weights on
+        weighting_strategy: Strategy for calculating weights
+            - 'none': No weighting (all weights = 1.0)
+            - 'balanced_capped': Inverse frequency with capped ratios (RECOMMENDED)
+            - 'sqrt': Square root of inverse frequency (gentler)
+            - 'log': Logarithmic weighting (very gentle)
+            - 'effective_number': Uses effective number of samples
+        max_weight_ratio: Maximum ratio between highest and lowest weight
+    
+    Returns:
+        class_weights tensor
+    """
+    class_counts = torch.zeros(num_classes)
+    
+    for action in dataset.actions:
+        severity_label = action['label_severity']
+        if 0 <= severity_label < num_classes:
+            class_counts[severity_label] += 1
+    
+    # Avoid division by zero
+    class_counts[class_counts == 0] = 1
+    
+    if weighting_strategy == 'none':
+        class_weights = torch.ones(num_classes)
+        logger.info("Using no class weighting (all weights = 1.0)")
+        
+    elif weighting_strategy == 'balanced_capped':
+        # Inverse frequency with capping - MUCH SAFER!
+        total_samples = class_counts.sum()
+        class_weights = total_samples / (num_classes * class_counts)
+        
+        # Cap the weights to prevent extreme ratios
+        max_weight = class_weights.min() * max_weight_ratio
+        class_weights = torch.clamp(class_weights, max=max_weight)
+        
+        # Normalize so minimum weight is 1.0
+        class_weights = class_weights / class_weights.min()
+        
+        logger.info(f"Balanced capped weighting (max ratio: {max_weight_ratio})")
+        
+    elif weighting_strategy == 'sqrt':
+        # Square root weighting - gentler than inverse frequency
+        total_samples = class_counts.sum()
+        class_weights = torch.sqrt(total_samples / (num_classes * class_counts))
+        class_weights = class_weights / class_weights.min()
+        
+        logger.info("Square root weighting (gentler)")
+        
+    elif weighting_strategy == 'log':
+        # Logarithmic weighting - very gentle
+        total_samples = class_counts.sum()
+        raw_weights = total_samples / (num_classes * class_counts)
+        class_weights = torch.log(raw_weights + 1)  # +1 to avoid log(0)
+        class_weights = class_weights / class_weights.min()
+        
+        logger.info("Logarithmic weighting (very gentle)")
+        
+    elif weighting_strategy == 'effective_number':
+        # Effective number of samples - sophisticated approach
+        beta = 0.999  # Hyperparameter
+        effective_num = 1.0 - torch.pow(beta, class_counts.float())
+        class_weights = (1.0 - beta) / effective_num
+        class_weights = class_weights / class_weights.min()
+        
+        logger.info(f"Effective number weighting (beta={beta})")
+        
+    else:
+        raise ValueError(f"Unknown weighting strategy: {weighting_strategy}")
+    
+    # Log class distribution and weights
+    logger.info("Class distribution and weights:")
+    for i in range(num_classes):
+        if class_counts[i] > 0:
+            logger.info(f"  Class {i}: {int(class_counts[i])} samples → Weight: {class_weights[i]:.2f}")
+    
+    max_ratio = (class_weights.max() / class_weights.min()).item()
+    logger.info(f"Weight ratio (max/min): {max_ratio:.1f}")
+    
+    if max_ratio > 50:
+        logger.warning(f"⚠️  Large weight ratio ({max_ratio:.1f}) may cause training instability!")
+        logger.warning("   Consider using 'sqrt' or 'log' weighting strategy")
+    
+    return class_weights.to(device)
+
+
+def freeze_backbone(model):
+    """Freeze all backbone parameters."""
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    for param in actual_model.backbone.parameters():
+        param.requires_grad = False
+    
+    logger.info("[FREEZE] Backbone frozen - only training classification heads")
+
+
+def unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=2):
+    """Gradually unfreeze the last N residual blocks of the backbone."""
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    # Get the ResNet3D backbone
+    backbone = actual_model.backbone.backbone
+    
+    # For ResNet architectures, we want to unfreeze the last few layers
+    # ResNet3D structure: conv1, bn1, relu, maxpool, layer1, layer2, layer3, layer4, avgpool
+    layers_to_unfreeze = []
+    
+    if hasattr(backbone, 'layer4'):
+        layers_to_unfreeze.append(backbone.layer4)
+    if hasattr(backbone, 'layer3') and num_blocks_to_unfreeze > 1:
+        layers_to_unfreeze.append(backbone.layer3)
+    if hasattr(backbone, 'layer2') and num_blocks_to_unfreeze > 2:
+        layers_to_unfreeze.append(backbone.layer2)
+    
+    unfrozen_params = 0
+    for layer in layers_to_unfreeze:
+        for param in layer.parameters():
+            param.requires_grad = True
+            unfrozen_params += param.numel()
+    
+    logger.info(f"[UNFREEZE] Unfroze last {len(layers_to_unfreeze)} backbone layers ({unfrozen_params:,} parameters)")
+
+
+def setup_discriminative_optimizer(model, head_lr, backbone_lr):
+    """Setup optimizer with discriminative learning rates for different model parts."""
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    param_groups = []
+    
+    # Classification heads with higher learning rate
+    head_params = []
+    head_params.extend(actual_model.severity_head.parameters())
+    head_params.extend(actual_model.action_type_head.parameters())
+    
+    # Add embedding and aggregation parameters to head group (they're task-specific)
+    head_params.extend(actual_model.embedding_manager.parameters())
+    head_params.extend(actual_model.view_aggregator.parameters())
+    
+    param_groups.append({
+        'params': head_params,
+        'lr': head_lr,
+        'name': 'heads'
+    })
+    
+    # Backbone parameters with lower learning rate (only unfrozen ones)
+    backbone_params = [p for p in actual_model.backbone.parameters() if p.requires_grad]
+    
+    if backbone_params:
+        param_groups.append({
+            'params': backbone_params,
+            'lr': backbone_lr,
+            'name': 'backbone'
+        })
+    
+    logger.info(f"[OPTIM] Discriminative LR setup: Heads={head_lr:.1e}, Backbone={backbone_lr:.1e}")
+    return param_groups
+
+
+def get_phase_info(epoch, phase1_epochs, total_epochs):
+    """Determine current training phase."""
+    if epoch < phase1_epochs:
+        return 1, f"Phase 1: Head-only training"
+    else:
+        return 2, f"Phase 2: Gradual unfreezing"
+
+
+def log_trainable_parameters(model):
+    """Log the number of trainable parameters."""
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    total_params = sum(p.numel() for p in actual_model.parameters())
+    trainable_params = sum(p.numel() for p in actual_model.parameters() if p.requires_grad)
+    frozen_params = total_params - trainable_params
+    
+    logger.info(f"[PARAMS] Total={total_params:,}, Trainable={trainable_params:,}, Frozen={frozen_params:,}")
+    return trainable_params, total_params 
