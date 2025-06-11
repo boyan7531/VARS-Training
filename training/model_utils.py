@@ -5,7 +5,12 @@ This module now serves as a compatibility layer that imports from the new modula
 The original functionality has been split into multiple focused modules within the freezing package.
 """
 
-# Import all freezing functionality from the new modular structure
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR, StepLR, ExponentialLR, ReduceLROnPlateau
+import logging
+
 from .freezing import (
     # Base utilities
     calculate_class_weights,
@@ -24,6 +29,11 @@ from .freezing import (
     create_model,
     setup_freezing_strategy
 )
+
+from .optimizer_utils import *
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 # Re-export everything for backward compatibility
 __all__ = [
