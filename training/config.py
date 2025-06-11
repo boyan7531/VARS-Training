@@ -27,9 +27,12 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     
     # === MODEL CONFIGURATION ===
+    parser.add_argument('--backbone_type', type=str, default='resnet3d', 
+                        choices=['resnet3d', 'mvit'], 
+                        help='Backbone architecture type: resnet3d (torchvision 3D ResNets) or mvit (MViTv2 from PyTorchVideo)')
     parser.add_argument('--backbone_name', type=str, default='r2plus1d_18', 
-                        choices=['resnet3d_18', 'mc3_18', 'r2plus1d_18', 'resnet3d_50'], 
-                        help="ResNet3D backbone variant (r2plus1d_18 recommended for best accuracy)")
+                        help="Specific backbone model name. For ResNet3D: 'resnet3d_18', 'mc3_18', 'r2plus1d_18', 'resnet3d_50'. "
+                             "For MViT: 'mvit_base_16x4', 'mvit_base_32x3', 'mvit_small_16x4' (r2plus1d_18/mvit_base_16x4 recommended)")
     parser.add_argument('--frames_per_clip', type=int, default=16, help='Number of frames per clip')
     parser.add_argument('--target_fps', type=int, default=15, help='Target FPS for clips')
     parser.add_argument('--start_frame', type=int, default=67, help='Start frame index for foul-centered extraction (8 frames before foul at frame 75)')
@@ -334,6 +337,24 @@ def process_config(args):
     if not args.dataset_root:
         raise ValueError("Please provide the --dataset_root argument.")
     args.mvfouls_path = str(Path(args.dataset_root) / "mvfouls")
+    
+    # Validate backbone_type and backbone_name combinations
+    if args.backbone_type == 'resnet3d':
+        resnet3d_models = ['resnet3d_18', 'mc3_18', 'r2plus1d_18', 'resnet3d_50']
+        if args.backbone_name not in resnet3d_models:
+            logger.warning(f"⚠️  backbone_name '{args.backbone_name}' not in standard ResNet3D models {resnet3d_models}. "
+                          f"Using anyway - might work if it's a valid torchvision model.")
+    elif args.backbone_type == 'mvit':
+        mvit_models = ['mvit_base_16x4', 'mvit_base_32x3', 'mvit_small_16x4']
+        if args.backbone_name not in mvit_models and not args.backbone_name.startswith('mvit'):
+            logger.warning(f"⚠️  backbone_name '{args.backbone_name}' doesn't look like an MViT model. "
+                          f"Standard options: {mvit_models}. Using anyway - might work if it's a valid PyTorchVideo model.")
+        # Update default backbone_name for MViT if user didn't specify
+        if args.backbone_name == 'r2plus1d_18':  # Default ResNet3D name
+            args.backbone_name = 'mvit_base_16x4'
+            logger.info(f"🔄 Updated backbone_name to '{args.backbone_name}' for MViT backbone_type")
+    
+    logger.info(f"🏗️  Using {args.backbone_type.upper()} backbone: {args.backbone_name}")
     
     # Adjust total epochs for gradual fine-tuning
     if args.gradual_finetuning:
