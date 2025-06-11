@@ -21,7 +21,8 @@ from dataset import (
     TemporalJitter, RandomTemporalReverse, RandomFrameDropout,
     RandomBrightnessContrast, RandomSpatialCrop, RandomHorizontalFlip,
     RandomGaussianNoise, SeverityAwareAugmentation, ClassBalancedSampler,
-    RandomRotation, RandomMixup, RandomCutout, RandomTimeWarp
+    RandomRotation, RandomMixup, RandomCutout, RandomTimeWarp,
+    VariableLengthAugmentation, MultiScaleTemporalAugmentation
 )
 
 logger = logging.getLogger(__name__)
@@ -344,7 +345,22 @@ def create_transforms(args, is_training=True):
             ),
         ])
         
-        # STAGE 1.5: EXTREME temporal augmentations (only in extreme mode)
+        # STAGE 1.5: Domain shift reduction augmentations (for aggressive/extreme modes)
+        if args.aggressive_augmentation or args.extreme_augmentation:
+            augmentation_stages.extend([
+                VariableLengthAugmentation(
+                    min_frames=10 if args.extreme_augmentation else 12, 
+                    max_frames=24 if args.extreme_augmentation else 20, 
+                    action_position_variance=0.4 if args.extreme_augmentation else 0.3,
+                    prob=0.4 if args.extreme_augmentation else 0.3
+                ),
+                MultiScaleTemporalAugmentation(
+                    scale_factors=[0.5, 0.75, 1.0, 1.25, 1.5, 2.0] if args.extreme_augmentation else [0.75, 1.0, 1.25, 1.5],
+                    prob=0.3 if args.extreme_augmentation else 0.2
+                )
+            ])
+        
+        # STAGE 1.6: EXTREME temporal augmentations (only in extreme mode)
         if args.extreme_augmentation:
             augmentation_stages.extend([
                 RandomTimeWarp(warp_factor=0.3, prob=0.4),  # More aggressive time warping
@@ -395,6 +411,8 @@ def create_transforms(args, is_training=True):
             logger.info("🔥 EXTREME AUGMENTATION MODE ENABLED - Maximum data variety for tiny datasets!")
             logger.info(f"   - Temporal jitter: ±{args.temporal_jitter_strength} frames")
             logger.info(f"   - Frame dropout: {args.dropout_prob*1.5*100:.1f}% probability")
+            logger.info(f"   - Variable length clips: 10-24 frames (40% prob) - reduces domain shift")
+            logger.info(f"   - Multi-scale temporal: 0.5x-2.0x speeds (30% prob) - simulates different FPS")
             logger.info(f"   - Time warping: 30% probability with 0.3 factor")
             logger.info(f"   - Inter-frame mixup: 40% probability")
             logger.info(f"   - Spatial crops: {args.spatial_crop_strength*0.9}-1.0 scale range")
@@ -407,6 +425,8 @@ def create_transforms(args, is_training=True):
             logger.info("🚀 AGGRESSIVE AUGMENTATION MODE ENABLED for small dataset!")
             logger.info(f"   - Temporal jitter: ±{args.temporal_jitter_strength} frames")
             logger.info(f"   - Frame dropout: {args.dropout_prob*100:.1f}% probability")
+            logger.info(f"   - Variable length clips: 12-20 frames (30% prob) - reduces domain shift")
+            logger.info(f"   - Multi-scale temporal: 0.75x-1.5x speeds (20% prob) - simulates different FPS")
             logger.info(f"   - Spatial crops: {args.spatial_crop_strength}-1.0 scale range")
             logger.info(f"   - Color variation: ±{args.color_aug_strength*100:.1f}%")
             logger.info(f"   - Gaussian noise: up to {args.noise_strength:.3f} std")

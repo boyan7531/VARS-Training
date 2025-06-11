@@ -1212,3 +1212,167 @@ class RandomTimeWarp(torch.nn.Module):
         warped_clip = clip[:, warped_indices]
         
         return warped_clip
+
+class VariableLengthAugmentation(torch.nn.Module):
+    """
+    Foul-aware variable-length augmentation that ensures the action frame is always included.
+    
+    This augmentation:
+    1. GUARANTEES the foul frame is always within the sampled window
+    2. Varies the position of the foul within the new clip length
+    3. Maintains label consistency (foul is always present in the clip)
+    """
+    def __init__(self, 
+                 min_frames=12, 
+                 max_frames=24, 
+                 action_position_variance=0.3,
+                 prob=0.3,
+                 foul_frame_index=8):  # Index of foul in original 16-frame clip (0-indexed)
+        super().__init__()
+        self.min_frames = min_frames
+        self.max_frames = max_frames
+        self.action_position_variance = action_position_variance
+        self.prob = prob
+        self.foul_frame_index = foul_frame_index  # Frame 75 is at index 8 in 16-frame clip (67-82)
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+            
+        # Convert to float32 first if it's uint8
+        original_dtype = clip.dtype
+        if clip.dtype == torch.uint8:
+            clip = clip.float() / 255.0
+            
+        C, T, H, W = clip.shape
+        
+        # Randomly choose new clip length
+        new_length = random.randint(self.min_frames, self.max_frames)
+        
+        if new_length >= T:
+            # If new length is longer, pad with repeated frames
+            if new_length > T:
+                # Pad by repeating boundary frames
+                padding_needed = new_length - T
+                left_pad = padding_needed // 2
+                right_pad = padding_needed - left_pad
+                
+                # Repeat first and last frames
+                left_padding = clip[:, :1, :, :].repeat(1, left_pad, 1, 1)
+                right_padding = clip[:, -1:, :, :].repeat(1, right_pad, 1, 1)
+                
+                clip = torch.cat([left_padding, clip, right_padding], dim=1)
+            return clip
+        else:
+            # CRITICAL: Ensure foul frame is always included in the sampled window
+            
+            # Determine where we want the foul to be in the new clip
+            # Add some variance but ensure it's within bounds
+            ideal_foul_position = new_length // 2  # Default to center
+            max_shift = int(self.action_position_variance * new_length)
+            position_shift = random.randint(-max_shift, max_shift)
+            target_foul_position = max(0, min(ideal_foul_position + position_shift, new_length - 1))
+            
+            # Calculate where to start sampling from original clip
+            # We want original_foul_index to end up at target_foul_position
+            start_frame = self.foul_frame_index - target_foul_position
+            
+            # Ensure we don't go out of bounds
+            start_frame = max(0, min(start_frame, T - new_length))
+            end_frame = start_frame + new_length
+            
+            # Double-check that foul frame is included
+            foul_in_window = (start_frame <= self.foul_frame_index < end_frame)
+            if not foul_in_window:
+                # Fallback: center the window around the foul frame
+                start_frame = max(0, min(self.foul_frame_index - new_length // 2, T - new_length))
+                end_frame = start_frame + new_length
+            
+            # Extract the subset
+            clip = clip[:, start_frame:end_frame, :, :]
+            
+            # VALIDATION: Verify foul frame is included (for debugging)
+            original_foul_in_new_clip = (start_frame <= self.foul_frame_index < end_frame)
+            if not original_foul_in_new_clip:
+                # This should never happen with our logic above, but safety check
+                raise ValueError(f"Foul frame {self.foul_frame_index} not in window [{start_frame}:{end_frame}]")
+            
+            return clip
+
+class MultiScaleTemporalAugmentation(torch.nn.Module):
+    """
+    Multi-scale temporal augmentation that samples frames at different rates
+    to simulate different video speeds and temporal resolutions.
+    
+    This helps the model handle:
+    1. Videos recorded at different frame rates
+    2. Different temporal sampling strategies during inference
+    3. Actions that happen at different speeds
+    """
+    def __init__(self, 
+                 scale_factors=[0.5, 0.75, 1.0, 1.25, 1.5, 2.0],
+                 prob=0.4):
+        super().__init__()
+        self.scale_factors = scale_factors
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+            
+        C, T, H, W = clip.shape
+        
+        # Randomly choose temporal scale factor
+        scale = random.choice(self.scale_factors)
+        
+        if scale == 1.0:
+            return clip
+            
+        # Calculate new temporal dimension
+        new_T = max(4, int(T * scale))  # Ensure minimum 4 frames
+        
+        if scale > 1.0:
+            # Slower motion: interpolate to create more frames
+            # Use temporal interpolation
+            indices = torch.linspace(0, T - 1, new_T)
+            indices_floor = indices.floor().long()
+            indices_ceil = indices.ceil().long()
+            weights = indices - indices_floor.float()
+            
+            # Clamp indices to valid range
+            indices_floor = torch.clamp(indices_floor, 0, T - 1)
+            indices_ceil = torch.clamp(indices_ceil, 0, T - 1)
+            
+            # Linear interpolation between frames
+            interpolated_clip = []
+            for i, (floor_idx, ceil_idx, weight) in enumerate(zip(indices_floor, indices_ceil, weights)):
+                if floor_idx == ceil_idx:
+                    frame = clip[:, floor_idx, :, :]
+                else:
+                    frame = (1 - weight) * clip[:, floor_idx, :, :] + weight * clip[:, ceil_idx, :, :]
+                interpolated_clip.append(frame.unsqueeze(1))
+            
+            clip = torch.cat(interpolated_clip, dim=1)
+            
+            # If we have more frames than target, subsample back to target length
+            if new_T > T:
+                indices = torch.linspace(0, new_T - 1, T).long()
+                clip = clip[:, indices, :, :]
+                
+        else:
+            # Faster motion: subsample frames
+            indices = torch.linspace(0, T - 1, new_T).long()
+            clip = clip[:, indices, :, :]
+            
+            # If we have fewer frames than target, repeat frames to match length
+            if new_T < T:
+                repeat_factor = T // new_T
+                remainder = T % new_T
+                
+                repeated_clip = clip.repeat(1, repeat_factor, 1, 1)
+                if remainder > 0:
+                    extra_frames = clip[:, :remainder, :, :]
+                    repeated_clip = torch.cat([repeated_clip, extra_frames], dim=1)
+                clip = repeated_clip
+        
+        return clip
