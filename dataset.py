@@ -1221,19 +1221,22 @@ class VariableLengthAugmentation(torch.nn.Module):
     1. GUARANTEES the foul frame is always within the sampled window
     2. Varies the position of the foul within the new clip length
     3. Maintains label consistency (foul is always present in the clip)
+    4. STANDARDIZES output to target_frames for consistent tensor shapes
     """
     def __init__(self, 
                  min_frames=12, 
                  max_frames=24, 
                  action_position_variance=0.3,
                  prob=0.3,
-                 foul_frame_index=8):  # Index of foul in original 16-frame clip (0-indexed)
+                 foul_frame_index=8,
+                 target_frames=16):  # Target output length for standardization
         super().__init__()
         self.min_frames = min_frames
         self.max_frames = max_frames
         self.action_position_variance = action_position_variance
         self.prob = prob
         self.foul_frame_index = foul_frame_index  # Frame 75 is at index 8 in 16-frame clip (67-82)
+        self.target_frames = target_frames
     
     def forward(self, clip):
         if random.random() > self.prob:
@@ -1296,8 +1299,25 @@ class VariableLengthAugmentation(torch.nn.Module):
             if not original_foul_in_new_clip:
                 # This should never happen with our logic above, but safety check
                 raise ValueError(f"Foul frame {self.foul_frame_index} not in window [{start_frame}:{end_frame}]")
-            
-            return clip
+        
+        # CRITICAL: Standardize to target_frames to ensure consistent tensor shapes
+        current_frames = clip.shape[1]
+        if current_frames != self.target_frames:
+            if current_frames > self.target_frames:
+                # Crop: center crop to target length
+                start_idx = (current_frames - self.target_frames) // 2
+                clip = clip[:, start_idx:start_idx + self.target_frames, :, :]
+            else:
+                # Pad: repeat boundary frames
+                padding_needed = self.target_frames - current_frames
+                left_pad = padding_needed // 2
+                right_pad = padding_needed - left_pad
+                
+                left_padding = clip[:, :1, :, :].repeat(1, left_pad, 1, 1)
+                right_padding = clip[:, -1:, :, :].repeat(1, right_pad, 1, 1)
+                clip = torch.cat([left_padding, clip, right_padding], dim=1)
+        
+        return clip
 
 class MultiScaleTemporalAugmentation(torch.nn.Module):
     """
@@ -1308,13 +1328,16 @@ class MultiScaleTemporalAugmentation(torch.nn.Module):
     1. Videos recorded at different frame rates
     2. Different temporal sampling strategies during inference
     3. Actions that happen at different speeds
+    4. STANDARDIZES output to target_frames for consistent tensor shapes
     """
     def __init__(self, 
                  scale_factors=[0.5, 0.75, 1.0, 1.25, 1.5, 2.0],
-                 prob=0.4):
+                 prob=0.4,
+                 target_frames=16):
         super().__init__()
         self.scale_factors = scale_factors
         self.prob = prob
+        self.target_frames = target_frames
     
     def forward(self, clip):
         if random.random() > self.prob:
@@ -1374,5 +1397,22 @@ class MultiScaleTemporalAugmentation(torch.nn.Module):
                     extra_frames = clip[:, :remainder, :, :]
                     repeated_clip = torch.cat([repeated_clip, extra_frames], dim=1)
                 clip = repeated_clip
+        
+        # CRITICAL: Standardize to target_frames to ensure consistent tensor shapes
+        current_frames = clip.shape[1]
+        if current_frames != self.target_frames:
+            if current_frames > self.target_frames:
+                # Crop: center crop to target length
+                start_idx = (current_frames - self.target_frames) // 2
+                clip = clip[:, start_idx:start_idx + self.target_frames, :, :]
+            else:
+                # Pad: repeat boundary frames
+                padding_needed = self.target_frames - current_frames
+                left_pad = padding_needed // 2
+                right_pad = padding_needed - left_pad
+                
+                left_padding = clip[:, :1, :, :].repeat(1, left_pad, 1, 1)
+                right_padding = clip[:, -1:, :, :].repeat(1, right_pad, 1, 1)
+                clip = torch.cat([left_padding, clip, right_padding], dim=1)
         
         return clip

@@ -352,11 +352,13 @@ def create_transforms(args, is_training=True):
                     min_frames=10 if args.extreme_augmentation else 12, 
                     max_frames=24 if args.extreme_augmentation else 20, 
                     action_position_variance=0.4 if args.extreme_augmentation else 0.3,
-                    prob=0.4 if args.extreme_augmentation else 0.3
+                    prob=0.4 if args.extreme_augmentation else 0.3,
+                    target_frames=args.frames_per_clip
                 ),
                 MultiScaleTemporalAugmentation(
                     scale_factors=[0.5, 0.75, 1.0, 1.25, 1.5, 2.0] if args.extreme_augmentation else [0.75, 1.0, 1.25, 1.5],
-                    prob=0.3 if args.extreme_augmentation else 0.2
+                    prob=0.3 if args.extreme_augmentation else 0.2,
+                    target_frames=args.frames_per_clip
                 )
             ])
         
