@@ -63,6 +63,10 @@ class AdvancedFreezingManager:
         self.last_unfreeze_epoch = -999
         self.epochs_since_last_unfreeze = 0
         
+        # Rollback tracking
+        self.rollback_snapshots = []  # Store (epoch, unfrozen_layers, performance) snapshots
+        self.performance_decline_count = 0
+        
         # Initialize layer groups
         self.layer_groups = self._get_layer_groups()
         self._initialize_tracking()
@@ -245,11 +249,32 @@ class AdvancedFreezingManager:
         update_info = {
             'rebuild_optimizer': False,
             'unfrozen_layers': [],
-            'warmup_updates': {}
+            'warmup_updates': {},
+            'rollback_performed': False
         }
         
         # Store performance
         self.performance_history.append(val_metric)
+        
+        # Check for rollback if enabled
+        rollback_performed = self._check_and_perform_rollback(epoch, val_metric)
+        if rollback_performed:
+            update_info['rollback_performed'] = True
+            update_info['rebuild_optimizer'] = True
+            return update_info
+        
+        # Create snapshot for potential future rollback
+        if len(self.performance_history) >= 3:  # Start tracking after some epochs
+            self.rollback_snapshots.append({
+                'epoch': epoch,
+                'unfrozen_layers': self.unfrozen_layers.copy(),
+                'layers_in_warmup': {k: v.copy() for k, v in self.layers_in_warmup.items()},
+                'performance': val_metric
+            })
+            
+            # Keep only recent snapshots
+            if len(self.rollback_snapshots) > 10:
+                self.rollback_snapshots.pop(0)
         
         # Update warmup progress
         warmup_updates = {}
@@ -276,6 +301,59 @@ class AdvancedFreezingManager:
             update_info['rebuild_optimizer'] = True
         
         return update_info
+    
+    def _check_and_perform_rollback(self, epoch, val_metric):
+        """Check if rollback is needed and perform it."""
+        if not self.enable_rollback or len(self.performance_history) < 3:
+            return False
+        
+        # Check for performance decline
+        recent_performance = self.performance_history[-3:]
+        if len(recent_performance) >= 2:
+            recent_decline = recent_performance[-1] < recent_performance[-2] - self.performance_threshold
+            if recent_decline:
+                self.performance_decline_count += 1
+            else:
+                self.performance_decline_count = 0
+        
+        # Perform rollback if decline persists
+        if self.performance_decline_count >= self.rollback_patience and self.rollback_snapshots:
+            # Find best snapshot to rollback to
+            best_snapshot = max(self.rollback_snapshots, key=lambda x: x['performance'])
+            
+            if best_snapshot['performance'] > val_metric:
+                logger.info(f"[ADVANCED_FREEZING] Performance rollback triggered!")
+                logger.info(f"   - Current performance: {val_metric:.6f}")
+                logger.info(f"   - Rolling back to epoch {best_snapshot['epoch']} performance: {best_snapshot['performance']:.6f}")
+                
+                # Restore state
+                self._restore_from_snapshot(best_snapshot)
+                self.performance_decline_count = 0
+                self.rollback_snapshots.clear()  # Clear snapshots after rollback
+                
+                logger.info(f"[ADVANCED_FREEZING] Rollback completed")
+                return True
+        
+        return False
+    
+    def _restore_from_snapshot(self, snapshot):
+        """Restore freezing state from a snapshot."""
+        # Re-freeze all backbone layers first
+        for param in self.actual_model.backbone.parameters():
+            param.requires_grad = False
+        
+        # Restore unfrozen layers
+        self.unfrozen_layers = snapshot['unfrozen_layers'].copy()
+        for layer_name in self.unfrozen_layers:
+            if layer_name in self.layer_groups:
+                layer_info = self.layer_groups[layer_name]
+                for param in layer_info['module'].parameters():
+                    param.requires_grad = True
+        
+        # Restore warmup state
+        self.layers_in_warmup = {k: v.copy() for k, v in snapshot['layers_in_warmup'].items()}
+        
+        logger.info(f"[ADVANCED_FREEZING] Restored {len(self.unfrozen_layers)} unfrozen layers: {sorted(self.unfrozen_layers)}")
     
     def emergency_unfreeze(self, min_layers=1, use_gradual=True):
         """Emergency unfreezing when normal criteria aren't met."""
