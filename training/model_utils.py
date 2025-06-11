@@ -30,8 +30,6 @@ from .freezing import (
     setup_freezing_strategy
 )
 
-from .optimizer_utils import *
-
 # Initialize logger
 logger = logging.getLogger(__name__)
 
@@ -43,6 +41,60 @@ __all__ = [
     'setup_freezing_strategy',
     'create_model'
 ]
+
+def get_model_config():
+    """Get model configuration - placeholder function."""
+    return {}
+
+
+def get_optimizer(model, args):
+    """Create optimizer based on arguments."""
+    if args.optimizer == 'adamw':
+        return optim.AdamW(
+            model.parameters(), 
+            lr=args.lr, 
+            weight_decay=args.weight_decay
+        )
+    elif args.optimizer == 'adam':
+        return optim.Adam(
+            model.parameters(), 
+            lr=args.lr, 
+            weight_decay=args.weight_decay
+        )
+    elif args.optimizer == 'sgd':
+        return optim.SGD(
+            model.parameters(), 
+            lr=args.lr, 
+            weight_decay=args.weight_decay,
+            momentum=getattr(args, 'momentum', 0.9)
+        )
+    else:
+        raise ValueError(f"Unsupported optimizer: {args.optimizer}")
+
+
+def get_scheduler(optimizer, args):
+    """Create learning rate scheduler based on arguments."""
+    if args.scheduler == 'cosine':
+        return CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=getattr(args, 'min_lr', 1e-6))
+    elif args.scheduler == 'onecycle':
+        return OneCycleLR(optimizer, max_lr=args.lr, total_steps=args.epochs)
+    elif args.scheduler == 'step':
+        return StepLR(optimizer, step_size=getattr(args, 'step_size', 10), gamma=getattr(args, 'gamma', 0.1))
+    elif args.scheduler == 'exponential':
+        return ExponentialLR(optimizer, gamma=getattr(args, 'gamma', 0.95))
+    elif args.scheduler == 'reduce_on_plateau':
+        return ReduceLROnPlateau(
+            optimizer, 
+            mode='max', 
+            factor=getattr(args, 'gamma', 0.5),
+            patience=getattr(args, 'plateau_patience', 5),
+            min_lr=getattr(args, 'min_lr', 1e-6)
+        )
+    elif args.scheduler == 'none':
+        return None
+    else:
+        raise ValueError(f"Unsupported scheduler: {args.scheduler}")
+
 
 def create_model(args, vocab_sizes, device, num_gpus):
     """Create and initialize the model."""
