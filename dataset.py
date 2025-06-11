@@ -931,15 +931,67 @@ class SoccerNetMVFoulDataset(Dataset):
             final_clips_tensor = torch.zeros((num_expected_views, 3, self.frames_per_clip, self.target_height, self.target_width))
         elif num_successfully_loaded < num_expected_views:
             print(f"Warning: Loaded {num_successfully_loaded}/{num_expected_views} views for action {action_info['action_id']}. Padding with dummies.")
-            dummy_view_clip = torch.zeros((3, self.frames_per_clip, self.target_height, self.target_width)) # C, T, H, W
-            if self.transform and clips_for_action: # try to match transformed shape
-                 dummy_view_clip = torch.zeros_like(clips_for_action[0])
-
+            
+            # CRITICAL: First standardize existing clips to ensure consistent temporal dimension
+            target_frames = self.frames_per_clip
+            standardized_clips = []
+            
+            for clip in clips_for_action:
+                current_frames = clip.shape[1]  # Assuming shape is [C, T, H, W]
+                
+                if current_frames != target_frames:
+                    if current_frames > target_frames:
+                        # Crop: center crop to target length
+                        start_idx = (current_frames - target_frames) // 2
+                        clip = clip[:, start_idx:start_idx + target_frames, :, :]
+                    else:
+                        # Pad: repeat boundary frames
+                        padding_needed = target_frames - current_frames
+                        left_pad = padding_needed // 2
+                        right_pad = padding_needed - left_pad
+                        
+                        left_padding = clip[:, :1, :, :].repeat(1, left_pad, 1, 1)
+                        right_padding = clip[:, -1:, :, :].repeat(1, right_pad, 1, 1)
+                        clip = torch.cat([left_padding, clip, right_padding], dim=1)
+                
+                standardized_clips.append(clip)
+            
+            # Create dummy clip with standardized dimensions
+            dummy_view_clip = torch.zeros((3, target_frames, self.target_height, self.target_width))
+            
+            # Add dummy clips to reach expected number of views
             for _ in range(num_expected_views - num_successfully_loaded):
-                clips_for_action.append(dummy_view_clip)
-            final_clips_tensor = torch.stack(clips_for_action)
+                standardized_clips.append(dummy_view_clip)
+            
+            final_clips_tensor = torch.stack(standardized_clips)
         else:
-            final_clips_tensor = torch.stack(clips_for_action)
+            # CRITICAL: Ensure all clips have the same temporal dimension before stacking
+            # This handles cases where augmentations like VariableLengthAugmentation
+            # may have produced slightly different lengths across views
+            target_frames = self.frames_per_clip
+            standardized_clips = []
+            
+            for clip in clips_for_action:
+                current_frames = clip.shape[1]  # Assuming shape is [C, T, H, W]
+                
+                if current_frames != target_frames:
+                    if current_frames > target_frames:
+                        # Crop: center crop to target length
+                        start_idx = (current_frames - target_frames) // 2
+                        clip = clip[:, start_idx:start_idx + target_frames, :, :]
+                    else:
+                        # Pad: repeat boundary frames
+                        padding_needed = target_frames - current_frames
+                        left_pad = padding_needed // 2
+                        right_pad = padding_needed - left_pad
+                        
+                        left_padding = clip[:, :1, :, :].repeat(1, left_pad, 1, 1)
+                        right_padding = clip[:, -1:, :, :].repeat(1, right_pad, 1, 1)
+                        clip = torch.cat([left_padding, clip, right_padding], dim=1)
+                
+                standardized_clips.append(clip)
+            
+            final_clips_tensor = torch.stack(standardized_clips)
 
         # Return both original and standardized indices in a dictionary
         return {
