@@ -353,8 +353,14 @@ def process_config(args):
         if args.backbone_name == 'r2plus1d_18':  # Default ResNet3D name
             args.backbone_name = 'mvit_base_16x4'
             logger.info(f"🔄 Updated backbone_name to '{args.backbone_name}' for MViT backbone_type")
+        
+        # MViT requires square input dimensions for positional encoding
+        if args.img_width != args.img_height:
+            logger.warning(f"⚠️  MViT requires square input dimensions. Changing img_width from {args.img_width} to {args.img_height}")
+            args.img_width = args.img_height  # Make it square (224x224)
     
     logger.info(f"🏗️  Using {args.backbone_type.upper()} backbone: {args.backbone_name}")
+    logger.info(f"📐 Input dimensions: {args.img_height}x{args.img_width} ({args.frames_per_clip} frames)")
     
     # Adjust total epochs for gradual fine-tuning
     if args.gradual_finetuning:
