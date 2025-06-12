@@ -440,11 +440,11 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
             
             for event in key_averages:
                 if "data_loading" in event.key:
-                    data_loading_time = event.cuda_time_total
+                    data_loading_time = event.cuda_time
                 elif "model_forward" in event.key:
-                    compute_time = event.cuda_time_total
+                    compute_time = event.cuda_time
                 elif "gpu_augmentation" in event.key:
-                    augmentation_time = event.cuda_time_total
+                    augmentation_time = event.cuda_time
             
             total_time = data_loading_time + compute_time + augmentation_time
             if total_time > 0:
