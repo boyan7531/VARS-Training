@@ -122,27 +122,76 @@ def unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=2):
     # Handle DataParallel wrapper
     actual_model = model.module if hasattr(model, 'module') else model
     
-    # Get the ResNet3D backbone
-    backbone = actual_model.backbone.backbone
+    # Detect model type and get appropriate backbone reference
+    if hasattr(actual_model.backbone, 'backbone'):
+        # ResNet3D model: actual_model.backbone.backbone
+        backbone = actual_model.backbone.backbone
+        model_type = "resnet3d"
+    else:
+        # MViT model: actual_model.backbone directly
+        backbone = actual_model.backbone
+        model_type = "mvit"
     
-    # For ResNet architectures, we want to unfreeze the last few layers
-    # ResNet3D structure: conv1, bn1, relu, maxpool, layer1, layer2, layer3, layer4, avgpool
-    layers_to_unfreeze = []
+    logger.info(f"[UNFREEZE] Detected {model_type} model architecture")
     
-    if hasattr(backbone, 'layer4'):
-        layers_to_unfreeze.append(backbone.layer4)
-    if hasattr(backbone, 'layer3') and num_blocks_to_unfreeze > 1:
-        layers_to_unfreeze.append(backbone.layer3)
-    if hasattr(backbone, 'layer2') and num_blocks_to_unfreeze > 2:
-        layers_to_unfreeze.append(backbone.layer2)
-    
-    unfrozen_params = 0
-    for layer in layers_to_unfreeze:
-        for param in layer.parameters():
-            param.requires_grad = True
-            unfrozen_params += param.numel()
-    
-    logger.info(f"[UNFREEZE] Unfroze last {len(layers_to_unfreeze)} backbone layers ({unfrozen_params:,} parameters)")
+    if model_type == "resnet3d":
+        # For ResNet architectures, we want to unfreeze the last few layers
+        # ResNet3D structure: conv1, bn1, relu, maxpool, layer1, layer2, layer3, layer4, avgpool
+        layers_to_unfreeze = []
+        
+        if hasattr(backbone, 'layer4'):
+            layers_to_unfreeze.append(backbone.layer4)
+        if hasattr(backbone, 'layer3') and num_blocks_to_unfreeze > 1:
+            layers_to_unfreeze.append(backbone.layer3)
+        if hasattr(backbone, 'layer2') and num_blocks_to_unfreeze > 2:
+            layers_to_unfreeze.append(backbone.layer2)
+        
+        unfrozen_params = 0
+        for layer in layers_to_unfreeze:
+            for param in layer.parameters():
+                param.requires_grad = True
+                unfrozen_params += param.numel()
+        
+        logger.info(f"[UNFREEZE] Unfroze last {len(layers_to_unfreeze)} ResNet layers ({unfrozen_params:,} parameters)")
+        
+    elif model_type == "mvit":
+        # For MViT architectures, unfreeze the last N transformer blocks
+        # MViT has blocks attribute containing the transformer layers
+        unfrozen_params = 0
+        
+        if hasattr(backbone, 'blocks'):
+            # Unfreeze last N blocks
+            total_blocks = len(backbone.blocks)
+            blocks_to_unfreeze = min(num_blocks_to_unfreeze, total_blocks)
+            
+            # Unfreeze from the end backwards
+            for i in range(total_blocks - blocks_to_unfreeze, total_blocks):
+                for param in backbone.blocks[i].parameters():
+                    param.requires_grad = True
+                    unfrozen_params += param.numel()
+            
+            # Also unfreeze the final norm layer if it exists
+            if hasattr(backbone, 'norm') and backbone.norm is not None:
+                for param in backbone.norm.parameters():
+                    param.requires_grad = True
+                    unfrozen_params += param.numel()
+                    
+            # Also unfreeze the head if it exists
+            if hasattr(backbone, 'head') and backbone.head is not None:
+                for param in backbone.head.parameters():
+                    param.requires_grad = True
+                    unfrozen_params += param.numel()
+            
+            logger.info(f"[UNFREEZE] Unfroze last {blocks_to_unfreeze} MViT blocks + norm + head ({unfrozen_params:,} parameters)")
+            
+        else:
+            # Fallback: unfreeze all backbone parameters
+            logger.warning("[UNFREEZE] MViT blocks not found, unfreezing entire backbone")
+            for param in backbone.parameters():
+                param.requires_grad = True
+                unfrozen_params += param.numel()
+            
+            logger.info(f"[UNFREEZE] Unfroze entire MViT backbone ({unfrozen_params:,} parameters)")
 
 
 def setup_discriminative_optimizer(model, head_lr, backbone_lr):
