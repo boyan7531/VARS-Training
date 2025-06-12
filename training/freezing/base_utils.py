@@ -111,10 +111,25 @@ def freeze_backbone(model):
     # Handle DataParallel wrapper
     actual_model = model.module if hasattr(model, 'module') else model
     
-    for param in actual_model.backbone.parameters():
-        param.requires_grad = False
+    # Handle different model structures
+    if hasattr(actual_model, 'mvit_processor'):
+        # Optimized MViT model - backbone is inside mvit_processor
+        backbone = actual_model.mvit_processor.backbone
+        logger.info("[FREEZE] Detected optimized MViT model structure")
+    elif hasattr(actual_model, 'backbone'):
+        # Standard model structure (ResNet3D or standard MViT)
+        backbone = actual_model.backbone
+        logger.info("[FREEZE] Detected standard model structure")
+    else:
+        raise AttributeError("Model does not have accessible backbone (neither 'backbone' nor 'mvit_processor.backbone' found)")
     
-    logger.info("[FREEZE] Backbone frozen - only training classification heads")
+    # Freeze backbone parameters
+    frozen_params = 0
+    for param in backbone.parameters():
+        param.requires_grad = False
+        frozen_params += param.numel()
+    
+    logger.info(f"[FREEZE] Backbone frozen - {frozen_params:,} parameters frozen, only training classification heads")
 
 
 def unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=2):
@@ -122,15 +137,31 @@ def unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=2):
     # Handle DataParallel wrapper
     actual_model = model.module if hasattr(model, 'module') else model
     
-    # Detect model type and get appropriate backbone reference
-    if hasattr(actual_model.backbone, 'backbone'):
-        # ResNet3D model: actual_model.backbone.backbone
-        backbone = actual_model.backbone.backbone
-        model_type = "resnet3d"
+    # Handle different model structures and get appropriate backbone reference
+    if hasattr(actual_model, 'mvit_processor'):
+        # Optimized MViT model - backbone is inside mvit_processor
+        base_backbone = actual_model.mvit_processor.backbone
+        logger.info("[UNFREEZE] Detected optimized MViT model structure")
+        
+        # Detect the actual backbone type
+        if hasattr(base_backbone, 'backbone'):
+            # This might be a ResNet3D backbone inside the processor
+            backbone = base_backbone.backbone
+            model_type = "resnet3d"
+        else:
+            # This is directly an MViT backbone
+            backbone = base_backbone
+            model_type = "mvit"
     else:
-        # MViT model: actual_model.backbone directly
-        backbone = actual_model.backbone
-        model_type = "mvit"
+        # Standard model structure
+        if hasattr(actual_model.backbone, 'backbone'):
+            # ResNet3D model: actual_model.backbone.backbone
+            backbone = actual_model.backbone.backbone
+            model_type = "resnet3d"
+        else:
+            # MViT model: actual_model.backbone directly
+            backbone = actual_model.backbone
+            model_type = "mvit"
     
     logger.info(f"[UNFREEZE] Detected {model_type} model architecture")
     
@@ -216,8 +247,18 @@ def setup_discriminative_optimizer(model, head_lr, backbone_lr):
         'name': 'heads'
     })
     
+    # Handle different model structures for backbone parameters
+    if hasattr(actual_model, 'mvit_processor'):
+        # Optimized MViT model - backbone is inside mvit_processor
+        backbone = actual_model.mvit_processor.backbone
+    elif hasattr(actual_model, 'backbone'):
+        # Standard model structure
+        backbone = actual_model.backbone
+    else:
+        raise AttributeError("Model does not have accessible backbone")
+    
     # Backbone parameters with lower learning rate (only unfrozen ones)
-    backbone_params = [p for p in actual_model.backbone.parameters() if p.requires_grad]
+    backbone_params = [p for p in backbone.parameters() if p.requires_grad]
     
     if backbone_params:
         param_groups.append({

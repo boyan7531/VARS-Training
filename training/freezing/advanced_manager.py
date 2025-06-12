@@ -107,7 +107,17 @@ class AdvancedFreezingManager:
         """Freeze all backbone parameters with enhanced tracking."""
         frozen_params = 0
         
-        for param in self.actual_model.backbone.parameters():
+        # Handle different model structures
+        if hasattr(self.actual_model, 'mvit_processor'):
+            # Optimized MViT model - backbone is inside mvit_processor
+            backbone = self.actual_model.mvit_processor.backbone
+        elif hasattr(self.actual_model, 'backbone'):
+            # Standard model structure
+            backbone = self.actual_model.backbone
+        else:
+            raise AttributeError("Model does not have accessible backbone")
+        
+        for param in backbone.parameters():
             param.requires_grad = False
             frozen_params += param.numel()
         
@@ -338,8 +348,18 @@ class AdvancedFreezingManager:
     
     def _restore_from_snapshot(self, snapshot):
         """Restore freezing state from a snapshot."""
+        # Handle different model structures
+        if hasattr(self.actual_model, 'mvit_processor'):
+            # Optimized MViT model - backbone is inside mvit_processor
+            backbone = self.actual_model.mvit_processor.backbone
+        elif hasattr(self.actual_model, 'backbone'):
+            # Standard model structure
+            backbone = self.actual_model.backbone
+        else:
+            raise AttributeError("Model does not have accessible backbone")
+        
         # Re-freeze all backbone layers first
-        for param in self.actual_model.backbone.parameters():
+        for param in backbone.parameters():
             param.requires_grad = False
         
         # Restore unfrozen layers
@@ -399,8 +419,18 @@ class AdvancedFreezingManager:
     
     def log_comprehensive_status(self, epoch):
         """Log comprehensive status."""
-        total_params = sum(p.numel() for p in self.actual_model.backbone.parameters())
-        unfrozen_params = sum(p.numel() for p in self.actual_model.backbone.parameters() if p.requires_grad)
+        # Handle different model structures
+        if hasattr(self.actual_model, 'mvit_processor'):
+            # Optimized MViT model - backbone is inside mvit_processor
+            backbone = self.actual_model.mvit_processor.backbone
+        elif hasattr(self.actual_model, 'backbone'):
+            # Standard model structure
+            backbone = self.actual_model.backbone
+        else:
+            raise AttributeError("Model does not have accessible backbone")
+        
+        total_params = sum(p.numel() for p in backbone.parameters())
+        unfrozen_params = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
         
         logger.info(f"[ADVANCED_FREEZING] Epoch {epoch} status:")
         logger.info(f"  🔓 Unfrozen layers: {sorted(self.unfrozen_layers)}")

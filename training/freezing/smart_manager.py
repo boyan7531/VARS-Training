@@ -35,15 +35,40 @@ class SmartFreezingManager:
     def get_backbone_layers(self):
         """Get ordered list of backbone layers for progressive unfreezing."""
         actual_model = self.model.module if hasattr(self.model, 'module') else self.model
-        backbone = actual_model.backbone.backbone
+        
+        # Handle different model structures
+        if hasattr(actual_model, 'mvit_processor'):
+            # Optimized MViT model - backbone is inside mvit_processor
+            backbone = actual_model.mvit_processor.backbone
+        elif hasattr(actual_model, 'backbone'):
+            # Standard model structure
+            backbone = actual_model.backbone
+            # For ResNet3D models, the actual backbone is one level deeper
+            if hasattr(backbone, 'backbone'):
+                backbone = backbone.backbone
+        else:
+            raise AttributeError("Model does not have accessible backbone")
         
         layers = []
-        # ResNet3D layer order: conv1, bn1, layer1, layer2, layer3, layer4
-        if hasattr(backbone, 'layer4'): layers.append(('layer4', backbone.layer4))
-        if hasattr(backbone, 'layer3'): layers.append(('layer3', backbone.layer3))
-        if hasattr(backbone, 'layer2'): layers.append(('layer2', backbone.layer2))
-        if hasattr(backbone, 'layer1'): layers.append(('layer1', backbone.layer1))
-        if hasattr(backbone, 'conv1'): layers.append(('conv1', backbone.conv1))
+        
+        # Detect model type and get appropriate layers
+        if hasattr(backbone, 'layer4'):
+            # ResNet3D architecture
+            if hasattr(backbone, 'layer4'): layers.append(('layer4', backbone.layer4))
+            if hasattr(backbone, 'layer3'): layers.append(('layer3', backbone.layer3))
+            if hasattr(backbone, 'layer2'): layers.append(('layer2', backbone.layer2))
+            if hasattr(backbone, 'layer1'): layers.append(('layer1', backbone.layer1))
+            if hasattr(backbone, 'conv1'): layers.append(('conv1', backbone.conv1))
+        elif hasattr(backbone, 'blocks'):
+            # MViT architecture - use last few transformer blocks
+            total_blocks = len(backbone.blocks)
+            # Add blocks in reverse order (last blocks first for unfreezing)
+            for i in range(min(4, total_blocks)):  # Up to 4 blocks
+                block_idx = total_blocks - 1 - i
+                layers.append((f'block_{block_idx}', backbone.blocks[block_idx]))
+        else:
+            logger.warning("[SMART_FREEZE] Unknown backbone architecture, will use entire backbone")
+            layers.append(('entire_backbone', backbone))
         
         return layers
     
@@ -52,7 +77,17 @@ class SmartFreezingManager:
         actual_model = self.model.module if hasattr(self.model, 'module') else self.model
         frozen_params = 0
         
-        for param in actual_model.backbone.parameters():
+        # Handle different model structures
+        if hasattr(actual_model, 'mvit_processor'):
+            # Optimized MViT model - backbone is inside mvit_processor
+            backbone = actual_model.mvit_processor.backbone
+        elif hasattr(actual_model, 'backbone'):
+            # Standard model structure
+            backbone = actual_model.backbone
+        else:
+            raise AttributeError("Model does not have accessible backbone")
+        
+        for param in backbone.parameters():
             param.requires_grad = False
             frozen_params += param.numel()
             
