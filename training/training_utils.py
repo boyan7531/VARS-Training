@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import torch.optim.lr_scheduler
 import time
 import logging
+import contextlib
 from sklearn.metrics import f1_score
 from torch.profiler import profile, record_function, ProfilerActivity
 
@@ -209,7 +210,7 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
         
         # Action type loss is typically less imbalanced, so standard CE is fine.
         loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
-        
+    
     elif loss_function == 'weighted':
         severity_class_weights = loss_config.get('severity_class_weights') # Should be provided for this option
         loss_sev = nn.CrossEntropyLoss(
@@ -303,19 +304,12 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
         if max_batches is not None and (i + 1) > max_batches:
             break
         
-        # Profile data loading
-        if prof is not None:
-            with record_function("data_loading"):
-                # Move all tensors in the batch to the device
-                for key in batch_data:
-                    if isinstance(batch_data[key], torch.Tensor):
-                        batch_data[key] = batch_data[key].to(device, non_blocking=True)
-        else:
+        with record_function("data_loading") if prof else contextlib.suppress():
             # Move all tensors in the batch to the device
             for key in batch_data:
                 if isinstance(batch_data[key], torch.Tensor):
                     batch_data[key] = batch_data[key].to(device, non_blocking=True)
-                
+
         severity_labels = batch_data["label_severity"]
         action_labels = batch_data["label_type"]
         
@@ -327,20 +321,7 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
         # Use autocast for mixed precision if scaler is provided
         if scaler is not None:
             with torch.amp.autocast('cuda'):
-                # Profile GPU augmentation
-                if prof is not None:
-                    with record_function("gpu_augmentation"):
-                        # Apply GPU augmentation if provided
-                        if gpu_augmentation is not None:
-                            # Check if this is a severity-aware augmentation
-                            if hasattr(gpu_augmentation, 'severity_multipliers'):
-                                # This is a SeverityAwareGPUAugmentation
-                                clips = gpu_augmentation(batch_data["clips"], batch_data["label_severity"])
-                                batch_data["clips"] = clips
-                            else:
-                                # Standard augmentation
-                                batch_data["clips"] = gpu_augmentation(batch_data["clips"])
-                else:
+                with record_function("gpu_augmentation") if prof else contextlib.suppress():
                     # Apply GPU augmentation if provided
                     if gpu_augmentation is not None:
                         # Check if this is a severity-aware augmentation
@@ -351,33 +332,14 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                         else:
                             # Standard augmentation
                             batch_data["clips"] = gpu_augmentation(batch_data["clips"])
-                
-                # Profile model forward pass
-                if prof is not None:
-                    with record_function("model_forward"):
-                        sev_logits, act_logits = model(batch_data)
-                        total_loss, _, _ = calculate_multitask_loss(
-                            sev_logits, act_logits, batch_data, loss_config
-                        )
-                else:
+                        
+                with record_function("model_forward") if prof else contextlib.suppress():
                     sev_logits, act_logits = model(batch_data)
                     total_loss, _, _ = calculate_multitask_loss(
                         sev_logits, act_logits, batch_data, loss_config
                     )
 
-            # Profile backward pass
-            if prof is not None:
-                with record_function("loss_backward"):
-                    scaler.scale(total_loss).backward()
-                    
-                    # Gradient clipping
-                    if gradient_clip_norm > 0:
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
-                    
-                    scaler.step(optimizer)
-                    scaler.update()
-            else:
+            with record_function("loss_backward") if prof else contextlib.suppress():
                 scaler.scale(total_loss).backward()
                 
                 # Gradient clipping
@@ -546,10 +508,11 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
             if max_batches is not None and (i + 1) > max_batches:
                 break
             
-            # Move all tensors in the batch to the device
-            for key in batch_data:
-                if isinstance(batch_data[key], torch.Tensor):
-                    batch_data[key] = batch_data[key].to(device, non_blocking=True)
+            with record_function("data_loading") if prof else contextlib.suppress():
+                # Move all tensors in the batch to the device
+                for key in batch_data:
+                    if isinstance(batch_data[key], torch.Tensor):
+                        batch_data[key] = batch_data[key].to(device, non_blocking=True)
                 
             severity_labels = batch_data["label_severity"]
             action_labels = batch_data["label_type"]
