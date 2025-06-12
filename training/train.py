@@ -70,17 +70,12 @@ def setup_device_and_scaling(args):
     if num_gpus > 1:
         logger.info(f"Found {num_gpus} GPUs! Using multi-GPU training.")
         
-        # Adjust batch size for multi-GPU if not explicitly set
-        if args.batch_size == 8 and not args.force_batch_size:  # Default value
-            recommended_batch_size = min(32, args.batch_size * num_gpus * 2)
-            logger.info(f"Automatically scaling batch size from {args.batch_size} to {recommended_batch_size} for multi-GPU")
-            args.batch_size = recommended_batch_size
+        # Disable automatic batch size scaling to prevent bottlenecks
+        # User explicitly set batch_size=8 to fix gradient computation bottleneck
+        logger.info(f"Keeping user-specified batch size: {args.batch_size} (automatic scaling disabled)")
         
-        # Adjust learning rate for larger effective batch size (linear scaling rule)
-        if args.lr == 2e-4:  # Default value
-            lr_scale = args.batch_size / 8  # Scale from base batch size of 8
-            args.lr = args.lr * lr_scale
-            logger.info(f"Scaled learning rate to {args.lr:.6f} for larger batch size")
+        # Keep original learning rate since we're not scaling batch size
+        logger.info(f"Using original learning rate: {args.lr:.6f} (no scaling needed for batch_size={args.batch_size})")
     else:
         logger.info("Using single GPU training.")
     
