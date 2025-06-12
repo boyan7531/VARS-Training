@@ -570,7 +570,8 @@ def main():
                     gradient_clip_norm=args.gradient_clip_norm, 
                     memory_cleanup_interval=args.memory_cleanup_interval,
                     scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
-                    gpu_augmentation=gpu_augmentation
+                    gpu_augmentation=gpu_augmentation,
+                    enable_profiling=(epoch == 0)  # Enable profiling only for first epoch
                 )
                 
                 # Check if batch size was reduced and update dataloader if needed
@@ -603,7 +604,8 @@ def main():
                 gradient_clip_norm=args.gradient_clip_norm, 
                 memory_cleanup_interval=args.memory_cleanup_interval,
                 scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
-                gpu_augmentation=gpu_augmentation
+                gpu_augmentation=gpu_augmentation,
+                enable_profiling=(epoch == 0)  # Enable profiling only for first epoch
             )
         
         # Reset GradScaler parameters after initial calibration period (typically 100-500 steps)

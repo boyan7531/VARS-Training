@@ -11,6 +11,7 @@ import torch.optim.lr_scheduler
 import time
 import logging
 from sklearn.metrics import f1_score
+from torch.profiler import profile, record_function, ProfilerActivity
 
 logger = logging.getLogger(__name__)
 
@@ -264,8 +265,8 @@ class EarlyStopping:
 
 def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, scaler=None, 
                    max_batches=None, gradient_clip_norm=1.0, memory_cleanup_interval=20, scheduler=None,
-                   gpu_augmentation=None):
-    """Train the model for one epoch with optional GPU-based augmentation."""
+                   gpu_augmentation=None, enable_profiling=False):
+    """Train the model for one epoch with optional GPU-based augmentation and profiling."""
     model.train()
     running_loss = 0.0
     running_sev_acc = 0.0
@@ -287,14 +288,33 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
             actual_loader = getattr(dataloader, 'dataloader', dataloader)
             total_batches = len(actual_loader) if hasattr(actual_loader, '__len__') else 1000  # fallback
     
+    # Initialize profiler if enabled
+    prof = None
+    if enable_profiling:
+        prof = profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], 
+            record_shapes=True, 
+            profile_memory=True
+        )
+        prof.start()
+        logger.info("🔍 PyTorch Profiler started - will profile first 10 batches")
+    
     for i, batch_data in enumerate(dataloader):
         if max_batches is not None and (i + 1) > max_batches:
             break
         
-        # Move all tensors in the batch to the device
-        for key in batch_data:
-            if isinstance(batch_data[key], torch.Tensor):
-                batch_data[key] = batch_data[key].to(device, non_blocking=True)
+        # Profile data loading
+        if prof is not None:
+            with record_function("data_loading"):
+                # Move all tensors in the batch to the device
+                for key in batch_data:
+                    if isinstance(batch_data[key], torch.Tensor):
+                        batch_data[key] = batch_data[key].to(device, non_blocking=True)
+        else:
+            # Move all tensors in the batch to the device
+            for key in batch_data:
+                if isinstance(batch_data[key], torch.Tensor):
+                    batch_data[key] = batch_data[key].to(device, non_blocking=True)
                 
         severity_labels = batch_data["label_severity"]
         action_labels = batch_data["label_type"]
@@ -307,31 +327,66 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
         # Use autocast for mixed precision if scaler is provided
         if scaler is not None:
             with torch.amp.autocast('cuda'):
-                # Apply GPU augmentation if provided
-                if gpu_augmentation is not None:
-                    # Check if this is a severity-aware augmentation
-                    if hasattr(gpu_augmentation, 'severity_multipliers'):
-                        # This is a SeverityAwareGPUAugmentation
-                        clips = gpu_augmentation(batch_data["clips"], batch_data["label_severity"])
-                        batch_data["clips"] = clips
-                    else:
-                        # Standard augmentation
-                        batch_data["clips"] = gpu_augmentation(batch_data["clips"])
-                        
-                sev_logits, act_logits = model(batch_data)
-                total_loss, _, _ = calculate_multitask_loss(
-                    sev_logits, act_logits, batch_data, loss_config
-                )
+                # Profile GPU augmentation
+                if prof is not None:
+                    with record_function("gpu_augmentation"):
+                        # Apply GPU augmentation if provided
+                        if gpu_augmentation is not None:
+                            # Check if this is a severity-aware augmentation
+                            if hasattr(gpu_augmentation, 'severity_multipliers'):
+                                # This is a SeverityAwareGPUAugmentation
+                                clips = gpu_augmentation(batch_data["clips"], batch_data["label_severity"])
+                                batch_data["clips"] = clips
+                            else:
+                                # Standard augmentation
+                                batch_data["clips"] = gpu_augmentation(batch_data["clips"])
+                else:
+                    # Apply GPU augmentation if provided
+                    if gpu_augmentation is not None:
+                        # Check if this is a severity-aware augmentation
+                        if hasattr(gpu_augmentation, 'severity_multipliers'):
+                            # This is a SeverityAwareGPUAugmentation
+                            clips = gpu_augmentation(batch_data["clips"], batch_data["label_severity"])
+                            batch_data["clips"] = clips
+                        else:
+                            # Standard augmentation
+                            batch_data["clips"] = gpu_augmentation(batch_data["clips"])
+                
+                # Profile model forward pass
+                if prof is not None:
+                    with record_function("model_forward"):
+                        sev_logits, act_logits = model(batch_data)
+                        total_loss, _, _ = calculate_multitask_loss(
+                            sev_logits, act_logits, batch_data, loss_config
+                        )
+                else:
+                    sev_logits, act_logits = model(batch_data)
+                    total_loss, _, _ = calculate_multitask_loss(
+                        sev_logits, act_logits, batch_data, loss_config
+                    )
 
-            scaler.scale(total_loss).backward()
-            
-            # Gradient clipping
-            if gradient_clip_norm > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
-            
-            scaler.step(optimizer)
-            scaler.update()
+            # Profile backward pass
+            if prof is not None:
+                with record_function("loss_backward"):
+                    scaler.scale(total_loss).backward()
+                    
+                    # Gradient clipping
+                    if gradient_clip_norm > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
+                    
+                    scaler.step(optimizer)
+                    scaler.update()
+            else:
+                scaler.scale(total_loss).backward()
+                
+                # Gradient clipping
+                if gradient_clip_norm > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
+                
+                scaler.step(optimizer)
+                scaler.update()
             
             # Stepping the OneCycleLR scheduler after optimizer.step()
             if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
@@ -364,6 +419,60 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
             # Stepping the OneCycleLR scheduler after optimizer.step()
             if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
                 scheduler.step()
+
+        # Stop profiling after 10 batches and print results
+        if prof is not None and i >= 9:  # Profile first 10 batches (0-9)
+            prof.stop()
+            
+            # Print detailed timing breakdown
+            logger.info("🔍 PROFILING RESULTS - Data Loading vs Compute Time Analysis:")
+            logger.info("=" * 80)
+            
+            # Get timing table sorted by CUDA time
+            timing_table = prof.key_averages().table(sort_by="cuda_time_total", row_limit=15)
+            logger.info(timing_table)
+            
+            # Calculate timing ratios
+            key_averages = prof.key_averages()
+            data_loading_time = 0
+            compute_time = 0
+            augmentation_time = 0
+            
+            for event in key_averages:
+                if "data_loading" in event.key:
+                    data_loading_time = event.cuda_time_total
+                elif "model_forward" in event.key:
+                    compute_time = event.cuda_time_total
+                elif "gpu_augmentation" in event.key:
+                    augmentation_time = event.cuda_time_total
+            
+            total_time = data_loading_time + compute_time + augmentation_time
+            if total_time > 0:
+                data_pct = (data_loading_time / total_time) * 100
+                compute_pct = (compute_time / total_time) * 100
+                aug_pct = (augmentation_time / total_time) * 100
+                
+                logger.info("⚡ PERFORMANCE BREAKDOWN:")
+                logger.info(f"   Data Loading:     {data_loading_time/1000:.1f}ms ({data_pct:.1f}%)")
+                logger.info(f"   GPU Augmentation: {augmentation_time/1000:.1f}ms ({aug_pct:.1f}%)")
+                logger.info(f"   Model Forward:    {compute_time/1000:.1f}ms ({compute_pct:.1f}%)")
+                logger.info("=" * 80)
+                
+                # Diagnosis
+                if data_pct > 30:
+                    logger.warning("🚨 DATA LOADING BOTTLENECK DETECTED!")
+                    logger.warning("   Recommendations:")
+                    logger.warning("   - Increase --num_workers (try 12-16 for dual RTX 4090)")
+                    logger.warning("   - Increase --prefetch_factor (try 8-16)")
+                    logger.warning("   - Enable --gpu_augmentation to move processing off CPU")
+                    logger.warning("   - Reduce augmentation complexity")
+                elif data_pct > 15:
+                    logger.warning("⚠️  Data loading taking significant time (>15%)")
+                    logger.warning("   Consider increasing num_workers or prefetch_factor")
+                else:
+                    logger.info("✅ Good data loading performance (<15% of total time)")
+            
+            prof = None  # Disable profiling for remaining batches
 
         # Debug removed for cleaner training logs
 
