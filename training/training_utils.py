@@ -503,52 +503,50 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
             actual_loader = getattr(dataloader, 'dataloader', dataloader)
             total_batches = len(actual_loader) if hasattr(actual_loader, '__len__') else 1000  # fallback
     
-    with torch.no_grad():
-        for i, batch_data in enumerate(dataloader):
-            if max_batches is not None and (i + 1) > max_batches:
-                break
-            
-            with record_function("data_loading") if prof else contextlib.suppress():
-                # Move all tensors in the batch to the device
-                for key in batch_data:
-                    if isinstance(batch_data[key], torch.Tensor):
-                        batch_data[key] = batch_data[key].to(device, non_blocking=True)
-                
-            severity_labels = batch_data["label_severity"]
-            action_labels = batch_data["label_type"]
-            
-            current_batch_size = batch_data["clips"].size(0)
-            total_samples += current_batch_size
+    for i, batch_data in enumerate(dataloader):
+        if max_batches is not None and (i + 1) > max_batches:
+            break
+        
+        # Move all tensors in the batch to the device
+        for key in batch_data:
+            if isinstance(batch_data[key], torch.Tensor):
+                batch_data[key] = batch_data[key].to(device, non_blocking=True)
+        
+        severity_labels = batch_data["label_severity"]
+        action_labels = batch_data["label_type"]
+        
+        current_batch_size = batch_data["clips"].size(0)
+        total_samples += current_batch_size
 
-            # Apply autocast for validation to match training config
-            # Consistently use autocast with explicit dtype for validation when on CUDA
-            if device.type == 'cuda':
-                with torch.amp.autocast('cuda', dtype=torch.float16): # Explicitly use float16 for consistency
-                    sev_logits, act_logits = model(batch_data)
-                    total_loss, _, _ = calculate_multitask_loss(
-                        sev_logits, act_logits, batch_data, loss_config
-                    )
-            else: # CPU or other device where mixed precision isn't available
+        # Apply autocast for validation to match training config
+        # Consistently use autocast with explicit dtype for validation when on CUDA
+        if device.type == 'cuda':
+            with torch.amp.autocast('cuda', dtype=torch.float16): # Explicitly use float16 for consistency
                 sev_logits, act_logits = model(batch_data)
                 total_loss, _, _ = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_config
                 )
+        else: # CPU or other device where mixed precision isn't available
+            sev_logits, act_logits = model(batch_data)
+            total_loss, _, _ = calculate_multitask_loss(
+                sev_logits, act_logits, batch_data, loss_config
+            )
 
-            running_loss += total_loss.item() * current_batch_size
-            sev_acc = calculate_accuracy(sev_logits, severity_labels)
-            act_acc = calculate_accuracy(act_logits, action_labels)
-            running_sev_acc += sev_acc
-            running_act_acc += act_acc
-            running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 6)  # 6 severity classes (0-5)
-            running_act_f1 += calculate_f1_score(act_logits, action_labels, 10)  # 10 action classes (0-9)
-            processed_batches += 1
-            
-            # Clean up batch data explicitly
-            del batch_data, sev_logits, act_logits, total_loss
-            
-            # Periodic memory cleanup during validation
-            if memory_cleanup_interval > 0 and (i + 1) % memory_cleanup_interval == 0:
-                cleanup_memory()
+        running_loss += total_loss.item() * current_batch_size
+        sev_acc = calculate_accuracy(sev_logits, severity_labels)
+        act_acc = calculate_accuracy(act_logits, action_labels)
+        running_sev_acc += sev_acc
+        running_act_acc += act_acc
+        running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 6)  # 6 severity classes (0-5)
+        running_act_f1 += calculate_f1_score(act_logits, action_labels, 10)  # 10 action classes (0-9)
+        processed_batches += 1
+        
+        # Clean up batch data explicitly
+        del batch_data, sev_logits, act_logits, total_loss
+        
+        # Periodic memory cleanup during validation
+        if memory_cleanup_interval > 0 and (i + 1) % memory_cleanup_interval == 0:
+            cleanup_memory()
 
     # Use the actual number of samples we processed for loss calculation
     epoch_loss = running_loss / total_samples if total_samples > 0 else 0
