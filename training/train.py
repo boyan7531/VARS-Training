@@ -549,6 +549,13 @@ def main():
         # Training with OOM protection
         if robust_wrapper and oom_manager:
             try:
+                # Use MViT-specific memory cleanup interval if MViT model is detected
+                mvit_memory_interval = getattr(args, 'mvit_memory_cleanup_interval', 5)
+                memory_cleanup_interval_for_training = (
+                    mvit_memory_interval if args.backbone_type.lower() == 'mvit' 
+                    else args.memory_cleanup_interval
+                )
+                
                 train_metrics = robust_wrapper.oom_safe_training_step(
                     train_one_epoch,
                     model, train_loader, optimizer, device,
@@ -563,7 +570,7 @@ def main():
                     scaler=scaler, 
                     max_batches=num_batches_to_run, 
                     gradient_clip_norm=args.gradient_clip_norm, 
-                    memory_cleanup_interval=args.memory_cleanup_interval,
+                    memory_cleanup_interval=memory_cleanup_interval_for_training,
                     scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
                     gpu_augmentation=gpu_augmentation,
                     enable_profiling=(epoch == 0)  # Enable profiling only for first epoch
@@ -584,6 +591,13 @@ def main():
                     raise  # Re-raise non-OOM errors
         else:
             # Standard training without OOM protection
+            # Use MViT-specific memory cleanup interval if MViT model is detected
+            mvit_memory_interval = getattr(args, 'mvit_memory_cleanup_interval', 5)
+            memory_cleanup_interval_for_training = (
+                mvit_memory_interval if args.backbone_type.lower() == 'mvit' 
+                else args.memory_cleanup_interval
+            )
+            
             train_metrics = train_one_epoch(
                 model, train_loader, optimizer, device,
                 loss_config={
@@ -597,7 +611,7 @@ def main():
                 scaler=scaler, 
                 max_batches=num_batches_to_run, 
                 gradient_clip_norm=args.gradient_clip_norm, 
-                memory_cleanup_interval=args.memory_cleanup_interval,
+                memory_cleanup_interval=memory_cleanup_interval_for_training,
                 scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
                 gpu_augmentation=gpu_augmentation,
                 enable_profiling=(epoch == 0)  # Enable profiling only for first epoch
@@ -609,6 +623,13 @@ def main():
             scaler_calibration_reset = True
         
         # Validation
+        # Use MViT-specific memory cleanup interval for validation too
+        mvit_memory_interval = getattr(args, 'mvit_memory_cleanup_interval', 5)
+        memory_cleanup_interval_for_validation = (
+            max(mvit_memory_interval - 2, 1) if args.backbone_type.lower() == 'mvit'  # Even more aggressive for validation
+            else args.memory_cleanup_interval
+        )
+        
         val_metrics = validate_one_epoch(
             model, val_loader, device,
             loss_config={
@@ -619,7 +640,7 @@ def main():
                 'severity_class_weights': severity_class_weights
             },
             max_batches=num_batches_to_run,
-            memory_cleanup_interval=args.memory_cleanup_interval
+            memory_cleanup_interval=memory_cleanup_interval_for_validation
         )
         
         # Reset model to training mode and clean memory

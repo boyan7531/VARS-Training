@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 import logging
+import torch.utils.checkpoint as checkpoint
 
 from .resnet3d_model import MultiTaskMultiViewResNet3D, ResNet3DBackbone
 from .config import ModelConfig
@@ -13,6 +14,144 @@ from .validator import InputValidator, ValidationError
 logger = logging.getLogger(__name__)
 
 
+class OptimizedMViTProcessor(nn.Module):
+    """
+    Optimized processor for MViT with memory-efficient view handling.
+    Processes views sequentially to avoid memory fragmentation and improve GPU utilization.
+    """
+    
+    def __init__(self, backbone, use_gradient_checkpointing=True):
+        super().__init__()
+        self.backbone = backbone
+        self.use_gradient_checkpointing = use_gradient_checkpointing
+        
+    def forward(self, clips, view_mask=None):
+        """
+        Process clips with optimized memory usage and sequential view processing.
+        
+        Args:
+            clips: Either [B, N, C, T, H, W] tensor or list of variable-length views
+            view_mask: Optional mask for valid views
+            
+        Returns:
+            features: [B, feature_dim] aggregated features
+            actual_view_mask: Updated view mask
+        """
+        if isinstance(clips, list):
+            return self._process_variable_views(clips)
+        else:
+            return self._process_tensor_views(clips, view_mask)
+    
+    def _process_tensor_views(self, clips, view_mask):
+        """Process standard tensor input with sequential view processing."""
+        batch_size, max_views = clips.shape[:2]
+        device = clips.device
+        
+        # Pre-allocate output tensors for better memory management
+        # Get feature dimension from a single forward pass
+        with torch.no_grad():
+            sample_clip = clips[0, 0].unsqueeze(0)  # [1, C, T, H, W]
+            sample_features = self._forward_single_view(sample_clip)
+            if isinstance(sample_features, torch.Tensor):
+                if sample_features.ndim == 3:  # [1, seq_len, feature_dim]
+                    feature_dim = sample_features.shape[-1]
+                elif sample_features.ndim == 2:  # [1, feature_dim]
+                    feature_dim = sample_features.shape[-1]
+                else:
+                    raise ValueError(f"Unexpected backbone output shape: {sample_features.shape}")
+            else:
+                raise ValueError("Backbone output must be a tensor")
+        
+        # Pre-allocate feature tensor
+        all_features = torch.zeros(batch_size, max_views, feature_dim, 
+                                 device=device, dtype=clips.dtype)
+        
+        # Create view mask if not provided
+        if view_mask is None:
+            view_mask = torch.ones(batch_size, max_views, dtype=torch.bool, device=device)
+        
+        # Process views sequentially to avoid memory fragmentation
+        for view_idx in range(max_views):
+            # Get current view for all batches
+            current_view = clips[:, view_idx]  # [B, C, T, H, W]
+            
+            # Only process if any batch has a valid view at this index
+            if view_mask[:, view_idx].any():
+                # Extract features for this view across all batches
+                if self.use_gradient_checkpointing and self.training:
+                    view_features = checkpoint.checkpoint(
+                        self._forward_single_view, current_view, use_reentrant=False
+                    )
+                else:
+                    view_features = self._forward_single_view(current_view)
+                
+                # Handle different output formats efficiently
+                if view_features.ndim == 3:  # [B, seq_len, feature_dim]
+                    # Extract CLS token (first token) efficiently
+                    view_features = view_features[:, 0]  # [B, feature_dim]
+                
+                # Store features for valid views only
+                valid_mask = view_mask[:, view_idx]
+                all_features[valid_mask, view_idx] = view_features[valid_mask]
+            
+            # Clear intermediate tensors to free memory
+            if view_idx % 2 == 0:  # Clean up every 2 views
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        
+        return all_features, view_mask
+    
+    def _process_variable_views(self, clips_list):
+        """Process variable-length views efficiently."""
+        batch_size = len(clips_list)
+        device = clips_list[0].device if clips_list else torch.device('cpu')
+        
+        # Determine max views and feature dimension
+        max_views = max(len(clips) for clips in clips_list) if clips_list else 0
+        
+        if max_views == 0:
+            return torch.zeros(batch_size, 0, device=device), torch.zeros(batch_size, 0, dtype=torch.bool, device=device)
+        
+        # Get feature dimension from first clip
+        with torch.no_grad():
+            sample_features = self._forward_single_view(clips_list[0][:1])
+            if sample_features.ndim == 3:
+                feature_dim = sample_features.shape[-1]
+            else:
+                feature_dim = sample_features.shape[-1]
+        
+        # Pre-allocate tensors
+        all_features = torch.zeros(batch_size, max_views, feature_dim, 
+                                 device=device, dtype=clips_list[0].dtype)
+        view_mask = torch.zeros(batch_size, max_views, dtype=torch.bool, device=device)
+        
+        # Process each batch's views
+        for batch_idx, clips in enumerate(clips_list):
+            num_views = len(clips)
+            if num_views > 0:
+                # Process all views for this batch at once for efficiency
+                batch_clips = torch.stack(clips)  # [N, C, T, H, W]
+                
+                if self.use_gradient_checkpointing and self.training:
+                    batch_features = checkpoint.checkpoint(
+                        self._forward_single_view, batch_clips, use_reentrant=False
+                    )
+                else:
+                    batch_features = self._forward_single_view(batch_clips)
+                
+                if batch_features.ndim == 3:  # [N, seq_len, feature_dim]
+                    batch_features = batch_features[:, 0]  # Extract CLS tokens
+                
+                all_features[batch_idx, :num_views] = batch_features
+                view_mask[batch_idx, :num_views] = True
+        
+        return all_features, view_mask
+    
+    def _forward_single_view(self, clips):
+        """Forward pass through backbone with optimized memory usage."""
+        # Ensure proper input format for MViT
+        return self.backbone(clips)
+
+
 class MultiTaskMultiViewMViT(nn.Module):
     """
     Multi-task, multi-view MViTv2 model for sports action classification.
@@ -20,6 +159,8 @@ class MultiTaskMultiViewMViT(nn.Module):
     This model processes multiple video views and categorical features to predict:
     1. Severity of the action
     2. Type of the action
+    
+    Optimized for improved GPU utilization and memory efficiency.
     """
     
     def __init__(
@@ -29,7 +170,9 @@ class MultiTaskMultiViewMViT(nn.Module):
         vocab_sizes: Dict[str, int],
         config: ModelConfig = None,
         use_augmentation: bool = True,
-        severity_weights: Dict[float, float] = None
+        severity_weights: Dict[float, float] = None,
+        use_gradient_checkpointing: bool = True,
+        enable_memory_optimization: bool = True
     ):
         super().__init__()
         
@@ -38,6 +181,8 @@ class MultiTaskMultiViewMViT(nn.Module):
         self.num_severity = num_severity
         self.num_action_type = num_action_type
         self.use_augmentation = use_augmentation
+        self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.enable_memory_optimization = enable_memory_optimization
         
         # Validate vocabulary sizes
         self._validate_vocab_sizes(vocab_sizes)
@@ -55,9 +200,10 @@ class MultiTaskMultiViewMViT(nn.Module):
         # Initialize components
         self._initialize_components()
         
-        logger.info(f"Initialized MultiTaskMultiViewMViT with {self.config.pretrained_model_name}, "
+        logger.info(f"Initialized optimized MultiTaskMultiViewMViT with {self.config.pretrained_model_name}, "
                    f"{num_severity} severity classes and {num_action_type} action type classes. "
-                   f"Augmentation: {'enabled' if use_augmentation else 'disabled'}")
+                   f"Augmentation: {'enabled' if use_augmentation else 'disabled'}, "
+                   f"Gradient checkpointing: {'enabled' if use_gradient_checkpointing else 'disabled'}")
     
     def _validate_vocab_sizes(self, vocab_sizes: Dict[str, int]) -> None:
         """Validate that all required vocabulary sizes are provided."""
@@ -80,12 +226,18 @@ class MultiTaskMultiViewMViT(nn.Module):
         try:
             # Load MViT backbone using the loader
             model_loader = ModelLoader(self.config)
-            self.backbone, self.video_feature_dim = model_loader.load_base_model()
+            backbone, self.video_feature_dim = model_loader.load_base_model()
+            
+            # Wrap backbone with optimized processor
+            self.mvit_processor = OptimizedMViTProcessor(
+                backbone, 
+                use_gradient_checkpointing=self.use_gradient_checkpointing
+            )
             
             # Initialize embedding manager
             self.embedding_manager = EmbeddingManager(self.config, self.vocab_sizes)
             
-            # Initialize view aggregator
+            # Initialize view aggregator with memory optimization
             self.view_aggregator = ViewAggregator(self.config, self.video_feature_dim)
             
             # Initialize input validator
@@ -95,29 +247,36 @@ class MultiTaskMultiViewMViT(nn.Module):
             combined_feature_dim = self.video_feature_dim + self.config.get_total_embedding_dim()
             
             # Create classification heads with strong regularization for small dataset
-            self.severity_head = nn.Sequential(
-                nn.Linear(combined_feature_dim, 256),
-                nn.ReLU(),
-                nn.Dropout(0.6),
-                nn.Linear(256, self.num_severity)
-            )
+            # Use efficient activation and initialization
+            self.severity_head = self._create_optimized_head(combined_feature_dim, self.num_severity)
+            self.action_type_head = self._create_optimized_head(combined_feature_dim, self.num_action_type)
             
-            self.action_type_head = nn.Sequential(
-                nn.Linear(combined_feature_dim, 256), 
-                nn.ReLU(),
-                nn.Dropout(0.6),
-                nn.Linear(256, self.num_action_type)
-            )
-            
-            logger.info(f"MViT components initialized successfully. "
+            logger.info(f"Optimized MViT components initialized successfully. "
                        f"Combined feature dim: {combined_feature_dim}")
             
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize MViT components: {str(e)}") from e
+            raise RuntimeError(f"Failed to initialize optimized MViT components: {str(e)}") from e
+    
+    def _create_optimized_head(self, input_dim: int, num_classes: int) -> nn.Module:
+        """Create optimized classification head."""
+        head = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.GELU(),  # More efficient than ReLU for transformers
+            nn.Dropout(0.6),
+            nn.Linear(256, num_classes)
+        )
+        
+        # Initialize weights properly for better training stability
+        for module in head.modules():
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                torch.nn.init.constant_(module.bias, 0)
+        
+        return head
     
     def forward(self, batch_data: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass through the model.
+        Optimized forward pass through the model.
         
         Args:
             batch_data: Dictionary containing:
@@ -141,18 +300,32 @@ class MultiTaskMultiViewMViT(nn.Module):
                 # Update batch_data with augmented clips
                 batch_data = {**batch_data, "clips": clips}
             
-            # Process video features
-            video_features = self._process_video_features(batch_data)
+            # Process video features with optimized pipeline
+            video_features = self._process_video_features_optimized(batch_data)
             
-            # Process categorical features
+            # Process categorical features (unchanged but more efficient memory usage)
             categorical_features = self._process_categorical_features(batch_data)
             
-            # Combine features
+            # Combine features efficiently
             combined_features = torch.cat([video_features, categorical_features], dim=1)
             
-            # Generate predictions
-            severity_logits = self.severity_head(combined_features)
-            action_type_logits = self.action_type_head(combined_features)
+            # Generate predictions with potential checkpointing for large models
+            if self.use_gradient_checkpointing and self.training:
+                severity_logits = checkpoint.checkpoint(
+                    self.severity_head, combined_features, use_reentrant=False
+                )
+                action_type_logits = checkpoint.checkpoint(
+                    self.action_type_head, combined_features, use_reentrant=False
+                )
+            else:
+                severity_logits = self.severity_head(combined_features)
+                action_type_logits = self.action_type_head(combined_features)
+            
+            # Clean up intermediate tensors if memory optimization is enabled
+            if self.enable_memory_optimization:
+                del video_features, categorical_features, combined_features
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             
             return severity_logits, action_type_logits
             
@@ -161,41 +334,18 @@ class MultiTaskMultiViewMViT(nn.Module):
             raise e
         except Exception as e:
             # Wrap unexpected errors
-            raise RuntimeError(f"Forward pass failed: {str(e)}") from e
+            raise RuntimeError(f"Optimized forward pass failed: {str(e)}") from e
     
-    def _process_video_features(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Process video clips to extract aggregated features."""
+    def _process_video_features_optimized(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Process video clips with optimized memory usage and sequential processing."""
         clips = batch_data["clips"]
         view_mask = batch_data.get("view_mask", None)
         
-        if isinstance(clips, list):
-            # Handle variable-length views
-            features, view_mask = self.view_aggregator.process_variable_views(clips, self.backbone)
-        else:
-            # Handle standard tensor input - reshape for MViT
-            batch_size, max_views = clips.shape[:2]
-            
-            # Reshape and process through backbone
-            clips_flat = clips.view(-1, *clips.shape[2:])  # [B*N, C, T, H, W]
-            
-            # MViT expects [B, C, T, H, W] format
-            features_flat = self.backbone(clips_flat)
-            
-            # Handle MViT output format
-            if isinstance(features_flat, torch.Tensor):
-                if features_flat.ndim == 3:  # [B, seq_len, feature_dim]
-                    # Take CLS token (first token) or mean pool
-                    features_flat = features_flat[:, 0]  # CLS token
-                elif features_flat.ndim == 2:  # [B, feature_dim]
-                    pass  # Already in correct format
-                else:
-                    raise ValueError(f"Unexpected MViT output shape: {features_flat.shape}")
-            
-            # Reshape back to [B, N, feature_dim]
-            features = features_flat.view(batch_size, max_views, -1)
+        # Use optimized processor for efficient view handling
+        features, updated_view_mask = self.mvit_processor(clips, view_mask)
         
-        # Aggregate views
-        aggregated_features = self.view_aggregator.aggregate_views(features, view_mask)
+        # Aggregate views efficiently
+        aggregated_features = self.view_aggregator.aggregate_views(features, updated_view_mask)
         
         return aggregated_features
     
@@ -238,6 +388,8 @@ class MultiTaskMultiViewMViT(nn.Module):
             'num_severity_classes': self.num_severity,
             'num_action_type_classes': self.num_action_type,
             'augmentation_enabled': self.use_augmentation,
+            'gradient_checkpointing_enabled': self.use_gradient_checkpointing,
+            'memory_optimization_enabled': self.enable_memory_optimization,
             'severity_weights': severity_weights
         }
 
@@ -252,6 +404,8 @@ def create_unified_model(
     use_augmentation: bool = True,
     disable_in_model_augmentation: bool = False,
     severity_weights: Dict[float, float] = None,
+    enable_gradient_checkpointing: bool = True,
+    enable_memory_optimization: bool = True,
     **config_kwargs
 ) -> nn.Module:
     """
@@ -267,6 +421,8 @@ def create_unified_model(
         use_augmentation: Whether to apply adaptive augmentation for class imbalance
         disable_in_model_augmentation: Whether to disable in-model augmentation
         severity_weights: Custom augmentation weights for severity classes
+        enable_gradient_checkpointing: Whether to enable gradient checkpointing for memory efficiency
+        enable_memory_optimization: Whether to enable memory optimization features
         **config_kwargs: Additional configuration parameters
         
     Returns:
@@ -297,7 +453,7 @@ def create_unified_model(
         if backbone_name is None:
             backbone_name = 'mvit_base_16x4'
         
-        logger.info(f"Creating MViT model with backbone: {backbone_name}")
+        logger.info(f"Creating optimized MViT model with backbone: {backbone_name}")
         
         # Create MViT-specific config
         mvit_config = ModelConfig(
@@ -321,20 +477,25 @@ def create_unified_model(
             use_augmentation = False
             logger.info("🚫 In-model augmentation disabled via disable_in_model_augmentation flag")
         
-        # Create MViT model
+        # Create optimized MViT model
         model = MultiTaskMultiViewMViT(
             num_severity=num_severity,
             num_action_type=num_action_type,
             vocab_sizes=vocab_sizes,
             config=mvit_config,
             use_augmentation=use_augmentation,
-            severity_weights=severity_weights
+            severity_weights=severity_weights,
+            use_gradient_checkpointing=enable_gradient_checkpointing,
+            enable_memory_optimization=enable_memory_optimization
         )
         
         # If we have augmentation but it should be disabled, disable it
         if hasattr(model, 'video_augmentation') and disable_in_model_augmentation:
             model.video_augmentation.disable()
             logger.info("🚫 VideoAugmentation disabled for debugging")
+        
+        logger.info(f"✅ Optimized MViT model created with gradient checkpointing: {enable_gradient_checkpointing}, "
+                   f"memory optimization: {enable_memory_optimization}")
         
         return model
     

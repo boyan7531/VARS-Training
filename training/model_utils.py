@@ -113,7 +113,9 @@ def create_model(args, vocab_sizes, device, num_gpus):
             backbone_name=args.backbone_name,
             use_attention_aggregation=args.attention_aggregation,
             use_augmentation=not args.disable_in_model_augmentation,
-            disable_in_model_augmentation=args.disable_in_model_augmentation
+            disable_in_model_augmentation=args.disable_in_model_augmentation,
+            enable_gradient_checkpointing=getattr(args, 'enable_gradient_checkpointing', True),
+            enable_memory_optimization=getattr(args, 'enable_memory_optimization', True)
         )
         
         # Get model info for logging
@@ -121,6 +123,13 @@ def create_model(args, vocab_sizes, device, num_gpus):
         
         # Log model architecture details
         logger.info(f"{args.backbone_type.upper()} components initialized successfully. Combined feature dim: {model_info.get('video_feature_dim', 0) + model_info.get('total_embedding_dim', 0)}")
+        
+        # Log MViT-specific optimization status
+        if args.backbone_type.lower() == 'mvit':
+            logger.info(f"🚀 MViT Optimizations Active:")
+            logger.info(f"   - Gradient Checkpointing: {'✅' if model_info.get('gradient_checkpointing_enabled', False) else '❌'}")
+            logger.info(f"   - Memory Optimization: {'✅' if model_info.get('memory_optimization_enabled', False) else '❌'}")
+            logger.info(f"   - Sequential Processing: {'✅' if getattr(args, 'mvit_sequential_processing', True) else '❌'}")
         
         # Move model to device
         model = model.to(device)

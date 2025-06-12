@@ -223,6 +223,20 @@ def parse_args():
     parser.add_argument('--strict_config_validation', action='store_true', default=False,
                        help='Treat config warnings as errors')
     
+    # === MVIT OPTIMIZATION ===
+    parser.add_argument('--enable_gradient_checkpointing', action='store_true', default=True,
+                       help='Enable gradient checkpointing for memory efficiency (recommended for MViT)')
+    parser.add_argument('--disable_gradient_checkpointing', action='store_true', default=False,
+                       help='Disable gradient checkpointing (for debugging or small models)')
+    parser.add_argument('--enable_memory_optimization', action='store_true', default=True,
+                       help='Enable memory optimization features (aggressive cleanup, efficient tensor operations)')
+    parser.add_argument('--disable_memory_optimization', action='store_true', default=False,
+                       help='Disable memory optimization features')
+    parser.add_argument('--mvit_memory_cleanup_interval', type=int, default=5,
+                       help='Memory cleanup interval for MViT training (batches, lower = more frequent cleanup)')
+    parser.add_argument('--mvit_sequential_processing', action='store_true', default=True,
+                       help='Use sequential view processing for MViT to reduce memory fragmentation')
+    
     # === TESTING AND DEVELOPMENT ===
     parser.add_argument('--test_run', action='store_true', help='Perform a quick test run (1 epoch, few batches, no saving)')
     parser.add_argument('--test_batches', type=int, default=2, help='Number of batches to run in test mode')
@@ -282,6 +296,43 @@ def process_config(args):
         args.extreme_augmentation = False
         args.disable_in_model_augmentation = True
         logger.info("🚫 All augmentation disabled")
+    
+    # Handle MViT optimization disable flags
+    if args.disable_gradient_checkpointing:
+        args.enable_gradient_checkpointing = False
+        logger.info("🚫 Gradient checkpointing disabled")
+    
+    if args.disable_memory_optimization:
+        args.enable_memory_optimization = False
+        logger.info("🚫 Memory optimization features disabled")
+    
+    # Validate MViT optimization settings
+    if args.backbone_type == 'mvit':
+        if not args.enable_gradient_checkpointing:
+            logger.warning("⚠️  Gradient checkpointing disabled for MViT - may cause high memory usage")
+        if not args.enable_memory_optimization:
+            logger.warning("⚠️  Memory optimization disabled for MViT - may cause memory issues")
+        if args.mvit_memory_cleanup_interval > 10:
+            logger.warning(f"⚠️  MViT memory cleanup interval ({args.mvit_memory_cleanup_interval}) is high - consider reducing for better memory management")
+        
+        # Log MViT optimization status
+        logger.info(f"🚀 MViT Optimizations - Gradient Checkpointing: {'✅' if args.enable_gradient_checkpointing else '❌'}, "
+                   f"Memory Optimization: {'✅' if args.enable_memory_optimization else '❌'}, "
+                   f"Sequential Processing: {'✅' if args.mvit_sequential_processing else '❌'}")
+    
+    # Handle data optimization disable flags
+    if args.disable_data_optimization:
+        args.enable_data_optimization = False
+        logger.info("🚫 Data optimization disabled")
+    
+    # Set augmentation strength based on legacy flags (for backward compatibility)
+    if not hasattr(args, 'augmentation_strength') or args.augmentation_strength is None:
+        if args.extreme_augmentation:
+            args.augmentation_strength = 'extreme'
+        elif args.aggressive_augmentation:
+            args.augmentation_strength = 'aggressive'
+        else:
+            args.augmentation_strength = 'moderate'
     
     # Handle new augmentation_strength argument
     if args.augmentation_strength == 'none':

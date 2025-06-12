@@ -276,6 +276,16 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
     running_act_f1 = 0.0
     processed_batches = 0
     total_samples = 0  # Track actual number of samples processed
+    
+    # Detect if this is an MViT model for optimized memory management
+    is_mvit_model = hasattr(model, 'mvit_processor') or (
+        hasattr(model, 'module') and hasattr(model.module, 'mvit_processor')
+    )
+    
+    # Optimize memory cleanup interval for MViT (more aggressive cleanup)
+    if is_mvit_model:
+        memory_cleanup_interval = min(memory_cleanup_interval, 5)  # More frequent cleanup for MViT
+        logger.info(f"🚀 MViT detected - using optimized memory cleanup interval: {memory_cleanup_interval}")
 
     start_time = time.time()
     # Handle OptimizedDataLoader which may not have len()
@@ -420,19 +430,37 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                 logger.info(f"   Model Forward:    {compute_time/1000:.1f}ms ({compute_pct:.1f}%)")
                 logger.info("=" * 80)
                 
-                # Diagnosis
-                if data_pct > 30:
-                    logger.warning("🚨 DATA LOADING BOTTLENECK DETECTED!")
-                    logger.warning("   Recommendations:")
-                    logger.warning("   - Increase --num_workers (try 12-16 for dual RTX 4090)")
-                    logger.warning("   - Increase --prefetch_factor (try 8-16)")
-                    logger.warning("   - Enable --gpu_augmentation to move processing off CPU")
-                    logger.warning("   - Reduce augmentation complexity")
-                elif data_pct > 15:
-                    logger.warning("⚠️  Data loading taking significant time (>15%)")
-                    logger.warning("   Consider increasing num_workers or prefetch_factor")
+                # Enhanced diagnosis for MViT
+                if is_mvit_model:
+                    logger.info("🎯 MViT-SPECIFIC ANALYSIS:")
+                    if data_pct > 25:
+                        logger.warning("🚨 CRITICAL: Data loading bottleneck detected in MViT training!")
+                        logger.warning("   MViT Recommendations:")
+                        logger.warning("   - Increase --num_workers to 16-20")
+                        logger.warning("   - Enable --gpu_augmentation")
+                        logger.warning("   - Reduce temporal resolution (fewer frames)")
+                        logger.warning("   - Use smaller spatial resolution during training")
+                    elif compute_pct < 40:
+                        logger.warning("⚠️  Low GPU compute utilization for MViT - memory-bound!")
+                        logger.warning("   This is expected for MViT attention operations")
+                        logger.warning("   Consider: gradient checkpointing, attention optimization")
+                    else:
+                        logger.info("✅ Good MViT performance balance")
+                    logger.info("=" * 80)
                 else:
-                    logger.info("✅ Good data loading performance (<15% of total time)")
+                    # Original diagnosis for non-MViT models
+                    if data_pct > 30:
+                        logger.warning("🚨 DATA LOADING BOTTLENECK DETECTED!")
+                        logger.warning("   Recommendations:")
+                        logger.warning("   - Increase --num_workers (try 12-16 for dual RTX 4090)")
+                        logger.warning("   - Increase --prefetch_factor (try 8-16)")
+                        logger.warning("   - Enable --gpu_augmentation to move processing off CPU")
+                        logger.warning("   - Reduce augmentation complexity")
+                    elif data_pct > 15:
+                        logger.warning("⚠️  Data loading taking significant time (>15%)")
+                        logger.warning("   Consider increasing num_workers or prefetch_factor")
+                    else:
+                        logger.info("✅ Good data loading performance (<15% of total time)")
             
             prof = None  # Disable profiling for remaining batches
 
@@ -451,9 +479,17 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
         running_act_f1 += act_f1
         processed_batches += 1
         
-        # Periodic memory cleanup during training
+        # Enhanced memory cleanup with MViT optimization
         if memory_cleanup_interval > 0 and (i + 1) % memory_cleanup_interval == 0:
+            # Clean up intermediate tensors explicitly
+            del sev_logits, act_logits, total_loss
             cleanup_memory()
+            
+            # Additional MViT-specific memory management
+            if is_mvit_model and torch.cuda.is_available():
+                # More aggressive memory management for MViT
+                torch.cuda.synchronize()  # Ensure all operations complete
+                torch.cuda.empty_cache()  # Clear cache more frequently
         
         # Only print progress every 25% of batches
         if (i + 1) % max(1, total_batches // 4) == 0:
@@ -461,7 +497,17 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
             current_avg_sev_acc = running_sev_acc / processed_batches
             current_avg_act_acc = running_act_acc / processed_batches
             progress = (i + 1) / total_batches * 100
-            logger.info(f"  Training Progress: {progress:.0f}% | Loss: {current_avg_loss:.3f} | SevAcc: {current_avg_sev_acc:.3f} | ActAcc: {current_avg_act_acc:.3f}")
+            
+            # Enhanced progress logging for MViT
+            model_type = "MViT" if is_mvit_model else "Model"
+            logger.info(f"  {model_type} Training Progress: {progress:.0f}% | Loss: {current_avg_loss:.3f} | SevAcc: {current_avg_sev_acc:.3f} | ActAcc: {current_avg_act_acc:.3f}")
+    
+    # Final cleanup
+    if is_mvit_model:
+        cleanup_memory()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
     
     # Use the actual number of samples we processed for loss calculation
     epoch_loss = running_loss / total_samples if total_samples > 0 else 0
@@ -489,6 +535,15 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
     running_act_f1 = 0.0
     processed_batches = 0
     total_samples = 0  # Track actual number of samples processed
+    
+    # Detect if this is an MViT model for optimized memory management
+    is_mvit_model = hasattr(model, 'mvit_processor') or (
+        hasattr(model, 'module') and hasattr(model.module, 'mvit_processor')
+    )
+    
+    # Optimize memory cleanup interval for MViT
+    if is_mvit_model:
+        memory_cleanup_interval = min(memory_cleanup_interval, 3)  # Even more aggressive for validation
 
     start_time = time.time()
     
@@ -503,51 +558,64 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
             actual_loader = getattr(dataloader, 'dataloader', dataloader)
             total_batches = len(actual_loader) if hasattr(actual_loader, '__len__') else 1000  # fallback
     
-    for i, batch_data in enumerate(dataloader):
-        if max_batches is not None and (i + 1) > max_batches:
-            break
-        
-        # Move all tensors in the batch to the device
-        for key in batch_data:
-            if isinstance(batch_data[key], torch.Tensor):
-                batch_data[key] = batch_data[key].to(device, non_blocking=True)
-        
-        severity_labels = batch_data["label_severity"]
-        action_labels = batch_data["label_type"]
-        
-        current_batch_size = batch_data["clips"].size(0)
-        total_samples += current_batch_size
+    with torch.no_grad():  # Ensure no gradients for validation
+        for i, batch_data in enumerate(dataloader):
+            if max_batches is not None and (i + 1) > max_batches:
+                break
+            
+            # Move all tensors in the batch to the device
+            for key in batch_data:
+                if isinstance(batch_data[key], torch.Tensor):
+                    batch_data[key] = batch_data[key].to(device, non_blocking=True)
+            
+            severity_labels = batch_data["label_severity"]
+            action_labels = batch_data["label_type"]
+            
+            current_batch_size = batch_data["clips"].size(0)
+            total_samples += current_batch_size
 
-        # Apply autocast for validation to match training config
-        # Consistently use autocast with explicit dtype for validation when on CUDA
-        if device.type == 'cuda':
-            with torch.amp.autocast('cuda', dtype=torch.float16): # Explicitly use float16 for consistency
+            # Apply autocast for validation to match training config
+            # Consistently use autocast with explicit dtype for validation when on CUDA
+            if device.type == 'cuda':
+                with torch.amp.autocast('cuda', dtype=torch.float16): # Explicitly use float16 for consistency
+                    sev_logits, act_logits = model(batch_data)
+                    total_loss, _, _ = calculate_multitask_loss(
+                        sev_logits, act_logits, batch_data, loss_config
+                    )
+            else: # CPU or other device where mixed precision isn't available
                 sev_logits, act_logits = model(batch_data)
                 total_loss, _, _ = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_config
                 )
-        else: # CPU or other device where mixed precision isn't available
-            sev_logits, act_logits = model(batch_data)
-            total_loss, _, _ = calculate_multitask_loss(
-                sev_logits, act_logits, batch_data, loss_config
-            )
 
-        running_loss += total_loss.item() * current_batch_size
-        sev_acc = calculate_accuracy(sev_logits, severity_labels)
-        act_acc = calculate_accuracy(act_logits, action_labels)
-        running_sev_acc += sev_acc
-        running_act_acc += act_acc
-        running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 6)  # 6 severity classes (0-5)
-        running_act_f1 += calculate_f1_score(act_logits, action_labels, 10)  # 10 action classes (0-9)
-        processed_batches += 1
-        
-        # Clean up batch data explicitly
-        del batch_data, sev_logits, act_logits, total_loss
-        
-        # Periodic memory cleanup during validation
-        if memory_cleanup_interval > 0 and (i + 1) % memory_cleanup_interval == 0:
-            cleanup_memory()
+            running_loss += total_loss.item() * current_batch_size
+            sev_acc = calculate_accuracy(sev_logits, severity_labels)
+            act_acc = calculate_accuracy(act_logits, action_labels)
+            running_sev_acc += sev_acc
+            running_act_acc += act_acc
+            running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 6)  # 6 severity classes (0-5)
+            running_act_f1 += calculate_f1_score(act_logits, action_labels, 10)  # 10 action classes (0-9)
+            processed_batches += 1
+            
+            # Clean up batch data explicitly
+            del batch_data, sev_logits, act_logits, total_loss
+            
+            # Enhanced memory cleanup for MViT during validation
+            if memory_cleanup_interval > 0 and (i + 1) % memory_cleanup_interval == 0:
+                cleanup_memory()
+                
+                # Additional cleanup for MViT
+                if is_mvit_model and torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
 
+    # Final cleanup for MViT
+    if is_mvit_model:
+        cleanup_memory()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    
     # Use the actual number of samples we processed for loss calculation
     epoch_loss = running_loss / total_samples if total_samples > 0 else 0
     epoch_sev_acc = running_sev_acc / processed_batches if processed_batches > 0 else 0
