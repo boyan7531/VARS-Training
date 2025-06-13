@@ -92,6 +92,11 @@ def parse_args():
         args.backbone_name = 'mvit_base_16x4'  # Default MViT model
         logger.info("Auto-detected MViT model from checkpoint path")
     
+    # Adjust dimensions for MViT models (they require square inputs)
+    if args.backbone_type == 'mvit':
+        args.img_width = args.img_height  # Force square dimensions for MViT
+        logger.info(f"Adjusted dimensions for MViT: {args.img_height}x{args.img_width}")
+    
     # Construct the specific mvfouls path from the root
     if not args.dataset_root:
         raise ValueError("Please provide the --dataset_root argument.")

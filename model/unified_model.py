@@ -47,16 +47,22 @@ class OptimizedMViTProcessor(nn.Module):
         batch_size, max_views = clips.shape[:2]
         device = clips.device
         
+        logger.debug(f"Processing tensor views: batch_size={batch_size}, max_views={max_views}, clips.shape={clips.shape}")
+        
         # Pre-allocate output tensors for better memory management
         # Get feature dimension from a single forward pass
         with torch.no_grad():
             sample_clip = clips[0, 0].unsqueeze(0)  # [1, C, T, H, W]
+            logger.debug(f"Sample clip shape: {sample_clip.shape}")
             sample_features = self._forward_single_view(sample_clip)
+            logger.debug(f"Sample features shape: {sample_features.shape}")
             if isinstance(sample_features, torch.Tensor):
                 if sample_features.ndim == 3:  # [1, seq_len, feature_dim]
                     feature_dim = sample_features.shape[-1]
+                    logger.debug(f"3D output detected, feature_dim={feature_dim}")
                 elif sample_features.ndim == 2:  # [1, feature_dim]
                     feature_dim = sample_features.shape[-1]
+                    logger.debug(f"2D output detected, feature_dim={feature_dim}")
                 else:
                     raise ValueError(f"Unexpected backbone output shape: {sample_features.shape}")
             else:
@@ -65,6 +71,7 @@ class OptimizedMViTProcessor(nn.Module):
         # Pre-allocate feature tensor
         all_features = torch.zeros(batch_size, max_views, feature_dim, 
                                  device=device, dtype=clips.dtype)
+        logger.debug(f"Pre-allocated all_features shape: {all_features.shape}")
         
         # Create view mask if not provided
         if view_mask is None:
@@ -85,19 +92,24 @@ class OptimizedMViTProcessor(nn.Module):
                 else:
                     view_features = self._forward_single_view(current_view)
                 
+                logger.debug(f"View {view_idx} features shape before processing: {view_features.shape}")
+                
                 # Handle different output formats efficiently
                 if view_features.ndim == 3:  # [B, seq_len, feature_dim]
                     # Extract CLS token (first token) efficiently
                     view_features = view_features[:, 0]  # [B, feature_dim]
+                    logger.debug(f"View {view_idx} features shape after CLS extraction: {view_features.shape}")
                 
                 # Store features for valid views only
                 valid_mask = view_mask[:, view_idx]
+                logger.debug(f"Valid mask for view {view_idx}: {valid_mask.sum().item()}/{len(valid_mask)} samples")
                 all_features[valid_mask, view_idx] = view_features[valid_mask]
             
             # Clear intermediate tensors to free memory
             if view_idx % 2 == 0:  # Clean up every 2 views
                 torch.cuda.empty_cache() if torch.cuda.is_available() else None
         
+        logger.debug(f"Final all_features shape: {all_features.shape}")
         return all_features, view_mask
     
     def _process_variable_views(self, clips_list):
@@ -302,12 +314,22 @@ class MultiTaskMultiViewMViT(nn.Module):
             
             # Process video features with optimized pipeline
             video_features = self._process_video_features_optimized(batch_data)
+            logger.debug(f"Video features shape: {video_features.shape}")
             
             # Process categorical features (unchanged but more efficient memory usage)
             categorical_features = self._process_categorical_features(batch_data)
+            logger.debug(f"Categorical features shape: {categorical_features.shape}")
+            
+            # Validate shapes before concatenation
+            if video_features.shape[0] != categorical_features.shape[0]:
+                raise RuntimeError(f"Batch size mismatch: video_features {video_features.shape[0]} vs categorical_features {categorical_features.shape[0]}")
+            
+            if len(video_features.shape) != 2 or len(categorical_features.shape) != 2:
+                raise RuntimeError(f"Expected 2D tensors for concatenation: video_features {video_features.shape} vs categorical_features {categorical_features.shape}")
             
             # Combine features efficiently
             combined_features = torch.cat([video_features, categorical_features], dim=1)
+            logger.debug(f"Combined features shape: {combined_features.shape}")
             
             # Generate predictions with potential checkpointing for large models
             if self.use_gradient_checkpointing and self.training:
@@ -333,7 +355,12 @@ class MultiTaskMultiViewMViT(nn.Module):
             # Re-raise known errors
             raise e
         except Exception as e:
-            # Wrap unexpected errors
+            # Wrap unexpected errors with more context
+            logger.error(f"Forward pass failed with error: {str(e)}")
+            if 'video_features' in locals():
+                logger.error(f"Video features shape: {video_features.shape if 'video_features' in locals() else 'Not computed'}")
+            if 'categorical_features' in locals():
+                logger.error(f"Categorical features shape: {categorical_features.shape if 'categorical_features' in locals() else 'Not computed'}")
             raise RuntimeError(f"Optimized forward pass failed: {str(e)}") from e
     
     def _process_video_features_optimized(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -341,11 +368,16 @@ class MultiTaskMultiViewMViT(nn.Module):
         clips = batch_data["clips"]
         view_mask = batch_data.get("view_mask", None)
         
+        logger.debug(f"Input clips shape: {clips.shape if hasattr(clips, 'shape') else f'List of {len(clips)} items'}")
+        
         # Use optimized processor for efficient view handling
         features, updated_view_mask = self.mvit_processor(clips, view_mask)
+        logger.debug(f"MViT processor output features shape: {features.shape}")
+        logger.debug(f"Updated view mask shape: {updated_view_mask.shape}")
         
         # Aggregate views efficiently
         aggregated_features = self.view_aggregator.aggregate_views(features, updated_view_mask)
+        logger.debug(f"Aggregated features shape: {aggregated_features.shape}")
         
         return aggregated_features
     

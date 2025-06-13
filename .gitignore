@@ -169,3 +169,6 @@ data/
 *.temp
 *.swp
 *~
+
+debug_mvit_real_data.py
+debug_mvit.py
