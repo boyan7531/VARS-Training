@@ -154,14 +154,14 @@ def unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=2):
             model_type = "mvit"
     else:
         # Standard model structure
-        if hasattr(actual_model.backbone, 'backbone'):
-            # ResNet3D model: actual_model.backbone.backbone
-            backbone = actual_model.backbone.backbone
-            model_type = "resnet3d"
-        else:
-            # MViT model: actual_model.backbone directly
-            backbone = actual_model.backbone
-            model_type = "mvit"
+    if hasattr(actual_model.backbone, 'backbone'):
+        # ResNet3D model: actual_model.backbone.backbone
+        backbone = actual_model.backbone.backbone
+        model_type = "resnet3d"
+    else:
+        # MViT model: actual_model.backbone directly
+        backbone = actual_model.backbone
+        model_type = "mvit"
     
     logger.info(f"[UNFREEZE] Detected {model_type} model architecture")
     

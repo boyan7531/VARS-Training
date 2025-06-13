@@ -276,7 +276,7 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
     running_act_f1 = 0.0
     processed_batches = 0
     total_samples = 0  # Track actual number of samples processed
-    
+
     # Detect if this is an MViT model for optimized memory management
     is_mvit_model = hasattr(model, 'mvit_processor') or (
         hasattr(model, 'module') and hasattr(model.module, 'mvit_processor')
@@ -615,7 +615,7 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
-    
+
     # Use the actual number of samples we processed for loss calculation
     epoch_loss = running_loss / total_samples if total_samples > 0 else 0
     epoch_sev_acc = running_sev_acc / processed_batches if processed_batches > 0 else 0
