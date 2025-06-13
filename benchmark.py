@@ -68,9 +68,10 @@ def parse_args():
                         help='Dataset split to evaluate on')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for evaluation')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
+    parser.add_argument('--backbone_type', type=str, default='resnet3d', choices=['resnet3d', 'mvit'],
+                        help='Backbone type: resnet3d or mvit')
     parser.add_argument('--backbone_name', type=str, default='r2plus1d_18', 
-                        choices=['resnet3d_18', 'mc3_18', 'r2plus1d_18', 'resnet3d_50'], 
-                        help="ResNet3D backbone variant")
+                        help="Backbone model name (e.g., 'r2plus1d_18' for ResNet3D or 'mvit_base_16x4' for MViT)")
     parser.add_argument('--frames_per_clip', type=int, default=16, help='Number of frames per clip')
     parser.add_argument('--target_fps', type=int, default=15, help='Target FPS for clips')
     parser.add_argument('--start_frame', type=int, default=67, help='Start frame index')
@@ -84,6 +85,12 @@ def parse_args():
                         help='Output JSON file name')
     
     args = parser.parse_args()
+    
+    # Auto-detect backbone type from checkpoint if not specified
+    if args.backbone_type == 'resnet3d' and 'mvit' in args.checkpoint_path.lower():
+        args.backbone_type = 'mvit'
+        args.backbone_name = 'mvit_base_16x4'  # Default MViT model
+        logger.info("Auto-detected MViT model from checkpoint path")
     
     # Construct the specific mvfouls path from the root
     if not args.dataset_root:
@@ -556,15 +563,22 @@ def main():
         input_width=args.img_width
     )
     
-    # Initialize model
-    logger.info(f"Initializing ResNet3D model: {args.backbone_name}")
+    # Initialize model using unified interface
+    logger.info(f"Initializing {args.backbone_type.upper()} model: {args.backbone_name}")
     try:
-        model = MultiTaskMultiViewResNet3D(
+        # Import the unified model interface
+        from model import create_unified_model
+        
+        model = create_unified_model(
+            backbone_type=args.backbone_type,
             num_severity=6,  # 6 severity classes: "", 1.0, 2.0, 3.0, 4.0, 5.0
-            num_action_type=10,  # 10 action types: "", Challenge, Dive, Dont know, Elbowing, High leg, Holding, Pushing, Standing tackling, Tackling
+            num_action_type=10,  # 10 action types
             vocab_sizes=vocab_sizes,
             backbone_name=args.backbone_name,
-            config=model_config
+            use_attention_aggregation=args.attention_aggregation,
+            use_augmentation=False,  # Disable augmentation for inference
+            disable_in_model_augmentation=True,
+            **model_config.__dict__
         )
         logger.info("Model initialized successfully")
         
