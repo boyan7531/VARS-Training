@@ -571,7 +571,7 @@ def main():
         
         # Create config dict without conflicting parameters
         config_kwargs = {k: v for k, v in model_config.__dict__.items() 
-                        if k not in ['use_attention_aggregation']}
+                        if k not in ['use_attention_aggregation', 'pretrained_model_name']}
         
         model = create_unified_model(
             backbone_type=args.backbone_type,
