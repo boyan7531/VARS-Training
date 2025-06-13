@@ -569,6 +569,10 @@ def main():
         # Import the unified model interface
         from model import create_unified_model
         
+        # Create config dict without conflicting parameters
+        config_kwargs = {k: v for k, v in model_config.__dict__.items() 
+                        if k not in ['use_attention_aggregation']}
+        
         model = create_unified_model(
             backbone_type=args.backbone_type,
             num_severity=6,  # 6 severity classes: "", 1.0, 2.0, 3.0, 4.0, 5.0
@@ -578,7 +582,7 @@ def main():
             use_attention_aggregation=args.attention_aggregation,
             use_augmentation=False,  # Disable augmentation for inference
             disable_in_model_augmentation=True,
-            **model_config.__dict__
+            **config_kwargs
         )
         logger.info("Model initialized successfully")
         
