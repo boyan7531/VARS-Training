@@ -19,7 +19,7 @@ def parse_args():
     parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for training and validation')
     parser.add_argument('--lr', type=float, default=2e-4, help='Learning rate')
-    parser.add_argument('--weight_decay', type=float, default=1e-4, help='Weight decay for AdamW')
+    parser.add_argument('--weight_decay', type=float, default=0.01, help='Weight decay for AdamW (0.01 for all params except bias & norm)')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
     parser.add_argument('--worker_timeout', type=int, default=0, help='Timeout for DataLoader workers (seconds)')
     parser.add_argument('--prefetch_factor', type=int, default=2, help='Number of batches loaded in advance by each worker')

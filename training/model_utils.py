@@ -39,7 +39,8 @@ __all__ = [
     'get_optimizer', 
     'get_scheduler',
     'setup_freezing_strategy',
-    'create_model'
+    'create_model',
+    'separate_weight_decay_params'
 ]
 
 def get_model_config():
@@ -48,24 +49,18 @@ def get_model_config():
 
 
 def get_optimizer(model, args):
-    """Create optimizer based on arguments."""
+    """Create optimizer based on arguments with proper weight decay handling."""
+    # Use weight decay parameter separation for better regularization
+    param_groups = separate_weight_decay_params(model, args.weight_decay)
+    
     if args.optimizer == 'adamw':
-        return optim.AdamW(
-            model.parameters(), 
-            lr=args.lr, 
-            weight_decay=args.weight_decay
-        )
+        return optim.AdamW(param_groups, lr=args.lr)
     elif args.optimizer == 'adam':
-        return optim.Adam(
-            model.parameters(), 
-            lr=args.lr, 
-            weight_decay=args.weight_decay
-        )
+        return optim.Adam(param_groups, lr=args.lr)  
     elif args.optimizer == 'sgd':
         return optim.SGD(
-            model.parameters(), 
-            lr=args.lr, 
-            weight_decay=args.weight_decay,
+            param_groups, 
+            lr=args.lr,
             momentum=getattr(args, 'momentum', 0.9)
         )
     else:
@@ -154,3 +149,44 @@ def create_model(args, vocab_sizes, device, num_gpus):
         elif args.backbone_type == 'mvit':
             logger.error(f"Available MViT models: mvit_base_16x4, mvit_base_32x3, mvit_small_16x4")
         raise
+
+
+def separate_weight_decay_params(model, weight_decay=0.01):
+    """
+    Separate model parameters for weight decay application.
+    Apply weight decay to all parameters except bias and normalization layers.
+    
+    Args:
+        model: PyTorch model
+        weight_decay: Weight decay value (default 0.01)
+    
+    Returns:
+        List of parameter groups for optimizer
+    """
+    # Parameters that should have weight decay
+    decay_params = []
+    # Parameters that should NOT have weight decay (bias and norm layers)
+    no_decay_params = []
+    
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+            
+        # Check if parameter is bias or from normalization layer
+        if (name.endswith('.bias') or 
+            'norm' in name.lower() or 
+            'bn' in name.lower() or 
+            'layernorm' in name.lower() or
+            'batchnorm' in name.lower() or
+            'groupnorm' in name.lower()):
+            no_decay_params.append(param)
+        else:
+            decay_params.append(param)
+    
+    param_groups = [
+        {'params': decay_params, 'weight_decay': weight_decay},
+        {'params': no_decay_params, 'weight_decay': 0.0}
+    ]
+    
+    logger.info(f"Weight decay setup: {len(decay_params)} params with decay, {len(no_decay_params)} params without")
+    return param_groups

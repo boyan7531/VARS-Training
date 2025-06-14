@@ -259,11 +259,12 @@ class MultiTaskMultiViewMViT(nn.Module):
             raise RuntimeError(f"Failed to initialize optimized MViT components: {str(e)}") from e
     
     def _create_optimized_head(self, input_dim: int, num_classes: int) -> nn.Module:
-        """Create optimized classification head."""
+        """Create optimized classification head with LayerNorm for transformer feature stabilization."""
         head = nn.Sequential(
             nn.Linear(input_dim, 256),
+            nn.LayerNorm(256),
             nn.GELU(),  # More efficient than ReLU for transformers
-            nn.Dropout(0.6),
+            nn.Dropout(0.3),  # Reduced from 0.6 to be less aggressive
             nn.Linear(256, num_classes)
         )
         
@@ -271,6 +272,9 @@ class MultiTaskMultiViewMViT(nn.Module):
         for module in head.modules():
             if isinstance(module, nn.Linear):
                 torch.nn.init.xavier_uniform_(module.weight)
+                torch.nn.init.constant_(module.bias, 0)
+            elif isinstance(module, nn.LayerNorm):
+                torch.nn.init.constant_(module.weight, 1.0)
                 torch.nn.init.constant_(module.bias, 0)
         
         return head

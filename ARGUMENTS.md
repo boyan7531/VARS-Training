@@ -60,7 +60,8 @@ python train_modular.py \
 - **`--lr`** (float, default=2e-4)  
   Learning rate. 2e-4 works well for most cases. For larger datasets, try 1e-4.
 
-- **`--weight_decay`** (float, default=1e-4)  
+- **`--weight_decay`** (float, default=0.01)
+  Weight decay for AdamW optimizer. Applied to all parameters except bias and normalization layers for better regularization.  
   Weight decay for AdamW optimizer. Helps prevent overfitting.
 
 - **`--seed`** (int, default=42)  
