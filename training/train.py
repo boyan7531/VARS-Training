@@ -170,6 +170,22 @@ def setup_optimizer_and_scheduler(args, model, freezing_manager=None):
                                         patience=args.plateau_patience, min_lr=args.min_lr)
             scheduler_info = f"ReduceLROnPlateau (mode=max, factor={args.gamma}, patience={args.plateau_patience}, min_lr={args.min_lr:.1e})"
 
+    # After creating scheduler (or phase1_scheduler) for non-gradual training
+    # Integrate warmup if requested and not using OneCycleLR
+    if not args.gradual_finetuning and args.warmup_epochs > 0 and args.scheduler != 'onecycle':
+        from torch.optim.lr_scheduler import SequentialLR, LinearLR
+        warmup_scheduler = LinearLR(
+            optimizer,
+            start_factor=args.warmup_lr / args.lr if args.lr > 0 else 0.1,
+            total_iters=args.warmup_epochs,
+        )
+        if scheduler is not None:
+            scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, scheduler], milestones=[args.warmup_epochs])
+            scheduler_info = f"Warmup({args.warmup_epochs} epochs) -> {scheduler_info}"
+        else:
+            scheduler = warmup_scheduler
+            scheduler_info = f"Warmup LinearLR ({args.warmup_epochs} epochs)"
+
     return optimizer, scheduler, phase1_scheduler, scheduler_info
 
 
@@ -402,6 +418,11 @@ def main():
     # Parse arguments and setup
     args = parse_args()
     
+    if getattr(args, 'auto_lr_scale', False):
+        base_lr = args.lr
+        args.lr = args.lr * (args.batch_size / 256)
+        logger.info(f"Auto LR scaling: base_lr {base_lr:.2e} -> scaled_lr {args.lr:.2e} for batch_size {args.batch_size}")
+    
     # Config validation and error recovery setup
     try:
         from .error_recovery import create_config_validator, RobustTrainingWrapper, OOMRecoveryManager
@@ -507,6 +528,14 @@ def main():
 
     # Create model (video-only)
     model = create_model(args, vocab_sizes, device, num_gpus)
+    
+    # Torch compile (PyTorch 2.0+)
+    if getattr(args, 'torch_compile', False):
+        try:
+            model = torch.compile(model)
+            logger.info("Model compiled with torch.compile for faster training")
+        except Exception as e:
+            logger.warning(f"torch.compile failed or unsupported: {e}")
     
     # Setup freezing strategy
     freezing_manager = setup_freezing_strategy(args, model)

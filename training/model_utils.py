@@ -56,64 +56,83 @@ def get_optimizer(model, args):
     # Use weight decay parameter separation for better regularization
     param_groups = separate_weight_decay_params(model, args.weight_decay)
     
+    fused_flag = getattr(args, 'fused_optim', False) and torch.cuda.is_available()
+    if fused_flag:
+        logger.info("Using fused optimizer kernels (CUDA)")
+    
+    optimizer = None  # Will hold the created optimizer instance
+
     if args.optimizer == 'adamw':
-        # Use adaptive betas for better convergence
+        # Adaptive betas for convergence
         beta1 = getattr(args, 'beta1', 0.9)
         beta2 = getattr(args, 'beta2', 0.999)
-        
-        # Adaptive beta2 based on model type for better performance
         if hasattr(args, 'backbone_type') and args.backbone_type.lower() == 'mvit':
-            # MViT benefits from slightly lower beta2 for better gradient tracking
             beta2 = getattr(args, 'beta2', 0.98)
             logger.info(f"Using MViT-optimized beta2: {beta2}")
-        
-        # Add epsilon parameter for numerical stability
         eps = getattr(args, 'eps', 1e-8)
-        
-        optimizer = optim.AdamW(
-            param_groups, 
-            lr=args.lr, 
+        adamw_kwargs = dict(
+            params=param_groups,
+            lr=args.lr,
             betas=(beta1, beta2),
             eps=eps,
-            amsgrad=getattr(args, 'amsgrad', False)  # Optional AMSGrad variant
+            amsgrad=getattr(args, 'amsgrad', False),
         )
-        
+        if 'fused' in optim.AdamW.__init__.__code__.co_varnames:
+            adamw_kwargs['fused'] = fused_flag
+        optimizer = optim.AdamW(**adamw_kwargs)
         logger.info(f"AdamW optimizer: lr={args.lr}, betas=({beta1}, {beta2}), eps={eps}")
-        return optimizer
-        
+
     elif args.optimizer == 'adam':
         beta1 = getattr(args, 'beta1', 0.9)
         beta2 = getattr(args, 'beta2', 0.999)
         eps = getattr(args, 'eps', 1e-8)
-        
         optimizer = optim.Adam(
-            param_groups, 
+            param_groups,
             lr=args.lr,
             betas=(beta1, beta2),
             eps=eps,
-            amsgrad=getattr(args, 'amsgrad', False)
+            amsgrad=getattr(args, 'amsgrad', False),
+            fused=fused_flag if 'fused' in optim.Adam.__init__.__code__.co_varnames else False,
         )
-        
         logger.info(f"Adam optimizer: lr={args.lr}, betas=({beta1}, {beta2}), eps={eps}")
-        return optimizer
-        
+
     elif args.optimizer == 'sgd':
         momentum = getattr(args, 'momentum', 0.9)
-        nesterov = getattr(args, 'nesterov', True)  # Enable Nesterov by default for better convergence
-        
-        optimizer = optim.SGD(
-            param_groups, 
+        nesterov = getattr(args, 'nesterov', True)
+        sgd_kwargs = dict(
+            params=param_groups,
             lr=args.lr,
             momentum=momentum,
             nesterov=nesterov,
-            dampening=getattr(args, 'dampening', 0)
+            dampening=getattr(args, 'dampening', 0),
+            weight_decay=args.weight_decay,
         )
-        
+        if 'fused' in optim.SGD.__init__.__code__.co_varnames:
+            sgd_kwargs['fused'] = fused_flag
+        optimizer = optim.SGD(**sgd_kwargs)
         logger.info(f"SGD optimizer: lr={args.lr}, momentum={momentum}, nesterov={nesterov}")
-        return optimizer
-        
+
     else:
         raise ValueError(f"Unsupported optimizer: {args.optimizer}")
+
+    # === Lookahead ===
+    if getattr(args, 'lookahead', False):
+        try:
+            from timm.optim import Lookahead  # type: ignore
+            optimizer = Lookahead(
+                optimizer,
+                k=getattr(args, 'la_steps', 5),
+                alpha=getattr(args, 'la_alpha', 0.5),
+            )
+            logger.info(
+                f"Lookahead enabled (k={getattr(args, 'la_steps', 5)}, alpha={getattr(args, 'la_alpha', 0.5)})"
+            )
+        except ImportError:
+            logger.warning(
+                "timm not installed, Lookahead disabled. Install with: pip install timm>=0.6.0"
+            )
+
+    return optimizer
 
 
 def apply_gradient_clipping(model, optimizer, max_norm=1.0, norm_type=2.0):
@@ -127,12 +146,28 @@ def apply_gradient_clipping(model, optimizer, max_norm=1.0, norm_type=2.0):
 def create_ema_model(model, decay=0.9999):
     """Create Exponential Moving Average model for better performance."""
     try:
-        # Try to import EMA from timm if available
-        from timm.utils import ModelEmaV2
+        import timm  # type: ignore
+        from timm.utils import ModelEmaV2  # type: ignore
         return ModelEmaV2(model, decay=decay)
-    except ImportError:
-        logger.warning("timm not available, EMA disabled. Install with: pip install timm")
-        return None
+    except:
+        # Fallback: simple EMA implementation
+        logger.info("Using built-in EMA implementation")
+        return SimpleEMA(model, decay=decay)
+
+
+class SimpleEMA:
+    """Simple EMA implementation without timm dependency."""
+    def __init__(self, model, decay=0.9999):
+        self.decay = decay
+        self.shadow = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+    
+    def update(self, model):
+        for name, param in model.named_parameters():
+            if param.requires_grad and name in self.shadow:
+                self.shadow[name] = self.decay * self.shadow[name] + (1 - self.decay) * param.data
 
 
 def update_ema_model(ema_model, model, update_fn=None):

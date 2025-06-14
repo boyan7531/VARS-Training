@@ -316,6 +316,19 @@ def parse_args():
     parser.add_argument('--use_class_weighted_loss', action='store_true', default=True,
                        help='DEPRECATED: Use --loss_function weighted instead')
     
+    # === NEW CLI ARGUMENTS ===
+    parser.add_argument('--fused_optim', action='store_true', help='Use PyTorch fused optimizer kernels (CUDA only)')
+    parser.add_argument('--lookahead', action='store_true', help='Wrap optimizer with Lookahead for better generalization')
+    parser.add_argument('--la_steps', type=int, default=5, help='Lookahead sync period k')
+    parser.add_argument('--la_alpha', type=float, default=0.5, help='Lookahead slow weight alpha')
+    
+    parser.add_argument('--auto_lr_scale', action='store_true', help='Scale learning rate by batch_size/256 automatically')
+    
+    parser.add_argument('--warmup_epochs', type=int, default=0, help='Number of warm-up epochs before main scheduler')
+    parser.add_argument('--warmup_lr', type=float, default=1e-7, help='Initial LR during warm-up')
+    
+    parser.add_argument('--torch_compile', action='store_true', help='Compile model with torch.compile for speed (PyTorch 2.0+)')
+    
     args = parser.parse_args()
     
     # Apply configuration processing and validation
