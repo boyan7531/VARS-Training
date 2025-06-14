@@ -46,7 +46,14 @@ def set_seed(seed: int):
     # Ensure deterministic behavior (may slow down training)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    logger.info(f"Random seed set to {seed}")
+    
+    # Enable deterministic algorithms with warn_only for non-deterministic operations
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        logger.info(f"Random seed set to {seed} with deterministic algorithms enabled (warn_only=True)")
+    except Exception as e:
+        logger.warning(f"Could not enable deterministic algorithms: {e}")
+        logger.info(f"Random seed set to {seed}")
 
 
 def create_trainer(args, callbacks, logger_instance=None):
@@ -104,8 +111,8 @@ def create_trainer(args, callbacks, logger_instance=None):
         'check_val_every_n_epoch': 1,
         'enable_progress_bar': True,
         'enable_model_summary': True,
-        'deterministic': True,  # For reproducibility
-        'benchmark': False,     # For reproducibility
+        'deterministic': 'warn',  # For reproducibility with non-deterministic op warnings
+        'benchmark': False,       # For reproducibility
     }
     
     # Add test run specific settings
