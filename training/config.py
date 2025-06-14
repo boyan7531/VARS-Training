@@ -45,6 +45,19 @@ def parse_args():
     # === TRAINING OPTIMIZATION ===
     parser.add_argument('--optimizer', type=str, default='adamw', choices=['adamw', 'sgd', 'adam'], help='Optimizer type')
     parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum')
+    
+    # Advanced optimizer parameters
+    parser.add_argument('--beta1', type=float, default=0.9, help='Adam/AdamW beta1 parameter')
+    parser.add_argument('--beta2', type=float, default=0.999, help='Adam/AdamW beta2 parameter (auto-adjusted for MViT)')
+    parser.add_argument('--eps', type=float, default=1e-8, help='Adam/AdamW epsilon for numerical stability')
+    parser.add_argument('--amsgrad', action='store_true', help='Use AMSGrad variant of Adam/AdamW')
+    parser.add_argument('--nesterov', action='store_true', default=True, help='Use Nesterov momentum for SGD')
+    parser.add_argument('--dampening', type=float, default=0, help='SGD dampening parameter')
+    
+    # Gradient clipping and EMA
+    parser.add_argument('--grad_clip_norm', type=float, default=0.0, help='Gradient clipping max norm (0 to disable)')
+    parser.add_argument('--use_ema', action='store_true', help='Use Exponential Moving Average of model weights')
+    parser.add_argument('--ema_decay', type=float, default=0.9999, help='EMA decay rate')
     parser.add_argument('--mixed_precision', action='store_true', help='Use mixed precision training')
     parser.add_argument('--gradient_clip_norm', type=float, default=1.0, help='Gradient clipping norm')
     parser.add_argument('--early_stopping_patience', type=int, default=None,
@@ -487,6 +500,13 @@ def log_configuration_summary(args):
     logger.info(f"Model: {args.backbone_name} ({args.frames_per_clip} frames, {args.img_height}x{args.img_width})")
     logger.info(f"Training: {args.epochs} epochs, batch_size={args.batch_size}, lr={args.lr}")
     logger.info(f"Optimizer: {args.optimizer}, scheduler={args.scheduler}")
+    logger.info(f"Optimizer params: beta1={args.beta1}, beta2={args.beta2}, eps={args.eps}")
+    if args.optimizer == 'sgd':
+        logger.info(f"SGD params: momentum={args.momentum}, nesterov={args.nesterov}")
+    if args.grad_clip_norm > 0:
+        logger.info(f"Gradient clipping: max_norm={args.grad_clip_norm}")
+    if args.use_ema:
+        logger.info(f"EMA enabled: decay={args.ema_decay}")
     
     # Loss function configuration
     logger.info(f"Loss function: {args.loss_function.upper()}")

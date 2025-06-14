@@ -40,7 +40,10 @@ __all__ = [
     'get_scheduler',
     'setup_freezing_strategy',
     'create_model',
-    'separate_weight_decay_params'
+    'separate_weight_decay_params',
+    'apply_gradient_clipping',
+    'create_ema_model',
+    'update_ema_model'
 ]
 
 def get_model_config():
@@ -49,22 +52,96 @@ def get_model_config():
 
 
 def get_optimizer(model, args):
-    """Create optimizer based on arguments with proper weight decay handling."""
+    """Create optimizer based on arguments with proper weight decay handling and optimizations."""
     # Use weight decay parameter separation for better regularization
     param_groups = separate_weight_decay_params(model, args.weight_decay)
     
     if args.optimizer == 'adamw':
-        return optim.AdamW(param_groups, lr=args.lr)
+        # Use adaptive betas for better convergence
+        beta1 = getattr(args, 'beta1', 0.9)
+        beta2 = getattr(args, 'beta2', 0.999)
+        
+        # Adaptive beta2 based on model type for better performance
+        if hasattr(args, 'backbone_type') and args.backbone_type.lower() == 'mvit':
+            # MViT benefits from slightly lower beta2 for better gradient tracking
+            beta2 = getattr(args, 'beta2', 0.98)
+            logger.info(f"Using MViT-optimized beta2: {beta2}")
+        
+        # Add epsilon parameter for numerical stability
+        eps = getattr(args, 'eps', 1e-8)
+        
+        optimizer = optim.AdamW(
+            param_groups, 
+            lr=args.lr, 
+            betas=(beta1, beta2),
+            eps=eps,
+            amsgrad=getattr(args, 'amsgrad', False)  # Optional AMSGrad variant
+        )
+        
+        logger.info(f"AdamW optimizer: lr={args.lr}, betas=({beta1}, {beta2}), eps={eps}")
+        return optimizer
+        
     elif args.optimizer == 'adam':
-        return optim.Adam(param_groups, lr=args.lr)  
-    elif args.optimizer == 'sgd':
-        return optim.SGD(
+        beta1 = getattr(args, 'beta1', 0.9)
+        beta2 = getattr(args, 'beta2', 0.999)
+        eps = getattr(args, 'eps', 1e-8)
+        
+        optimizer = optim.Adam(
             param_groups, 
             lr=args.lr,
-            momentum=getattr(args, 'momentum', 0.9)
+            betas=(beta1, beta2),
+            eps=eps,
+            amsgrad=getattr(args, 'amsgrad', False)
         )
+        
+        logger.info(f"Adam optimizer: lr={args.lr}, betas=({beta1}, {beta2}), eps={eps}")
+        return optimizer
+        
+    elif args.optimizer == 'sgd':
+        momentum = getattr(args, 'momentum', 0.9)
+        nesterov = getattr(args, 'nesterov', True)  # Enable Nesterov by default for better convergence
+        
+        optimizer = optim.SGD(
+            param_groups, 
+            lr=args.lr,
+            momentum=momentum,
+            nesterov=nesterov,
+            dampening=getattr(args, 'dampening', 0)
+        )
+        
+        logger.info(f"SGD optimizer: lr={args.lr}, momentum={momentum}, nesterov={nesterov}")
+        return optimizer
+        
     else:
         raise ValueError(f"Unsupported optimizer: {args.optimizer}")
+
+
+def apply_gradient_clipping(model, optimizer, max_norm=1.0, norm_type=2.0):
+    """Apply gradient clipping for training stability."""
+    if max_norm > 0:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm, norm_type=norm_type)
+        return True
+    return False
+
+
+def create_ema_model(model, decay=0.9999):
+    """Create Exponential Moving Average model for better performance."""
+    try:
+        # Try to import EMA from timm if available
+        from timm.utils import ModelEmaV2
+        return ModelEmaV2(model, decay=decay)
+    except ImportError:
+        logger.warning("timm not available, EMA disabled. Install with: pip install timm")
+        return None
+
+
+def update_ema_model(ema_model, model, update_fn=None):
+    """Update EMA model weights."""
+    if ema_model is not None:
+        if update_fn is not None:
+            update_fn(ema_model, model)
+        else:
+            ema_model.update(model)
 
 
 def get_scheduler(optimizer, args):

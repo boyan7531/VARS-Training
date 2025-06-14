@@ -92,8 +92,18 @@ def setup_optimizer_and_scheduler(args, model, freezing_manager=None):
     if isinstance(freezing_manager, SmartFreezingManager) and args.freezing_strategy in ['adaptive', 'progressive']:
         # Use discriminative learning rates from freezing manager
         param_groups = freezing_manager.get_discriminative_lr_groups(args.head_lr, args.backbone_lr)
-        optimizer = optim.AdamW(param_groups, weight_decay=args.weight_decay, betas=(0.9, 0.999))
-        logger.info("🔄 Using discriminative learning rates from freezing manager")
+        # Use improved optimizer creation with enhanced parameters
+        from .model_utils import get_optimizer
+        # Create temporary args object for optimizer creation
+        class TempArgs:
+            def __init__(self, original_args):
+                for key, value in vars(original_args).items():
+                    setattr(self, key, value)
+                self.lr = original_args.head_lr  # Use head_lr for discriminative setup
+        
+        temp_args = TempArgs(args)
+        optimizer = get_optimizer(model, temp_args)
+        logger.info("🔄 Using discriminative learning rates from freezing manager with enhanced optimizer")
     
     # For AdvancedFreezingManager
     elif isinstance(freezing_manager, AdvancedFreezingManager):
@@ -504,6 +514,16 @@ def main():
     # Setup optimizer and scheduler (after dataloader creation for OneCycleLR)
     optimizer, scheduler, phase1_scheduler, scheduler_info = setup_optimizer_and_scheduler(args, model, freezing_manager)
     
+    # Setup EMA model if requested
+    ema_model = None
+    if args.use_ema:
+        from .model_utils import create_ema_model
+        ema_model = create_ema_model(model, decay=args.ema_decay)
+        if ema_model:
+            logger.info(f"🚀 EMA model created with decay: {args.ema_decay}")
+        else:
+            logger.warning("⚠️ EMA model creation failed, continuing without EMA")
+    
     # Initialize OneCycleLR after dataloader creation to get steps_per_epoch
     if args.scheduler == 'onecycle' and scheduler is None:
         steps_per_epoch = len(train_loader)
@@ -680,12 +700,13 @@ def main():
                 },
                 scaler=scaler, 
                 max_batches=num_batches_to_run, 
-                gradient_clip_norm=args.gradient_clip_norm, 
+                gradient_clip_norm=max(args.gradient_clip_norm, args.grad_clip_norm) if hasattr(args, 'grad_clip_norm') else args.gradient_clip_norm, 
                 memory_cleanup_interval=memory_cleanup_interval_for_training,
                 scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
                 gpu_augmentation=gpu_augmentation,
                 enable_profiling=False,  # Profiling disabled
-                confusion_matrix_dict=train_confusion_matrices  # Track original distribution metrics
+                confusion_matrix_dict=train_confusion_matrices,  # Track original distribution metrics
+                ema_model=ema_model
             )
         
         # Reset GradScaler parameters after initial calibration period (typically 100-500 steps)

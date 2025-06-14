@@ -347,7 +347,7 @@ class EarlyStopping:
 
 def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, scaler=None, 
                    max_batches=None, gradient_clip_norm=1.0, memory_cleanup_interval=20, scheduler=None,
-                   gpu_augmentation=None, enable_profiling=False, confusion_matrix_dict=None):
+                   gpu_augmentation=None, enable_profiling=False, confusion_matrix_dict=None, ema_model=None):
     """Train the model for one epoch with optional GPU-based augmentation and profiling."""
     model.train()
     running_loss = 0.0
@@ -440,6 +440,11 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                 
                 scaler.step(optimizer)
                 scaler.update()
+                
+                # Update EMA model if provided
+                if ema_model is not None:
+                    from .model_utils import update_ema_model
+                    update_ema_model(ema_model, model)
             
             # Stepping the OneCycleLR scheduler after optimizer.step()
             if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
@@ -468,6 +473,11 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
             
             optimizer.step()
+            
+            # Update EMA model if provided
+            if ema_model is not None:
+                from .model_utils import update_ema_model
+                update_ema_model(ema_model, model)
             
             # Stepping the OneCycleLR scheduler after optimizer.step()
             if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
