@@ -583,6 +583,14 @@ def main():
     criterion_severity = nn.CrossEntropyLoss()
     criterion_action = nn.CrossEntropyLoss()
 
+    # Initialize confusion matrix tracking for original distribution analysis
+    train_confusion_matrices = {}  # For tracking training metrics on original distribution
+    val_confusion_matrices = {}    # For validation confusion matrices
+
+    # Define class names for better logging
+    severity_class_names = ["Sev_0", "Sev_1", "Sev_2", "Sev_3", "Sev_4", "Sev_5"]
+    action_class_names = [f"Act_{i}" for i in range(10)]  # 10 action classes
+
     # Main training loop
     logger.info("Starting Training")
     logger.info("=" * 80)
@@ -611,6 +619,9 @@ def main():
                     else args.memory_cleanup_interval
                 )
                 
+                # Reset training confusion matrices for this epoch
+                train_confusion_matrices.clear()
+                
                 train_metrics = robust_wrapper.oom_safe_training_step(
                     train_one_epoch,
                     model, train_loader, optimizer, device,
@@ -628,7 +639,8 @@ def main():
                     memory_cleanup_interval=memory_cleanup_interval_for_training,
                     scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
                     gpu_augmentation=gpu_augmentation,
-                    enable_profiling=False  # Profiling disabled
+                    enable_profiling=False,  # Profiling disabled
+                    confusion_matrix_dict=train_confusion_matrices  # Track original distribution metrics
                 )
                 
                 # Check if batch size was reduced and update dataloader if needed
@@ -653,6 +665,9 @@ def main():
                 else args.memory_cleanup_interval
             )
             
+            # Reset training confusion matrices for this epoch
+            train_confusion_matrices.clear()
+            
             train_metrics = train_one_epoch(
                 model, train_loader, optimizer, device,
                 loss_config={
@@ -669,7 +684,8 @@ def main():
                 memory_cleanup_interval=memory_cleanup_interval_for_training,
                 scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
                 gpu_augmentation=gpu_augmentation,
-                enable_profiling=False  # Profiling disabled
+                enable_profiling=False,  # Profiling disabled
+                confusion_matrix_dict=train_confusion_matrices  # Track original distribution metrics
             )
         
         # Reset GradScaler parameters after initial calibration period (typically 100-500 steps)
@@ -677,11 +693,52 @@ def main():
             scaler = reset_gradscaler_after_calibration(scaler)
             scaler_calibration_reset = True
         
+        # Reset validation confusion matrices for this epoch
+        val_confusion_matrices.clear()
+        
         # Validation
-        val_metrics = validate_one_epoch(model, val_loader, criterion_severity, criterion_action, device, scaler)
+        val_metrics = validate_one_epoch(
+            model, val_loader, device,
+            loss_config={
+                'function': args.loss_function,
+                'weights': args.main_task_weights,
+                'label_smoothing': args.label_smoothing,
+                'focal_gamma': args.focal_gamma,
+                'severity_class_weights': severity_class_weights,
+                'class_gamma_map': class_gamma_map
+            },
+            confusion_matrix_dict=val_confusion_matrices
+        )
         
         # Log trainable parameter count every epoch (requirement #10)
         log_trainable_parameters(model, epoch)
+        
+        # Log training confusion matrices (original distribution analysis)
+        if train_confusion_matrices:
+            from training.training_utils import compute_confusion_matrices, log_confusion_matrix
+            train_cms = compute_confusion_matrices(train_confusion_matrices)
+            
+            if 'severity' in train_cms:
+                logger.info(f"\n[EPOCH {epoch+1}] TRAINING METRICS (Original Distribution - Before Oversampling)")
+                log_confusion_matrix(train_cms['severity'], 'Severity', severity_class_names)
+            
+            if 'action_type' in train_cms:
+                log_confusion_matrix(train_cms['action_type'], 'Action Type', action_class_names)
+        
+        # Log and save validation confusion matrices every 5 epochs
+        if val_confusion_matrices and (epoch + 1) % 5 == 0:
+            from training.training_utils import compute_confusion_matrices, log_confusion_matrix, save_confusion_matrix
+            val_cms = compute_confusion_matrices(val_confusion_matrices)
+            
+            logger.info(f"\n[EPOCH {epoch+1}] VALIDATION CONFUSION MATRICES")
+            
+            if 'severity' in val_cms:
+                log_confusion_matrix(val_cms['severity'], 'Validation Severity', severity_class_names)
+                save_confusion_matrix(val_cms['severity'], 'severity', epoch+1, args.save_dir)
+            
+            if 'action_type' in val_cms:
+                log_confusion_matrix(val_cms['action_type'], 'Validation Action Type', action_class_names)
+                save_confusion_matrix(val_cms['action_type'], 'action_type', epoch+1, args.save_dir)
         
         # Check for validation plateau-based early unfreezing
         if (freezing_manager is not None and 

@@ -126,6 +126,7 @@ def restore_best_metrics(checkpoint_metrics, resume_best_acc=None):
 def log_epoch_summary(epoch, total_epochs, epoch_time, train_metrics, val_metrics, 
                      current_lr, prev_lr, best_val_acc, phase_info=None, optimizer_updated=False):
     """Log a comprehensive epoch summary."""
+    from training.training_utils import check_overfitting_alert
     
     # Extract metrics from dictionaries
     train_loss = train_metrics['loss'] 
@@ -144,6 +145,9 @@ def log_epoch_summary(epoch, total_epochs, epoch_time, train_metrics, val_metric
     train_combined_acc = (train_sev_acc + train_act_acc) / 2
     val_combined_acc = (val_sev_acc + val_act_acc) / 2
     
+    # Check for overfitting alert
+    overfitting_detected = check_overfitting_alert(train_loss, val_loss, epoch)
+    
     # Check if this is a new best model
     is_new_best = val_combined_acc > best_val_acc
     best_indicator = " [NEW BEST!]" if is_new_best else ""
@@ -160,12 +164,15 @@ def log_epoch_summary(epoch, total_epochs, epoch_time, train_metrics, val_metric
 
     # Optimizer update indicator
     optim_indicator = " [OPTIM UPDATED]" if optimizer_updated else ""
+    
+    # Overfitting indicator
+    overfit_indicator = " [OVERFIT!]" if overfitting_detected else ""
 
     # Compact epoch summary
     logger.info(f"Epoch {epoch+1:2d}/{total_epochs} [{epoch_time:.1f}s]{phase_indicator} "
                f"| Train: Loss={train_loss:.3f}, Acc={train_combined_acc:.3f} "
                f"| Val: Loss={val_loss:.3f}, Acc={val_combined_acc:.3f} "
-               f"| LR={current_lr:.1e}{lr_change_indicator}{best_indicator}{optim_indicator}")
+               f"| LR={current_lr:.1e}{lr_change_indicator}{best_indicator}{optim_indicator}{overfit_indicator}")
     
     return val_combined_acc
 

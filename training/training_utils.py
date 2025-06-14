@@ -11,7 +11,9 @@ import torch.optim.lr_scheduler
 import time
 import logging
 import contextlib
-from sklearn.metrics import f1_score
+import numpy as np
+import os
+from sklearn.metrics import f1_score, confusion_matrix
 from torch.profiler import profile, record_function, ProfilerActivity
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,79 @@ def calculate_f1_score(outputs, labels, num_classes):
     """Calculate F1 score for multi-class classification."""
     _, predicted = torch.max(outputs.data, 1)
     return f1_score(labels.cpu().numpy(), predicted.cpu().numpy(), average='weighted', zero_division=0)
+
+
+def update_confusion_matrix(confusion_matrix_dict, outputs, labels, task_name):
+    """Update running confusion matrix for a task."""
+    _, predicted = torch.max(outputs.data, 1)
+    labels_np = labels.cpu().numpy()
+    predicted_np = predicted.cpu().numpy()
+    
+    if task_name not in confusion_matrix_dict:
+        confusion_matrix_dict[task_name] = {'true_labels': [], 'predicted_labels': []}
+    
+    confusion_matrix_dict[task_name]['true_labels'].extend(labels_np.tolist())
+    confusion_matrix_dict[task_name]['predicted_labels'].extend(predicted_np.tolist())
+
+
+def compute_confusion_matrices(confusion_matrix_dict):
+    """Compute confusion matrices from accumulated predictions."""
+    results = {}
+    for task_name, data in confusion_matrix_dict.items():
+        if len(data['true_labels']) > 0:
+            num_classes = max(max(data['true_labels']), max(data['predicted_labels'])) + 1
+            cm = confusion_matrix(
+                data['true_labels'], 
+                data['predicted_labels'], 
+                labels=list(range(num_classes))
+            )
+            results[task_name] = cm
+    return results
+
+
+def log_confusion_matrix(cm, task_name, class_names=None):
+    """Log confusion matrix with per-class recall."""
+    logger.info(f"\n[CONFUSION_MATRIX] {task_name.upper()}")
+    
+    if class_names is None:
+        class_names = [f"Class_{i}" for i in range(cm.shape[0])]
+    
+    # Log the confusion matrix
+    logger.info(f"Confusion Matrix ({cm.shape[0]} classes):")
+    for i, row in enumerate(cm):
+        row_str = " ".join([f"{val:4d}" for val in row])
+        logger.info(f"  {class_names[i]:12s}: {row_str}")
+    
+    # Calculate and log per-class recall
+    logger.info("Per-class Recall:")
+    for i in range(cm.shape[0]):
+        total_true = cm[i].sum()
+        if total_true > 0:
+            recall = cm[i, i] / total_true
+            logger.info(f"  {class_names[i]:12s}: {recall:.3f} ({cm[i, i]:3d}/{total_true:3d})")
+        else:
+            logger.info(f"  {class_names[i]:12s}: N/A   (0 samples)")
+
+
+def save_confusion_matrix(cm, task_name, epoch, save_dir):
+    """Save confusion matrix to file."""
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    filename = f"confusion_matrix_{task_name}_epoch_{epoch}.npy"
+    filepath = os.path.join(save_dir, filename)
+    np.save(filepath, cm)
+    logger.info(f"[SAVE] Confusion matrix saved: {filepath}")
+
+
+def check_overfitting_alert(train_loss, val_loss, epoch):
+    """Check for potential overfitting and alert if detected."""
+    if val_loss > 0 and train_loss < 0.2 * val_loss:
+        logger.warning(f"🚨 [OVERFITTING ALERT] Epoch {epoch+1}: Train loss ({train_loss:.4f}) < 0.2 × Val loss ({val_loss:.4f})")
+        logger.warning(f"    This suggests overfitting to the oversampled training distribution!")
+        logger.warning(f"    Consider: reducing augmentation, increasing regularization, or reducing oversampling factor")
+        return True
+    return False
 
 
 class FocalLoss(nn.Module):
@@ -272,7 +347,7 @@ class EarlyStopping:
 
 def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, scaler=None, 
                    max_batches=None, gradient_clip_norm=1.0, memory_cleanup_interval=20, scheduler=None,
-                   gpu_augmentation=None, enable_profiling=False):
+                   gpu_augmentation=None, enable_profiling=False, confusion_matrix_dict=None):
     """Train the model for one epoch with optional GPU-based augmentation and profiling."""
     model.train()
     running_loss = 0.0
@@ -479,6 +554,11 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
         sev_f1 = calculate_f1_score(sev_logits, severity_labels, 6)  # 6 severity classes (0-5)
         act_f1 = calculate_f1_score(act_logits, action_labels, 10)  # 10 action classes (0-9)
         
+        # Update confusion matrices for original distribution analysis
+        if confusion_matrix_dict is not None:
+            update_confusion_matrix(confusion_matrix_dict, sev_logits, severity_labels, 'severity')
+            update_confusion_matrix(confusion_matrix_dict, act_logits, action_labels, 'action_type')
+        
         running_sev_acc += sev_acc
         running_act_acc += act_acc
         running_sev_f1 += sev_f1
@@ -531,7 +611,7 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
     }
 
 
-def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches=None, memory_cleanup_interval=20):
+def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches=None, memory_cleanup_interval=20, confusion_matrix_dict=None):
     """Validate the model for one epoch."""
     model.eval()
     running_loss = 0.0
@@ -597,6 +677,12 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
             running_loss += total_loss.item() * current_batch_size
             sev_acc = calculate_accuracy(sev_logits, severity_labels)
             act_acc = calculate_accuracy(act_logits, action_labels)
+            
+            # Update confusion matrices for validation analysis
+            if confusion_matrix_dict is not None:
+                update_confusion_matrix(confusion_matrix_dict, sev_logits, severity_labels, 'severity')
+                update_confusion_matrix(confusion_matrix_dict, act_logits, action_labels, 'action_type')
+            
             running_sev_acc += sev_acc
             running_act_acc += act_acc
             running_sev_f1 += calculate_f1_score(sev_logits, severity_labels, 6)  # 6 severity classes (0-5)
