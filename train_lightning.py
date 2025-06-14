@@ -50,7 +50,14 @@ def set_seed(seed: int):
     # Enable deterministic algorithms with warn_only for non-deterministic operations
     try:
         torch.use_deterministic_algorithms(True, warn_only=True)
+        
+        # Suppress specific warnings for known non-deterministic operations in 3D models
+        import warnings
+        warnings.filterwarnings("ignore", 
+                              message=".*max_pool3d_with_indices_backward_cuda does not have a deterministic implementation.*")
+        
         logger.info(f"Random seed set to {seed} with deterministic algorithms enabled (warn_only=True)")
+        logger.info("Note: 3D max pooling warnings suppressed (operation is non-deterministic but training continues)")
     except Exception as e:
         logger.warning(f"Could not enable deterministic algorithms: {e}")
         logger.info(f"Random seed set to {seed}")
