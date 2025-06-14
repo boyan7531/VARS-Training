@@ -143,7 +143,7 @@ def parse_args():
                         help='Enable layer dependency analysis in advanced freezing')
     
     # === GRADUAL FINE-TUNING (LEGACY/FIXED MODE) ===
-    parser.add_argument('--gradual_finetuning', action='store_true', default=True, 
+    parser.add_argument('--gradual_finetuning', action='store_true', default=False, 
                        help='Enable gradual fine-tuning with discriminative learning rates')
     parser.add_argument('--phase1_epochs', type=int, default=8, 
                        help='Number of epochs for Phase 1 (head-only training)')
