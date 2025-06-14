@@ -245,7 +245,7 @@ def parse_args():
                        help='Treat config warnings as errors')
     
     # === MVIT OPTIMIZATION ===
-    parser.add_argument('--enable_gradient_checkpointing', action='store_true', default=True,
+    parser.add_argument('--enable_gradient_checkpointing', action='store_true', default=False,
                        help='Enable gradient checkpointing for memory efficiency (recommended for MViT)')
     parser.add_argument('--disable_gradient_checkpointing', action='store_true', default=False,
                        help='Disable gradient checkpointing (for debugging or small models)')

@@ -20,7 +20,7 @@ class OptimizedMViTProcessor(nn.Module):
     Processes views sequentially to avoid memory fragmentation and improve GPU utilization.
     """
     
-    def __init__(self, backbone, use_gradient_checkpointing=True):
+    def __init__(self, backbone, use_gradient_checkpointing=False):
         super().__init__()
         self.backbone = backbone
         self.use_gradient_checkpointing = use_gradient_checkpointing
@@ -183,7 +183,7 @@ class MultiTaskMultiViewMViT(nn.Module):
         config: ModelConfig = None,
         use_augmentation: bool = True,
         severity_weights: Dict[float, float] = None,
-        use_gradient_checkpointing: bool = True,
+        use_gradient_checkpointing: bool = False,
         enable_memory_optimization: bool = True
     ):
         super().__init__()
@@ -414,7 +414,7 @@ def create_unified_model(
     use_augmentation: bool = True,
     disable_in_model_augmentation: bool = False,
     severity_weights: Dict[float, float] = None,
-    enable_gradient_checkpointing: bool = True,
+    enable_gradient_checkpointing: bool = False,
     enable_memory_optimization: bool = True,
     **config_kwargs
 ) -> nn.Module:
