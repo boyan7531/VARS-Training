@@ -322,7 +322,9 @@ class CustomEarlyStoppingCallback(EarlyStopping):
         
         if self.stopped_epoch > 0 and self.restore_best_weights and self.best_weights is not None:
             pl_module.load_state_dict(self.best_weights)
-            logger.info(f"Restored best weights from epoch {self.best_epoch}")
+            # Calculate best epoch from stopped_epoch and patience
+            best_epoch = max(0, self.stopped_epoch - self.patience)
+            logger.info(f"Restored best weights from epoch {best_epoch}")
     
     def _is_improvement(self, current_score: float) -> bool:
         """Check if current score is an improvement."""
@@ -436,13 +438,14 @@ def create_lightning_callbacks(args: Any) -> list:
             dirpath=args.save_dir,
             monitor='val_combined_acc',
             mode='max',
-            save_top_k=1,
+            save_top_k=-1,  # Save all best models (unlimited)
             save_last=True,
             every_n_epochs=10,
-            filename='best_model_epoch_{epoch:02d}_{val_combined_acc:.4f}'
+            filename='best_model_epoch_{epoch:02d}_acc_{val_combined_acc:.4f}',
+            auto_insert_metric_name=False  # Prevent duplicate metric names in filename
         )
         callbacks.append(model_checkpoint)
-        logger.info("Added ModelCheckpointCallback")
+        logger.info("Added ModelCheckpointCallback (saves all best models)")
     
     logger.info(f"Created {len(callbacks)} Lightning callbacks")
     return callbacks 
