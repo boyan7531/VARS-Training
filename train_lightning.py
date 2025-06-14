@@ -118,12 +118,21 @@ def create_trainer(args, callbacks, logger_instance=None):
     
     # Add profiler for debugging if needed
     if hasattr(args, 'enable_profiler') and args.enable_profiler:
-        from pytorch_lightning.profiler import AdvancedProfiler
-        trainer_config['profiler'] = AdvancedProfiler(
-            dirpath=args.save_dir,
-            filename="training_profile"
-        )
-        logger.info("Advanced profiler enabled")
+        try:
+            from pytorch_lightning.profilers import AdvancedProfiler
+        except ImportError:
+            try:
+                from lightning.pytorch.profilers import AdvancedProfiler
+            except ImportError:
+                logger.warning("Profiler not available, skipping profiling")
+                AdvancedProfiler = None
+        
+        if AdvancedProfiler:
+            trainer_config['profiler'] = AdvancedProfiler(
+                dirpath=args.save_dir,
+                filename="training_profile"
+            )
+            logger.info("Advanced profiler enabled")
     
     # Handle multi-node training
     if hasattr(args, 'num_nodes') and args.num_nodes > 1:
