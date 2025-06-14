@@ -221,7 +221,7 @@ def create_model(args, vocab_sizes, device, num_gpus):
             use_attention_aggregation=args.attention_aggregation,
             use_augmentation=not args.disable_in_model_augmentation,
             disable_in_model_augmentation=args.disable_in_model_augmentation,
-            enable_gradient_checkpointing=getattr(args, 'enable_gradient_checkpointing', True),
+            enable_gradient_checkpointing=getattr(args, 'enable_gradient_checkpointing', False),
             enable_memory_optimization=getattr(args, 'enable_memory_optimization', True)
         )
         
