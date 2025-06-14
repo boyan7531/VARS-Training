@@ -220,6 +220,10 @@ class OptimizedDataLoader:
             **self.kwargs
         )
     
+    def __len__(self):
+        """Return the length of the underlying dataloader."""
+        return len(self.dataloader)
+    
     def __iter__(self):
         """Iterate through the dataloader with performance monitoring."""
         data_iter = iter(self.dataloader)
