@@ -74,8 +74,21 @@ class AdvancedFreezingManager:
         logger.info(f"[ADVANCED_FREEZING] Initialized with enhanced multi-metric analysis")
     
     def _get_layer_groups(self):
-        """Get enhanced layer grouping for the backbone."""
-        backbone = self.actual_model.backbone.backbone
+        """Get enhanced layer grouping for the backbone - supports both ResNet3D and MViT."""
+        # Handle different model structures
+        if hasattr(self.actual_model, 'mvit_processor'):
+            # MViT model - backbone is inside mvit_processor
+            backbone = self.actual_model.mvit_processor.backbone
+            return self._get_mvit_layer_groups(backbone)
+        elif hasattr(self.actual_model, 'backbone'):
+            # ResNet3D model - standard structure
+            backbone = self.actual_model.backbone.backbone
+            return self._get_resnet_layer_groups(backbone)
+        else:
+            raise AttributeError("Model does not have accessible backbone")
+    
+    def _get_resnet_layer_groups(self, backbone):
+        """Get layer groups for ResNet3D backbone."""
         layer_groups = {}
         
         # Early layers
@@ -95,6 +108,64 @@ class AdvancedFreezingManager:
                     'type': 'residual_block',
                     'depth': block_num
                 }
+        
+        return layer_groups
+    
+    def _get_mvit_layer_groups(self, backbone):
+        """Get layer groups for MViT backbone."""
+        layer_groups = {}
+        
+        # Patch embedding (early layer)
+        if hasattr(backbone, 'patch_embed'):
+            layer_groups['patch_embed'] = {
+                'module': backbone.patch_embed,
+                'type': 'patch_embed',
+                'depth': 0
+            }
+        
+        # Positional embedding
+        if hasattr(backbone, 'pos_embed'):
+            layer_groups['pos_embed'] = {
+                'module': backbone.pos_embed,
+                'type': 'pos_embed',
+                'depth': 0
+            }
+        
+        # Transformer blocks
+        if hasattr(backbone, 'blocks'):
+            num_blocks = len(backbone.blocks)
+            # Group blocks into stages for gradual unfreezing
+            blocks_per_stage = max(1, num_blocks // 4)  # Divide into ~4 stages
+            
+            for stage_idx in range(4):
+                start_idx = stage_idx * blocks_per_stage
+                end_idx = min((stage_idx + 1) * blocks_per_stage, num_blocks)
+                
+                if start_idx < num_blocks:
+                    stage_name = f'blocks_stage{stage_idx}'
+                    # Create a module list for this stage
+                    stage_blocks = backbone.blocks[start_idx:end_idx]
+                    layer_groups[stage_name] = {
+                        'module': stage_blocks,
+                        'type': 'transformer_blocks',
+                        'depth': stage_idx + 1,
+                        'block_range': (start_idx, end_idx)
+                    }
+        
+        # Head/norm layers
+        if hasattr(backbone, 'norm'):
+            layer_groups['norm'] = {
+                'module': backbone.norm,
+                'type': 'norm',
+                'depth': 5
+            }
+        
+        if hasattr(backbone, 'head'):
+            layer_groups['head'] = {
+                'module': backbone.head,
+                'type': 'classifier',
+                'depth': 6
+            }
         
         return layer_groups
     
@@ -152,7 +223,7 @@ class AdvancedFreezingManager:
         return selected
     
     def unfreeze_layers_with_enhanced_warmup(self, layer_names):
-        """Unfreeze layers with warmup."""
+        """Unfreeze layers with warmup - supports both ResNet3D and MViT."""
         if not layer_names:
             return 0
         
@@ -163,13 +234,23 @@ class AdvancedFreezingManager:
                 layer_info = self.layer_groups[layer_name]
                 module = layer_info['module']
                 
-                # Unfreeze parameters
+                # Handle different module types
                 layer_params = 0
-                for param in module.parameters():
-                    if not param.requires_grad:
-                        param.requires_grad = True
-                        layer_params += param.numel()
-                        unfrozen_params += param.numel()
+                if layer_info['type'] == 'transformer_blocks':
+                    # For MViT transformer blocks (which are ModuleList slices)
+                    for block in module:
+                        for param in block.parameters():
+                            if not param.requires_grad:
+                                param.requires_grad = True
+                                layer_params += param.numel()
+                                unfrozen_params += param.numel()
+                else:
+                    # For regular modules (ResNet3D layers, embeddings, etc.)
+                    for param in module.parameters():
+                        if not param.requires_grad:
+                            param.requires_grad = True
+                            layer_params += param.numel()
+                            unfrozen_params += param.numel()
                 
                 if layer_params > 0:
                     self.unfrozen_layers.add(layer_name)
@@ -212,8 +293,18 @@ class AdvancedFreezingManager:
         for layer_name, warmup_info in self.layers_in_warmup.items():
             if layer_name in self.layer_groups:
                 layer_info = self.layer_groups[layer_name]
-                layer_params = [p for p in layer_info['module'].parameters() 
-                              if p.requires_grad and id(p) not in used_params]
+                
+                # Handle different module types
+                layer_params = []
+                if layer_info['type'] == 'transformer_blocks':
+                    # For MViT transformer blocks (which are ModuleList slices)
+                    for block in layer_info['module']:
+                        layer_params.extend([p for p in block.parameters() 
+                                           if p.requires_grad and id(p) not in used_params])
+                else:
+                    # For regular modules
+                    layer_params = [p for p in layer_info['module'].parameters() 
+                                  if p.requires_grad and id(p) not in used_params]
                 
                 if layer_params:
                     for param in layer_params:
@@ -238,8 +329,18 @@ class AdvancedFreezingManager:
         for layer_name in self.unfrozen_layers:
             if layer_name not in self.layers_in_warmup and layer_name in self.layer_groups:
                 layer_info = self.layer_groups[layer_name]
-                layer_params = [p for p in layer_info['module'].parameters() 
-                              if p.requires_grad and id(p) not in used_params]
+                
+                # Handle different module types
+                layer_params = []
+                if layer_info['type'] == 'transformer_blocks':
+                    # For MViT transformer blocks (which are ModuleList slices)
+                    for block in layer_info['module']:
+                        layer_params.extend([p for p in block.parameters() 
+                                           if p.requires_grad and id(p) not in used_params])
+                else:
+                    # For regular modules
+                    layer_params = [p for p in layer_info['module'].parameters() 
+                                  if p.requires_grad and id(p) not in used_params]
                 
                 if layer_params:
                     for param in layer_params:
