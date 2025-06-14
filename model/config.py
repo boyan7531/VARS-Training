@@ -42,41 +42,13 @@ class ModelConfig:
     default_mvit_feature_dim: int = 768  # Fallback if detection fails
     
     def get_total_embedding_dim(self) -> int:
-        """Calculate total embedding dimension for all features."""
-        return (
-            self.contact_embedding_dim +
-            self.bodypart_embedding_dim +
-            self.upper_bodypart_embedding_dim +
-            # self.lower_bodypart_embedding_dim +
-            self.multiple_fouls_embedding_dim +
-            self.try_to_play_embedding_dim +
-            self.touch_ball_embedding_dim +
-            self.handball_embedding_dim +
-            self.handball_offence_embedding_dim +
-            self.offence_embedding_dim +
-            self.contact_embedding_dim +  # Standard embeddings reuse same dims
-            self.bodypart_embedding_dim +
-            self.upper_bodypart_embedding_dim +
-            # self.lower_bodypart_embedding_dim +
-            self.multiple_fouls_embedding_dim +
-            self.try_to_play_embedding_dim +
-            self.touch_ball_embedding_dim +
-            self.handball_embedding_dim +
-            self.handball_offence_embedding_dim
-        )
+        """Calculate total embedding dimension for all features - now returns 0 for video-only model."""
+        # Return 0 since we no longer use categorical features
+        return 0
     
     @property
     def required_feature_keys(self) -> list:
-        """Return list of required feature keys in batch data."""
+        """Return list of required feature keys in batch data - now video-only."""
         return [
-            "clips",
-            # Original vocabulary indices
-            "contact_idx", "bodypart_idx", "upper_bodypart_idx", # "lower_bodypart_idx",
-            "multiple_fouls_idx", "try_to_play_idx", "touch_ball_idx", 
-            "handball_idx", "handball_offence_idx",
-            # Standard indices
-            "offence_standard_idx", "contact_standard_idx", "bodypart_standard_idx",
-            "upper_bodypart_standard_idx", # "lower_bodypart_standard_idx",
-            "multiple_fouls_standard_idx", "try_to_play_standard_idx", 
-            "touch_ball_standard_idx", "handball_standard_idx", "handball_offence_standard_idx"
+            "clips"  # Only video clips are required now
         ] 

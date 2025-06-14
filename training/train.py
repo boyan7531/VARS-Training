@@ -440,19 +440,10 @@ def main():
     # Log dataset recommendations
     log_dataset_recommendations(train_dataset)
 
-    # Create vocabulary sizes dictionary for the model
-    vocab_sizes = {
-        'contact': train_dataset.num_contact_classes,
-        'bodypart': train_dataset.num_bodypart_classes,
-        'upper_bodypart': train_dataset.num_upper_bodypart_classes,
-        'multiple_fouls': train_dataset.num_multiple_fouls_classes,
-        'try_to_play': train_dataset.num_try_to_play_classes,
-        'touch_ball': train_dataset.num_touch_ball_classes,
-        'handball': train_dataset.num_handball_classes,
-        'handball_offence': train_dataset.num_handball_offence_classes,
-    }
+    # Create vocabulary sizes dictionary for the model (now optional - video-only)
+    vocab_sizes = None  # No longer needed since we only use video features
 
-    # Create model
+    # Create model (video-only)
     model = create_model(args, vocab_sizes, device, num_gpus)
     
     # Setup freezing strategy

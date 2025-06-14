@@ -196,9 +196,9 @@ class MultiTaskMultiViewMViT(nn.Module):
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.enable_memory_optimization = enable_memory_optimization
         
-        # Validate vocabulary sizes
+        # Validate vocabulary sizes (now optional)
         self._validate_vocab_sizes(vocab_sizes)
-        self.vocab_sizes = vocab_sizes
+        self.vocab_sizes = vocab_sizes or {}
         
         # Initialize augmentation for addressing class imbalance
         if self.use_augmentation:
@@ -218,20 +218,9 @@ class MultiTaskMultiViewMViT(nn.Module):
                    f"Gradient checkpointing: {'enabled' if use_gradient_checkpointing else 'disabled'}")
     
     def _validate_vocab_sizes(self, vocab_sizes: Dict[str, int]) -> None:
-        """Validate that all required vocabulary sizes are provided."""
-        required_vocab_keys = [
-            'contact', 'bodypart', 'upper_bodypart', 
-            'multiple_fouls', 'try_to_play', 'touch_ball', 'handball', 'handball_offence'
-        ]
-        
-        missing_keys = [key for key in required_vocab_keys if key not in vocab_sizes]
-        if missing_keys:
-            raise ValueError(f"Missing vocabulary sizes for: {missing_keys}")
-        
-        # Validate that all sizes are positive integers
-        for key, size in vocab_sizes.items():
-            if not isinstance(size, int) or size <= 0:
-                raise ValueError(f"Vocabulary size for '{key}' must be a positive integer, got {size}")
+        """Validate vocabulary sizes - now optional since we only use video features."""
+        # No validation needed since we don't use categorical features anymore
+        pass
     
     def _initialize_components(self) -> None:
         """Initialize all model components."""
@@ -246,17 +235,17 @@ class MultiTaskMultiViewMViT(nn.Module):
                 use_gradient_checkpointing=self.use_gradient_checkpointing
             )
             
-            # Initialize embedding manager
+            # Initialize embedding manager (simplified for video-only)
             self.embedding_manager = EmbeddingManager(self.config, self.vocab_sizes)
             
             # Initialize view aggregator with memory optimization
             self.view_aggregator = ViewAggregator(self.config, self.video_feature_dim)
             
-            # Initialize input validator
+            # Initialize input validator (simplified for video-only)
             self.input_validator = InputValidator(self.config, self.vocab_sizes)
             
-            # Calculate combined feature dimension
-            combined_feature_dim = self.video_feature_dim + self.config.get_total_embedding_dim()
+            # Calculate combined feature dimension (now just video features)
+            combined_feature_dim = self.video_feature_dim  # No categorical features anymore
             
             # Create classification heads with strong regularization for small dataset
             # Use efficient activation and initialization
@@ -288,24 +277,26 @@ class MultiTaskMultiViewMViT(nn.Module):
     
     def forward(self, batch_data: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Optimized forward pass through the model.
+        Optimized forward pass through the model - now video-only.
         
         Args:
             batch_data: Dictionary containing:
                 - clips: Video tensor(s) [B, N, C, T, H, W] or List[[N_i, C, T, H, W]]
                 - view_mask: Optional boolean mask [B, N] for valid views
                 - severity: Optional severity labels [B] for adaptive augmentation
-                - All categorical feature indices
         
         Returns:
             Tuple of (severity_logits, action_type_logits)
         """
         try:
-            # Validate inputs
-            batch_size = self.input_validator.validate_batch_data(batch_data)
+            # Get batch size from clips
+            clips = batch_data["clips"]
+            if isinstance(clips, list):
+                batch_size = len(clips)
+            else:
+                batch_size = clips.shape[0]
             
             # Apply adaptive augmentation based on severity (more for minority classes)
-            clips = batch_data["clips"]
             if self.use_augmentation and self.training:
                 severity_labels = batch_data.get("severity", None)
                 clips = self.video_augmentation(clips, severity_labels)
@@ -316,20 +307,9 @@ class MultiTaskMultiViewMViT(nn.Module):
             video_features = self._process_video_features_optimized(batch_data)
             logger.debug(f"Video features shape: {video_features.shape}")
             
-            # Process categorical features (unchanged but more efficient memory usage)
-            categorical_features = self._process_categorical_features(batch_data)
-            logger.debug(f"Categorical features shape: {categorical_features.shape}")
-            
-            # Validate shapes before concatenation
-            if video_features.shape[0] != categorical_features.shape[0]:
-                raise RuntimeError(f"Batch size mismatch: video_features {video_features.shape[0]} vs categorical_features {categorical_features.shape[0]}")
-            
-            if len(video_features.shape) != 2 or len(categorical_features.shape) != 2:
-                raise RuntimeError(f"Expected 2D tensors for concatenation: video_features {video_features.shape} vs categorical_features {categorical_features.shape}")
-            
-            # Combine features efficiently
-            combined_features = torch.cat([video_features, categorical_features], dim=1)
-            logger.debug(f"Combined features shape: {combined_features.shape}")
+            # Use video features directly (no categorical features anymore)
+            combined_features = video_features
+            logger.debug(f"Final features shape: {combined_features.shape}")
             
             # Generate predictions with potential checkpointing for large models
             if self.use_gradient_checkpointing and self.training:
@@ -345,13 +325,13 @@ class MultiTaskMultiViewMViT(nn.Module):
             
             # Clean up intermediate tensors if memory optimization is enabled
             if self.enable_memory_optimization:
-                del video_features, categorical_features, combined_features
+                del video_features, combined_features
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             
             return severity_logits, action_type_logits
             
-        except (ValidationError, RuntimeError) as e:
+        except RuntimeError as e:
             # Re-raise known errors
             raise e
         except Exception as e:
@@ -359,9 +339,7 @@ class MultiTaskMultiViewMViT(nn.Module):
             logger.error(f"Forward pass failed with error: {str(e)}")
             if 'video_features' in locals():
                 logger.error(f"Video features shape: {video_features.shape if 'video_features' in locals() else 'Not computed'}")
-            if 'categorical_features' in locals():
-                logger.error(f"Categorical features shape: {categorical_features.shape if 'categorical_features' in locals() else 'Not computed'}")
-            raise RuntimeError(f"Optimized forward pass failed: {str(e)}") from e
+            raise RuntimeError(f"Video-only forward pass failed: {str(e)}") from e
     
     def _process_video_features_optimized(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Process video clips with optimized memory usage and sequential processing."""
@@ -382,13 +360,9 @@ class MultiTaskMultiViewMViT(nn.Module):
         return aggregated_features
     
     def _process_categorical_features(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Process categorical features through embeddings."""
-        original_embedded, standard_embedded = self.embedding_manager.embed_features(batch_data)
-        
-        # Combine original and standard embeddings
-        categorical_features = torch.cat([original_embedded, standard_embedded], dim=1)
-        
-        return categorical_features
+        """Process categorical features through embeddings - now returns empty tensor."""
+        # Return empty categorical features since we only use video features
+        return self.embedding_manager.embed_features(batch_data)
     
     def train(self, mode: bool = True):
         """Override train method to handle augmentation state."""
@@ -430,7 +404,7 @@ def create_unified_model(
     backbone_type: str,
     num_severity: int,
     num_action_type: int,
-    vocab_sizes: Dict[str, int],
+    vocab_sizes: Dict[str, int] = None,
     backbone_name: str = None,
     use_attention_aggregation: bool = True,
     use_augmentation: bool = True,
@@ -441,13 +415,13 @@ def create_unified_model(
     **config_kwargs
 ) -> nn.Module:
     """
-    Factory function to create either ResNet3D or MViTv2 model.
+    Factory function to create either ResNet3D or MViTv2 model - now video-only.
     
     Args:
         backbone_type: Either 'resnet3d' or 'mvit'
         num_severity: Number of severity classes
         num_action_type: Number of action type classes  
-        vocab_sizes: Dictionary mapping feature names to vocabulary sizes
+        vocab_sizes: Optional dictionary (not used anymore since we only use video features)
         backbone_name: Specific model name (e.g., 'r2plus1d_18' for ResNet3D or 'mvit_base_16x4' for MViT)
         use_attention_aggregation: Whether to use attention-based view aggregation
         use_augmentation: Whether to apply adaptive augmentation for class imbalance
@@ -471,7 +445,7 @@ def create_unified_model(
         return MultiTaskMultiViewResNet3D.create_model(
             num_severity=num_severity,
             num_action_type=num_action_type,
-            vocab_sizes=vocab_sizes,
+            vocab_sizes=vocab_sizes or {},
             backbone_name=backbone_name,
             use_attention_aggregation=use_attention_aggregation,
             use_augmentation=use_augmentation,
@@ -513,7 +487,7 @@ def create_unified_model(
         model = MultiTaskMultiViewMViT(
             num_severity=num_severity,
             num_action_type=num_action_type,
-            vocab_sizes=vocab_sizes,
+            vocab_sizes=vocab_sizes or {},
             config=mvit_config,
             use_augmentation=use_augmentation,
             severity_weights=severity_weights,

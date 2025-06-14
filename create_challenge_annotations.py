@@ -51,19 +51,10 @@ def create_challenge_annotations(challenge_path, output_file="annotations.json")
                 "Replay speed": "1.0"  # Default replay speed
             })
         
-        # Create minimal action entry with empty/default values
+        # Create minimal action entry for video-only model
         action_entry = {
-            "Severity": "",  # Empty severity (class 0)
-            "Action class": "",  # Empty action class (class 0)
-            "Offence": "",  # Empty offence
-            "Contact": "",  # Empty contact
-            "Bodypart": "",  # Empty bodypart
-            "Upper body part": "",  # Empty upper bodypart
-            "Multiple fouls": "",  # Empty multiple fouls
-            "Try to play": "",  # Empty try to play
-            "Touch ball": "",  # Empty touch ball
-            "Handball": "",  # Empty handball
-            "Handball offence": "",  # Empty handball offence
+            "Severity": "",  # Empty severity (will be predicted)
+            "Action class": "",  # Empty action class (will be predicted)
             "Clips": clips
         }
         
