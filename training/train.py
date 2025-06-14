@@ -564,7 +564,7 @@ def main():
                     memory_cleanup_interval=memory_cleanup_interval_for_training,
                     scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
                     gpu_augmentation=gpu_augmentation,
-                    enable_profiling=(epoch == 0)  # Enable profiling only for first epoch
+                    enable_profiling=False  # Profiling disabled
                 )
                 
                 # Check if batch size was reduced and update dataloader if needed
@@ -605,7 +605,7 @@ def main():
                 memory_cleanup_interval=memory_cleanup_interval_for_training,
                 scheduler=scheduler if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) else None,
                 gpu_augmentation=gpu_augmentation,
-                enable_profiling=(epoch == 0)  # Enable profiling only for first epoch
+                enable_profiling=False  # Profiling disabled
             )
         
         # Reset GradScaler parameters after initial calibration period (typically 100-500 steps)

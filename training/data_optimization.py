@@ -189,7 +189,7 @@ class OptimizedDataLoader:
     """Enhanced DataLoader with performance monitoring and adaptive optimizations."""
     
     def __init__(self, dataset, batch_size, num_workers=4, prefetch_factor=2, 
-                 pin_memory=True, persistent_workers=True, enable_profiling=True,
+                 pin_memory=True, persistent_workers=True, enable_profiling=False,
                  enable_adaptive_prefetch=True, **kwargs):
         
         self.dataset = dataset
