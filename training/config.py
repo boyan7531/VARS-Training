@@ -38,7 +38,7 @@ def parse_args():
     parser.add_argument('--start_frame', type=int, default=67, help='Start frame index for foul-centered extraction (8 frames before foul at frame 75)')
     parser.add_argument('--end_frame', type=int, default=82, help='End frame index for foul-centered extraction (7 frames after foul at frame 75)')
     parser.add_argument('--img_height', type=int, default=224, help='Target image height')
-    parser.add_argument('--img_width', type=int, default=398, help='Target image width (matches original VARS paper)')
+    parser.add_argument('--img_width', type=int, default=224, help='Target image width (224x224 square for MViT compatibility)')
     parser.add_argument('--max_views', type=int, default=None, help='Optional limit on max views per action (default: use all available)')
     parser.add_argument('--attention_aggregation', action='store_true', default=True, help='Use attention for view aggregation')
     
