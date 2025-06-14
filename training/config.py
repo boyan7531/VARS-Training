@@ -32,7 +32,7 @@ def parse_args():
                         help='Backbone architecture type: resnet3d (torchvision 3D ResNets) or mvit (MViTv2 from PyTorchVideo)')
     parser.add_argument('--backbone_name', type=str, default='r2plus1d_18', 
                         help="Specific backbone model name. For ResNet3D: 'resnet3d_18', 'mc3_18', 'r2plus1d_18', 'resnet3d_50'. "
-                             "For MViT: 'mvit_base_16x4', 'mvit_base_32x3', 'mvit_small_16x4' (r2plus1d_18/mvit_base_16x4 recommended)")
+                             "For MViT: 'mvit_base_16', 'mvit_base_16x4', 'mvit_base_32x3' (r2plus1d_18/mvit_base_16x4 recommended)")
     parser.add_argument('--frames_per_clip', type=int, default=16, help='Number of frames per clip')
     parser.add_argument('--target_fps', type=int, default=15, help='Target FPS for clips')
     parser.add_argument('--start_frame', type=int, default=67, help='Start frame index for foul-centered extraction (8 frames before foul at frame 75)')

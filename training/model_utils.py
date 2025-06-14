@@ -259,7 +259,7 @@ def create_model(args, vocab_sizes, device, num_gpus):
         if args.backbone_type == 'resnet3d':
             logger.error(f"Available ResNet3D models: resnet3d_18, mc3_18, r2plus1d_18, resnet3d_50")
         elif args.backbone_type == 'mvit':
-            logger.error(f"Available MViT models: mvit_base_16x4, mvit_base_32x3, mvit_small_16x4")
+            logger.error(f"Available MViT models: mvit_base_16, mvit_base_16x4, mvit_base_32x3")
         raise
 
 
