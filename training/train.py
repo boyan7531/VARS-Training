@@ -235,15 +235,27 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
     
     # Rebuild optimizer if needed
     if rebuild_optimizer:
-        # Get LR from current optimizer
+        # Get current learning rates - preserve the original max LR instead of using tiny current LR
         current_head_lr = optimizer.param_groups[0]['lr']
+        
+        # Use original max LR or a reasonable LR when rebuilding to avoid tiny LRs
+        if args.gradual_finetuning and current_head_lr < args.head_lr * 0.1:
+            # If current LR is too small (due to scheduler decay), use original head_lr
+            effective_head_lr = args.head_lr
+            logger.info(f"🔧 Using original head_lr {effective_head_lr:.2e} instead of tiny current LR {current_head_lr:.2e}")
+        else:
+            effective_head_lr = current_head_lr
+        
+        # Calculate backbone LR as one-tenth of head LR when unfreezing
+        effective_backbone_lr = effective_head_lr * 0.1
+        logger.info(f"🎯 Setting backbone_lr to {effective_backbone_lr:.2e} (head_lr / 10)")
         
         if isinstance(freezing_manager, AdvancedFreezingManager):
             # Use advanced param groups for multi-metric freezing
             try:
                 param_groups = freezing_manager.create_advanced_optimizer_param_groups(
-                    head_lr=current_head_lr,
-                    backbone_lr=args.backbone_lr
+                    head_lr=effective_head_lr,
+                    backbone_lr=effective_backbone_lr
                 )
                 
                 # Validate parameter groups before creating optimizer
@@ -266,16 +278,16 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
                 # Fallback: Use all trainable parameters with current LR
                 optimizer = torch.optim.AdamW(
                     [p for p in model.parameters() if p.requires_grad],
-                    lr=current_head_lr,
+                    lr=effective_head_lr,
                     weight_decay=args.weight_decay
                 )
-                logger.info(f"Created fallback optimizer with uniform LR: {current_head_lr:.2e}")
+                logger.info(f"Created fallback optimizer with uniform LR: {effective_head_lr:.2e}")
             
         elif isinstance(freezing_manager, GradientGuidedFreezingManager):
             # Use specialized param groups for gradient-guided freezing
             param_groups = freezing_manager.create_optimizer_param_groups(
-                head_lr=current_head_lr,
-                backbone_lr=args.backbone_lr
+                head_lr=effective_head_lr,
+                backbone_lr=effective_backbone_lr
             )
             
             optimizer = torch.optim.AdamW(
@@ -288,51 +300,48 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
             # Use discriminative learning rates
             param_groups = setup_discriminative_optimizer(
                 model, 
-                head_lr=current_head_lr,
-                backbone_lr=args.backbone_lr if args.backbone_lr > 0 else current_head_lr * 0.1
+                head_lr=effective_head_lr,
+                backbone_lr=effective_backbone_lr
             )
             
             optimizer = torch.optim.AdamW(
                 param_groups,
                 weight_decay=args.weight_decay
             )
-            logger.info(f"Rebuilt optimizer with discriminative learning rates")
+            logger.info(f"Rebuilt optimizer with discriminative learning rates (head: {effective_head_lr:.2e}, backbone: {effective_backbone_lr:.2e})")
             
         else:
             # Standard optimizer
             optimizer = torch.optim.AdamW(
                 model.parameters(),
-                lr=current_head_lr,
+                lr=effective_head_lr,
                 weight_decay=args.weight_decay
             )
-            logger.info(f"Rebuilt optimizer with uniform learning rate: {current_head_lr:.2e}")
+            logger.info(f"Rebuilt optimizer with uniform learning rate: {effective_head_lr:.2e}")
         
-        rebuild_scheduler = True
+        # DO NOT rebuild OneCycle scheduler to avoid resetting progress
+        if args.scheduler == 'onecycle':
+            rebuild_scheduler = False
+            logger.info("🚀 OneCycle scheduler: Keeping existing scheduler (no rebuild to preserve progress)")
+        else:
+            rebuild_scheduler = True
     
-    # Rebuild scheduler if needed
+    # Rebuild scheduler if needed (but not for OneCycle)
     if rebuild_scheduler and scheduler is not None:
         remaining_epochs = args.epochs - epoch
         if args.scheduler == 'cosine':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, 
-                T_max=remaining_epochs
+                T_max=remaining_epochs,
+                eta_min=args.lr * 0.01  # Use original LR as reference
             )
             logger.info(f"Rebuilt cosine scheduler for remaining {remaining_epochs} epochs")
             
         elif args.scheduler == 'onecycle':
-            if train_loader is not None:
-                steps_per_epoch = len(train_loader)
-                scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                    max_lr=[group['lr'] for group in optimizer.param_groups],
-                epochs=remaining_epochs,
-                    steps_per_epoch=steps_per_epoch,
-                    pct_start=0.1  # Short warmup for rebuilding
-                )
-                logger.info(f"Rebuilt OneCycleLR scheduler for remaining {remaining_epochs} epochs")
-        else:
-                logger.warning("Cannot rebuild OneCycleLR scheduler: train_loader not provided")
-            
+            # This should not happen due to rebuild_scheduler = False above
+            logger.warning("⚠️  OneCycle scheduler rebuild blocked - this should not happen")
+            rebuild_scheduler = False
+        
         # Add more scheduler types here if needed
         
     return optimizer, scheduler

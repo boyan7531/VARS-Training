@@ -152,9 +152,9 @@ def parse_args():
     parser.add_argument('--phase2_epochs', type=int, default=15, 
                        help='Number of epochs for Phase 2 (gradual unfreezing)')
     parser.add_argument('--head_lr', type=float, default=1e-3, 
-                       help='Learning rate for classification heads in Phase 1')
-    parser.add_argument('--backbone_lr', type=float, default=1e-5, 
-                       help='Learning rate for unfrozen backbone layers in Phase 2')
+                       help='Learning rate for classification heads (used when backbone is frozen)')
+    parser.add_argument('--backbone_lr', type=float, default=1e-4, 
+                       help='Learning rate for unfrozen backbone layers (typically head_lr/10 = 1e-4)')
     parser.add_argument('--unfreeze_blocks', type=int, default=3,
                        help='Number of final residual blocks to unfreeze in Phase 2')
     parser.add_argument('--phase2_backbone_lr_scale_factor', type=float, default=1.0,
@@ -285,6 +285,9 @@ def process_config(args):
         logger.info("   - Gradual fine-tuning: disabled")
         logger.info("   - Label smoothing: disabled")
     
+    # Process scheduler configuration and provide recommendations
+    args = process_scheduler_config(args)
+    
     # Handle disable flags
     if args.disable_class_balancing:
         args.use_class_balanced_sampler = False
@@ -347,73 +350,29 @@ def process_config(args):
         logger.info("🎨 Augmentation strength set to MILD.")
     elif args.augmentation_strength == 'moderate':
         args.aggressive_augmentation = False # Explicitly set to False
-        args.extreme_augmentation = False
-        args.temporal_jitter_strength = 2
-        args.spatial_crop_strength = 0.8
-        args.color_aug_strength = 0.2
-        args.noise_strength = 0.03
+        args.extreme_augmentation = False # Explicitly set to False 
         logger.info("🎨 Augmentation strength set to MODERATE.")
     elif args.augmentation_strength == 'aggressive':
         args.aggressive_augmentation = True
         args.extreme_augmentation = False
-        args.temporal_jitter_strength = 3 # Default aggressive value
-        args.spatial_crop_strength = 0.7 # Default aggressive value
-        args.color_aug_strength = 0.3 # Default aggressive value
-        args.noise_strength = 0.06 # Default aggressive value
         logger.info("🎨 Augmentation strength set to AGGRESSIVE.")
     elif args.augmentation_strength == 'extreme':
         args.aggressive_augmentation = True
         args.extreme_augmentation = True
-        args.temporal_jitter_strength = 4 # Even more aggressive
-        args.spatial_crop_strength = 0.6 # Even more aggressive
-        args.color_aug_strength = 0.4 # Even more aggressive
-        args.noise_strength = 0.08 # Even more aggressive
         logger.info("🎨 Augmentation strength set to EXTREME.")
     
-    # Ensure gradual_finetuning is False if gradient_guided or adaptive freezing is active
-    if args.freezing_strategy in ['gradient_guided', 'adaptive'] and args.gradual_finetuning:
-        logger.warning(f"⚠️  Disabling --gradual_finetuning as --freezing_strategy is set to '{args.freezing_strategy}'.")
-        args.gradual_finetuning = False
+    # Validate learning rate ranges for error recovery
+    if args.lr < 1e-6 or args.lr > 1e-2:
+        logger.warning(f"⚠️  Learning rate {args.lr:.1e} is outside recommended range [1e-6, 1e-2]")
     
-    # Handle legacy arguments and provide warnings
-    if args.use_focal_loss and args.loss_function == 'weighted':
-        logger.warning("⚠️  --use_focal_loss is deprecated. Setting --loss_function to 'focal'")
-        args.loss_function = 'focal'
+    # Force augmentation override if augmentation is manually disabled via command line
+    if args.disable_augmentation:
+        args.aggressive_augmentation = False
+        args.extreme_augmentation = False
+        args.disable_in_model_augmentation = True
+        # args.augmentation_strength is purely informational at this point so we don't change it
     
-    if not args.use_class_weighted_loss and args.loss_function == 'weighted':
-        logger.warning("⚠️  --use_class_weighted_loss=False detected. Setting --loss_function to 'plain'")
-        args.loss_function = 'plain'
-    
-    # Validate and construct dataset path
-    if not args.dataset_root:
-        raise ValueError("Please provide the --dataset_root argument.")
-    args.mvfouls_path = str(Path(args.dataset_root) / "mvfouls")
-    
-    # Validate backbone_type and backbone_name combinations
-    if args.backbone_type == 'resnet3d':
-        resnet3d_models = ['resnet3d_18', 'mc3_18', 'r2plus1d_18', 'resnet3d_50']
-        if args.backbone_name not in resnet3d_models:
-            logger.warning(f"⚠️  backbone_name '{args.backbone_name}' not in standard ResNet3D models {resnet3d_models}. "
-                          f"Using anyway - might work if it's a valid torchvision model.")
-    elif args.backbone_type == 'mvit':
-        mvit_models = ['mvit_base_16x4', 'mvit_base_32x3', 'mvit_small_16x4']
-        if args.backbone_name not in mvit_models and not args.backbone_name.startswith('mvit'):
-            logger.warning(f"⚠️  backbone_name '{args.backbone_name}' doesn't look like an MViT model. "
-                          f"Standard options: {mvit_models}. Using anyway - might work if it's a valid PyTorchVideo model.")
-        # Update default backbone_name for MViT if user didn't specify
-        if args.backbone_name == 'r2plus1d_18':  # Default ResNet3D name
-            args.backbone_name = 'mvit_base_16x4'
-            logger.info(f"🔄 Updated backbone_name to '{args.backbone_name}' for MViT backbone_type")
-        
-        # MViT requires square input dimensions for positional encoding
-        if args.img_width != args.img_height:
-            logger.warning(f"⚠️  MViT requires square input dimensions. Changing img_width from {args.img_width} to {args.img_height}")
-            args.img_width = args.img_height  # Make it square (224x224)
-    
-    logger.info(f"🏗️  Using {args.backbone_type.upper()} backbone: {args.backbone_name}")
-    logger.info(f"📐 Input dimensions: {args.img_height}x{args.img_width} ({args.frames_per_clip} frames)")
-    
-    # Adjust total epochs for gradual fine-tuning
+    # Handle gradual fine-tuning configuration
     if args.gradual_finetuning:
         args.total_epochs = args.epochs  # Keep user's original setting
         args.epochs = args.phase1_epochs + args.phase2_epochs  # Set actual training epochs
@@ -429,6 +388,37 @@ def process_config(args):
             logger.info(f"💡 Default early stopping patience set to {args.early_stopping_patience} for standard training.")
     else:
         logger.info(f"💡 User-defined early stopping patience: {args.early_stopping_patience}")
+    
+    return args
+
+def process_scheduler_config(args):
+    """Process scheduler configuration and provide recommendations for layer unfreezing."""
+    
+    # Check for potentially problematic OneCycle + layer unfreezing combinations
+    has_layer_unfreezing = (
+        args.gradual_finetuning or 
+        args.freezing_strategy in ['adaptive', 'progressive', 'gradient_guided', 'advanced']
+    )
+    
+    if args.scheduler == 'onecycle' and has_layer_unfreezing:
+        logger.warning("⚠️  SCHEDULER RECOMMENDATION:")
+        logger.warning("   OneCycle scheduler with layer unfreezing can cause training instability")
+        logger.warning("   because rebuilding the scheduler resets progress.")
+        logger.warning("")
+        logger.warning("   🎯 RECOMMENDED ALTERNATIVES:")
+        logger.warning("   1. Use cosine decay: --scheduler cosine --epochs 30")
+        logger.warning("   2. Use reduce_on_plateau for adaptive LR")
+        logger.warning("")
+        logger.warning("   The system will prevent OneCycle rebuilds, but cosine is more stable.")
+        logger.warning("")
+    
+    # Provide learning rate recommendations based on configuration
+    if has_layer_unfreezing:
+        if args.head_lr == 1e-3 and args.backbone_lr < 1e-4:
+            logger.info("💡 LEARNING RATE RECOMMENDATIONS:")
+            logger.info(f"   Current: head_lr={args.head_lr:.1e}, backbone_lr={args.backbone_lr:.1e}")
+            logger.info("   ✅ head_lr=1e-3 is good for frozen backbone training")
+            logger.info("   💡 Consider backbone_lr=1e-4 (head_lr/10) when unfreezing layers")
     
     return args
 
