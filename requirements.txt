@@ -5,6 +5,11 @@ pytorchvideo @ git+https://github.com/facebookresearch/pytorchvideo.git
 av>=8.0.0
 typing-extensions>=4.0.0
 
+# PyTorch Lightning and training enhancements
+lightning>=2.1.0
+pytorch-lightning>=2.1.0
+torchmetrics>=1.2.0
+
 # Video and image processing
 decord>=0.6.0
 opencv-python>=4.5.0

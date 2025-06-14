@@ -256,14 +256,52 @@ def parse_args():
     parser.add_argument('--dropout_rate', type=float, default=0.1, help='Dropout rate for regularization')
     parser.add_argument('--lr_warmup', action='store_true', help='Enable learning rate warmup')
     
+    parser.add_argument('--discriminative_lr', action='store_true', default=False,
+                       help='Enable discriminative learning rates for different layers (e.g., backbone vs. head)')
+    
+    # === PYTORCH LIGHTNING FEATURES ===
+    parser.add_argument('--accumulate_grad_batches', type=int, default=1,
+                       help='Number of batches to accumulate gradients over before updating weights')
+    parser.add_argument('--num_nodes', type=int, default=1,
+                       help='Number of nodes for multi-node distributed training')
+    parser.add_argument('--devices_per_node', type=int, default=-1,
+                       help='Number of devices (GPUs) per node (-1 = all available)')
+    parser.add_argument('--enable_profiler', action='store_true', default=False,
+                       help='Enable PyTorch Lightning profiler for performance analysis')
+    parser.add_argument('--log_every_n_steps', type=int, default=10,
+                       help='How often to log training metrics (steps)')
+    parser.add_argument('--val_check_interval', type=float, default=1.0,
+                       help='How often to check validation set (fraction of epoch or number of batches)')
+    parser.add_argument('--limit_train_batches', type=float, default=1.0,
+                       help='Limit training batches (fraction or number of batches)')
+    parser.add_argument('--limit_val_batches', type=float, default=1.0,
+                       help='Limit validation batches (fraction or number of batches)')
+    parser.add_argument('--max_time', type=str, default=None,
+                       help='Maximum training time (e.g., "00:12:00:00" for 12 hours)')
+    parser.add_argument('--auto_lr_find', action='store_true', default=False,
+                       help='Automatically find optimal learning rate')
+    parser.add_argument('--auto_scale_batch_size', action='store_true', default=False,
+                       help='Automatically find optimal batch size')
+    
+    # === DISTRIBUTED TRAINING OPTIMIZATIONS ===
+    parser.add_argument('--sync_batchnorm', action='store_true', default=False,
+                       help='Convert BatchNorm to SyncBatchNorm for distributed training')
+    parser.add_argument('--find_unused_parameters', action='store_true', default=False,
+                       help='Find unused parameters in DDP (may slow down training)')
+    parser.add_argument('--ddp_timeout', type=int, default=1800,
+                       help='Timeout for DDP communication (seconds)')
+    
+    # === PERFORMANCE MONITORING ===
+    parser.add_argument('--track_grad_norm', type=int, default=-1,
+                       help='Track gradient norm (L2 norm order, -1 to disable)')
+    parser.add_argument('--log_gpu_memory', action='store_true', default=False,
+                       help='Log GPU memory usage during training')
+    
     # === LEGACY ARGUMENTS (for backward compatibility) ===
     parser.add_argument('--use_focal_loss', action='store_true', default=False,
                        help='DEPRECATED: Use --loss_function focal instead')
     parser.add_argument('--use_class_weighted_loss', action='store_true', default=True,
                        help='DEPRECATED: Use --loss_function weighted instead')
-    
-    parser.add_argument('--discriminative_lr', action='store_true', default=False,
-                       help='Enable discriminative learning rates for different layers (e.g., backbone vs. head)')
     
     args = parser.parse_args()
     
@@ -275,9 +313,18 @@ def parse_args():
 def process_config(args):
     """Process and validate configuration arguments."""
     
+    # Set dataset path
+    if args.dataset_root:
+        from pathlib import Path
+        args.mvfouls_path = str(Path(args.dataset_root) / "mvfouls")
+    else:
+        # Default to current directory
+        from pathlib import Path
+        args.mvfouls_path = str(Path(".") / "mvfouls")
+    
     # Handle simple training mode
     if args.simple_training:
-        logger.info("🔧 SIMPLE TRAINING MODE ENABLED - Disabling advanced features for debugging")
+        logger.info("SIMPLE TRAINING MODE ENABLED - Disabling advanced features for debugging")
         args.loss_function = 'plain'
         args.disable_class_balancing = True
         args.disable_augmentation = True
@@ -300,22 +347,22 @@ def process_config(args):
     if args.disable_class_balancing:
         args.use_class_balanced_sampler = False
         args.class_weighting_strategy = 'none'
-        logger.info("🚫 Class balancing disabled (both sampler and weights)")
+        logger.info("Class balancing disabled (both sampler and weights)")
     
     if args.disable_augmentation:
         args.aggressive_augmentation = False
         args.extreme_augmentation = False
         args.disable_in_model_augmentation = True
-        logger.info("🚫 All augmentation disabled")
+        logger.info("All augmentation disabled")
     
     # Handle MViT optimization disable flags
     if args.disable_gradient_checkpointing:
         args.enable_gradient_checkpointing = False
-        logger.info("🚫 Gradient checkpointing disabled")
+        logger.info("Gradient checkpointing disabled")
     
     if args.disable_memory_optimization:
         args.enable_memory_optimization = False
-        logger.info("🚫 Memory optimization features disabled")
+        logger.info("Memory optimization features disabled")
     
     # Validate MViT optimization settings
     if args.backbone_type == 'mvit':
@@ -334,7 +381,7 @@ def process_config(args):
     # Handle data optimization disable flags
     if args.disable_data_optimization:
         args.enable_data_optimization = False
-        logger.info("🚫 Data optimization disabled")
+        logger.info("Data optimization disabled")
     
     # Set augmentation strength based on legacy flags (for backward compatibility)
     if not hasattr(args, 'augmentation_strength') or args.augmentation_strength is None:
@@ -355,19 +402,19 @@ def process_config(args):
         args.spatial_crop_strength = 0.9
         args.color_aug_strength = 0.1
         args.noise_strength = 0.01
-        logger.info("🎨 Augmentation strength set to MILD.")
+        logger.info("Augmentation strength set to MILD.")
     elif args.augmentation_strength == 'moderate':
         args.aggressive_augmentation = False # Explicitly set to False
         args.extreme_augmentation = False # Explicitly set to False 
-        logger.info("🎨 Augmentation strength set to MODERATE.")
+        logger.info("Augmentation strength set to MODERATE.")
     elif args.augmentation_strength == 'aggressive':
         args.aggressive_augmentation = True
         args.extreme_augmentation = False
-        logger.info("🎨 Augmentation strength set to AGGRESSIVE.")
+        logger.info("Augmentation strength set to AGGRESSIVE.")
     elif args.augmentation_strength == 'extreme':
         args.aggressive_augmentation = True
         args.extreme_augmentation = True
-        logger.info("🎨 Augmentation strength set to EXTREME.")
+        logger.info("Augmentation strength set to EXTREME.")
     
     # Validate learning rate ranges for error recovery
     if args.lr < 1e-6 or args.lr > 1e-2:
@@ -433,7 +480,7 @@ def process_scheduler_config(args):
 def log_configuration_summary(args):
     """Log a comprehensive summary of the training configuration."""
     logger.info("=" * 60)
-    logger.info("🔧 TRAINING CONFIGURATION SUMMARY")
+    logger.info("TRAINING CONFIGURATION SUMMARY")
     logger.info("=" * 60)
     
     logger.info(f"Dataset: {args.dataset_root}")

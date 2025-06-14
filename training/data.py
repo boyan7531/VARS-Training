@@ -314,32 +314,34 @@ def create_transforms(args, is_training=True):
     """Create training or validation transforms based on configuration."""
     
     if args.gpu_augmentation and is_training:
-        logger.info("🖥️  Using GPU-based augmentation pipeline for maximum throughput!")
-        # Minimal CPU transforms - just basic preprocessing
-        transform = Compose([
-            ConvertToFloatAndScale(),
-            VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ShortSideScale(size=args.img_height),
-            PerFrameCenterCrop((args.img_height, args.img_width))
-        ])
+        logger.info("Using GPU-based augmentation pipeline for maximum throughput!")
         
-        logger.info(f"   - GPU augmentation mode: {'Aggressive' if args.aggressive_augmentation or args.extreme_augmentation else 'Moderate (Medium Dataset)'}")
-        if args.aggressive_augmentation or args.extreme_augmentation:
-            logger.info(f"   - Temporal jitter: ±{args.temporal_jitter_strength} frames")
-            logger.info(f"   - Color variation: ±{args.color_aug_strength*100:.1f}%")
-            logger.info(f"   - Gaussian noise: up to {args.noise_strength:.3f} std")
-            logger.info(f"   - Frame dropout: {args.dropout_prob*100:.1f}% probability")
-        else:
-            logger.info(f"   - Reduced color jitter: ±{args.color_aug_strength*0.5*100:.1f}%")
-            logger.info(f"   - Basic horizontal flip: 50% probability")
-            logger.info(f"   - Minimal frame dropout: {args.dropout_prob*0.5*100:.1f}% probability")
-            logger.info(f"   - No temporal jitter or noise (moderate mode)")
+        # Create GPU augmentation
+        gpu_augmentation = create_gpu_augmentation(args, device)
         
-        return transform
+        # Create transform that applies GPU augmentation
+        def gpu_transform(clips):
+            # clips shape: (T, H, W, C) or (T, C, H, W)
+            # Convert to tensor if needed
+            if not isinstance(clips, torch.Tensor):
+                clips = torch.from_numpy(clips)
+            
+            # Ensure correct format for GPU augmentation
+            if clips.dim() == 4 and clips.shape[-1] == 3:  # (T, H, W, C)
+                clips = clips.permute(0, 3, 1, 2)  # (T, C, H, W)
+            
+            # Apply GPU augmentation
+            clips = gpu_augmentation(clips.unsqueeze(0)).squeeze(0)  # Add/remove batch dim
+            
+            # Convert back to numpy if needed
+            return clips.cpu().numpy()
+        
+        return gpu_transform
     
     elif is_training and not args.disable_augmentation:
+        logger.info("Using CPU-based augmentation pipeline")
+        
         # Traditional CPU-based augmentation pipeline
-        logger.info("🖥️  Using CPU-based augmentation pipeline")
         
         # Enhanced transforms with AGGRESSIVE/EXTREME augmentation for small dataset
         augmentation_stages = [ConvertToFloatAndScale()]
@@ -476,12 +478,12 @@ def create_transforms(args, is_training=True):
             logger.info(f"   - Color variation: ±{args.color_aug_strength*100:.1f}%")
             logger.info(f"   - Gaussian noise: up to {args.noise_strength:.3f} std")
         else:
-            logger.info("📊 MODERATE AUGMENTATION MODE for medium dataset (2916 clips)")
-            logger.info(f"   - Light temporal jitter: ±1 frame only")
-            logger.info(f"   - Minimal frame dropout: {args.dropout_prob*0.5*100:.1f}% probability")
-            logger.info(f"   - Basic horizontal flip: 50% probability")
-            logger.info(f"   - Reduced color jitter: ±{args.color_aug_strength*0.5*100:.1f}%")
-            logger.info(f"   - Minimal noise: up to {args.noise_strength*0.5:.3f} std")
+            logger.info("MODERATE AUGMENTATION MODE for medium dataset (2916 clips)")
+            logger.info("   - Light temporal jitter: ±1 frame only")
+            logger.info("   - Minimal frame dropout: 2.5% probability")
+            logger.info("   - Basic horizontal flip: 50% probability")
+            logger.info(f"   - Reduced color jitter: ±{args.color_aug_strength*100:.1f}%")
+            logger.info(f"   - Minimal noise: up to {args.noise_strength:.3f} std")
         
         return transform
     
@@ -709,7 +711,7 @@ def create_dataloaders(args, train_dataset, val_dataset):
     
     # Log data loading optimization details
     if args.num_workers > 0:
-        logger.info(f"🚀 Async data loading enabled:")
+        logger.info("Async data loading enabled:")
         logger.info(f"   - Training workers: {args.num_workers} (prefetch_factor={args.prefetch_factor})")
         logger.info(f"   - Validation workers: {val_num_workers} (prefetch_factor={args.prefetch_factor})")
         logger.info(f"   - Pin memory: True (faster CPU->GPU transfers)")
