@@ -75,15 +75,17 @@ def parse_args():
                        help='Focal Loss gamma parameter (higher = more focus on hard examples)')
     
     # === CLASS IMBALANCE HANDLING ===
-    parser.add_argument('--class_weighting_strategy', type=str, default='balanced_capped',
+    parser.add_argument('--class_weighting_strategy', type=str, default='sqrt',
                        choices=['none', 'balanced_capped', 'sqrt', 'log', 'effective_number'],
-                       help='Strategy for calculating class weights (balanced_capped recommended for stability)')
-    parser.add_argument('--max_weight_ratio', type=float, default=10.0,
-                       help='Maximum ratio between highest and lowest class weight (prevents training instability)')
+                       help='Strategy for calculating class weights (sqrt recommended for safer training)')
+    parser.add_argument('--max_weight_ratio', type=float, default=6.0,
+                       help='Maximum ratio between highest and lowest class weight (reduced from 12 to prevent training instability)')
     parser.add_argument('--use_class_balanced_sampler', action='store_true', default=True,
                        help='Use class-balanced sampler to oversample minority classes')
     parser.add_argument('--oversample_factor', type=float, default=4.0,
                        help='Factor by which to oversample minority classes (higher = more aggressive)')
+    parser.add_argument('--disable_class_balancing', action='store_true', default=False,
+                       help='Disable all class balancing techniques (use with caution)')
     
     # === NEW STRATEGIES FOR CLASS IMBALANCE ===
     parser.add_argument('--progressive_class_balancing', action='store_true', default=False,
@@ -190,8 +192,6 @@ def parse_args():
     # === DEBUGGING & FLEXIBILITY OPTIONS ===
     parser.add_argument('--simple_training', action='store_true', default=False,
                        help='Enable simple training mode: disables class balancing, augmentation, and uses plain CrossEntropyLoss')
-    parser.add_argument('--disable_class_balancing', action='store_true', default=False,
-                       help='Disable all class balancing (both class weights and balanced sampler)')
     parser.add_argument('--disable_augmentation', action='store_true', default=False,
                        help='Disable all augmentation (both in-dataset and in-model)')
     parser.add_argument('--disable_in_model_augmentation', action='store_true', default=False,

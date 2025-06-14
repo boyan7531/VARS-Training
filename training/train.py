@@ -437,6 +437,31 @@ def main():
     train_dataset, val_dataset = create_datasets(args)
     train_loader, val_loader = create_dataloaders(args, train_dataset, val_dataset)
     
+    # Log class imbalance handling strategy
+    logger.info("=" * 60)
+    logger.info("🎯 CLASS IMBALANCE HANDLING STRATEGY")
+    logger.info("=" * 60)
+    
+    if args.disable_class_balancing:
+        logger.info("❌ All class balancing techniques DISABLED")
+        logger.info("   Using plain loss functions without any balancing")
+    elif args.use_class_balanced_sampler:
+        logger.info("✅ Using ClassBalancedSampler (oversampling) as PRIMARY technique")
+        logger.info(f"   Oversample factor: {args.oversample_factor}x for minority classes")
+        if args.progressive_class_balancing:
+            logger.info(f"   Progressive balancing: {args.progressive_start_factor}x → {args.progressive_end_factor}x over {args.progressive_epochs} epochs")
+        logger.info("   Class weights and focal-α: DISABLED (prevents gradient multiplication)")
+        logger.info("   Focal-γ: Single value (2.0) for all classes")
+    else:
+        logger.info("✅ Using Class Weights / Focal-α as PRIMARY technique")
+        logger.info(f"   Weighting strategy: {args.class_weighting_strategy}")
+        logger.info(f"   Max weight ratio: {args.max_weight_ratio}")
+        logger.info("   ClassBalancedSampler: DISABLED")
+        if args.loss_function == 'focal':
+            logger.info("   Focal-γ: Class-specific values for rare classes")
+    
+    logger.info("=" * 60)
+
     # Log dataset recommendations
     log_dataset_recommendations(train_dataset)
 
@@ -468,25 +493,37 @@ def main():
     # Calculate class weights for severity classification
     severity_class_weights = None
     if args.loss_function in ['focal', 'weighted'] and not args.disable_class_balancing:
-        severity_class_weights = calculate_class_weights(
-            train_dataset, 6, device, args.class_weighting_strategy, args.max_weight_ratio
-        )
+        # Skip class weight calculation when using ClassBalancedSampler to avoid 
+        # multiplying minority gradients by extreme factors (30-50x)
+        if not args.use_class_balanced_sampler:
+            severity_class_weights = calculate_class_weights(
+                train_dataset, 6, device, args.class_weighting_strategy, args.max_weight_ratio
+            )
+        else:
+            logger.info("🎯 Skipping class weight calculation because ClassBalancedSampler is enabled")
+            logger.info("   Using only oversampling for class imbalance handling")
+            severity_class_weights = None
 
     # Update loss function to adaptive focal loss if enabled
     if args.loss_function == 'focal':
-        logger.info("🔥 Using focal loss with class-specific gamma values")
-        # Define class-specific gamma values (higher for rare classes)
-        class_gamma_map = {
-            0: 2.0,  # Medium frequency
-            1: 1.5,  # Majority class - less focus needed
-            2: 2.0,  # Medium frequency
-            3: 2.0,  # Medium frequency
-            4: 3.0,  # Very rare - high focus
-            5: 3.5   # Extremely rare - highest focus
-        }
-        logger.info("Class-specific gamma values:")
-        for cls, gamma in class_gamma_map.items():
-            logger.info(f"  Class {cls}: gamma={gamma:.1f}")
+        if args.use_class_balanced_sampler:
+            logger.info("🔥 Using focal loss with single gamma=2.0 (compatible with ClassBalancedSampler)")
+            logger.info("   Class-specific gamma tuning disabled to avoid gradient multiplication")
+            class_gamma_map = None
+        else:
+            logger.info("🔥 Using focal loss with class-specific gamma values")
+            # Define class-specific gamma values (higher for rare classes)
+            class_gamma_map = {
+                0: 2.0,  # Medium frequency
+                1: 1.5,  # Majority class - less focus needed
+                2: 2.0,  # Medium frequency
+                3: 2.0,  # Medium frequency
+                4: 3.0,  # Very rare - high focus
+                5: 3.5   # Extremely rare - highest focus
+            }
+            logger.info("Class-specific gamma values:")
+            for cls, gamma in class_gamma_map.items():
+                logger.info(f"  Class {cls}: gamma={gamma:.1f}")
     else:
         class_gamma_map = None
 

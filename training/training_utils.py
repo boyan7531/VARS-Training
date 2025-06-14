@@ -198,11 +198,17 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
     
     elif loss_function == 'focal':
         focal_gamma = loss_config.get('focal_gamma', 2.0)
-        # When using Focal Loss with a balanced sampler, alpha (class weights) is often omitted.
-        severity_class_weights = loss_config.get('severity_class_weights', None) 
+        severity_class_weights = loss_config.get('severity_class_weights', None)
+        
+        # Guard: When using focal loss with ClassBalancedSampler, alpha should be None
+        # to avoid multiplying minority gradients by extreme factors
+        if loss_function == 'focal' and severity_class_weights is None:
+            alpha = None
+        else:
+            alpha = severity_class_weights
         
         focal_criterion = FocalLoss(
-            alpha=severity_class_weights,
+            alpha=alpha,
             gamma=focal_gamma,
             label_smoothing=label_smoothing
         )
