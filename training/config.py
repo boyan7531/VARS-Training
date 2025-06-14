@@ -140,7 +140,7 @@ def parse_args():
     # Gradient-guided freezing specific parameters
     parser.add_argument('--importance_threshold', type=float, default=0.01,
                         help='Minimum gradient importance threshold for unfreezing layers in gradient-guided mode')
-    parser.add_argument('--warmup_epochs', type=int, default=3,
+    parser.add_argument('--layer_warmup_epochs', type=int, default=3,
                         help='Number of epochs to warmup newly unfrozen layers with reduced learning rate')
     parser.add_argument('--unfreeze_patience', type=int, default=2,
                         help='Minimum epochs between layer unfreezing operations')

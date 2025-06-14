@@ -102,7 +102,7 @@ def setup_freezing_strategy(args, model):
             base_importance_threshold=args.base_importance_threshold,
             performance_threshold=args.performance_threshold,
             max_layers_per_step=args.max_layers_per_step,
-            warmup_epochs=args.warmup_epochs,
+            warmup_epochs=args.layer_warmup_epochs,
             patience_epochs=args.unfreeze_patience,
             rollback_patience=args.rollback_patience,
             gradient_momentum=args.gradient_momentum,
@@ -119,14 +119,14 @@ def setup_freezing_strategy(args, model):
         # Gradient-guided freezing strategy
         logger.info("🧠 Using gradient-guided freezing strategy")
         logger.info(f"   - Importance threshold: {args.importance_threshold}")
-        logger.info(f"   - Warmup epochs: {args.warmup_epochs}")
+        logger.info(f"   - Warmup epochs: {args.layer_warmup_epochs}")
         logger.info(f"   - Unfreeze patience: {args.unfreeze_patience}")
         logger.info(f"   - Sampling epochs: {args.sampling_epochs}")
         
         freezing_manager = GradientGuidedFreezingManager(
             model,
             importance_threshold=args.importance_threshold,
-            warmup_epochs=args.warmup_epochs,
+            warmup_epochs=args.layer_warmup_epochs,
             unfreeze_patience=args.unfreeze_patience,
             max_layers_per_step=args.max_layers_per_step,
             sampling_epochs=args.sampling_epochs
