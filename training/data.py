@@ -161,10 +161,10 @@ class GPUAugmentationPipeline(nn.Module):
     def __init__(self, 
                  temporal_jitter_strength=3,
                  color_strength=0.3,
-                 noise_strength=0.06,
-                 dropout_prob=0.1,
+                 noise_strength=0.02,
+                 dropout_prob=0.05,
                  hflip_prob=0.5,
-                 aggressive=True):
+                 aggressive=False):
         super().__init__()
         
         self.augmentations = nn.ModuleList()
@@ -180,10 +180,13 @@ class GPUAugmentationPipeline(nn.Module):
                 GPURandomFrameDropout(dropout_prob=dropout_prob),
             ])
         else:
-            # Basic augmentation
+            # Basic augmentation for medium datasets - mirrors CPU moderate pipeline
             self.augmentations.extend([
-                GPURandomBrightness(strength=color_strength * 0.5),
+                GPURandomBrightness(strength=color_strength * 0.5),  # Reduced color strength
+                GPURandomContrast(strength=color_strength * 0.5),   # Reduced color strength
                 GPURandomHorizontalFlip(p=hflip_prob),
+                # Only include minimal temporal and noise for moderate mode
+                GPURandomFrameDropout(dropout_prob=dropout_prob * 0.5),  # Very light dropout
             ])
     
     def forward(self, video):
@@ -204,8 +207,8 @@ class SeverityAwareGPUAugmentation(nn.Module):
                  device,
                  temporal_jitter_strength=3,
                  color_strength_base=0.3,
-                 noise_strength_base=0.06,
-                 dropout_prob_base=0.1,
+                 noise_strength_base=0.02,
+                 dropout_prob_base=0.05,
                  hflip_prob=0.5,
                  severity_multipliers=None):
         super().__init__()
@@ -320,11 +323,17 @@ def create_transforms(args, is_training=True):
             PerFrameCenterCrop((args.img_height, args.img_width))
         ])
         
-        logger.info(f"   - GPU augmentation mode: {'Aggressive' if args.aggressive_augmentation or args.extreme_augmentation else 'Standard'}")
-        logger.info(f"   - Temporal jitter: ±{args.temporal_jitter_strength} frames")
-        logger.info(f"   - Color variation: ±{args.color_aug_strength*100:.1f}%")
-        logger.info(f"   - Gaussian noise: up to {args.noise_strength:.3f} std")
-        logger.info(f"   - Frame dropout: {args.dropout_prob*100:.1f}% probability")
+        logger.info(f"   - GPU augmentation mode: {'Aggressive' if args.aggressive_augmentation or args.extreme_augmentation else 'Moderate (Medium Dataset)'}")
+        if args.aggressive_augmentation or args.extreme_augmentation:
+            logger.info(f"   - Temporal jitter: ±{args.temporal_jitter_strength} frames")
+            logger.info(f"   - Color variation: ±{args.color_aug_strength*100:.1f}%")
+            logger.info(f"   - Gaussian noise: up to {args.noise_strength:.3f} std")
+            logger.info(f"   - Frame dropout: {args.dropout_prob*100:.1f}% probability")
+        else:
+            logger.info(f"   - Reduced color jitter: ±{args.color_aug_strength*0.5*100:.1f}%")
+            logger.info(f"   - Basic horizontal flip: 50% probability")
+            logger.info(f"   - Minimal frame dropout: {args.dropout_prob*0.5*100:.1f}% probability")
+            logger.info(f"   - No temporal jitter or noise (moderate mode)")
         
         return transform
     
@@ -335,15 +344,26 @@ def create_transforms(args, is_training=True):
         # Enhanced transforms with AGGRESSIVE/EXTREME augmentation for small dataset
         augmentation_stages = [ConvertToFloatAndScale()]
         
-        # STAGE 1: Aggressive temporal augmentations (before normalization)
-        augmentation_stages.extend([
-            TemporalJitter(max_jitter=args.temporal_jitter_strength),
-            RandomTemporalReverse(prob=0.5 if args.extreme_augmentation else (0.4 if args.aggressive_augmentation else 0.2)),
-            RandomFrameDropout(
-                dropout_prob=args.dropout_prob * (1.5 if args.extreme_augmentation else 1.0),
-                max_consecutive=min(4, args.temporal_jitter_strength + 1)
-            ),
-        ])
+        # STAGE 1: Temporal augmentations (scaled by mode)
+        if args.aggressive_augmentation or args.extreme_augmentation:
+            # Aggressive temporal augmentations for small datasets
+            augmentation_stages.extend([
+                TemporalJitter(max_jitter=args.temporal_jitter_strength),
+                RandomTemporalReverse(prob=0.5 if args.extreme_augmentation else 0.4),
+                RandomFrameDropout(
+                    dropout_prob=args.dropout_prob * (1.5 if args.extreme_augmentation else 1.0),
+                    max_consecutive=min(4, args.temporal_jitter_strength + 1)
+                ),
+            ])
+        else:
+            # Moderate temporal augmentations for medium datasets
+            augmentation_stages.extend([
+                TemporalJitter(max_jitter=1),  # Light temporal jitter only
+                RandomFrameDropout(
+                    dropout_prob=args.dropout_prob * 0.5,  # Very light dropout
+                    max_consecutive=2
+                ),
+            ])
         
         # STAGE 1.5: Domain shift reduction augmentations (for aggressive/extreme modes)
         if args.aggressive_augmentation or args.extreme_augmentation:
@@ -369,14 +389,21 @@ def create_transforms(args, is_training=True):
                 RandomMixup(alpha=0.3, prob=0.4),  # Inter-frame mixing
             ])
         
-        # STAGE 2: Aggressive spatial augmentations
-        augmentation_stages.extend([
-            RandomSpatialCrop(
-                crop_scale_range=(args.spatial_crop_strength * (0.9 if args.extreme_augmentation else 1.0), 1.0),
-                prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
-            ),
-            RandomHorizontalFlip(prob=0.7 if args.extreme_augmentation else (0.6 if args.aggressive_augmentation else 0.5)),
-        ])
+        # STAGE 2: Spatial augmentations (scaled by mode)
+        if args.aggressive_augmentation or args.extreme_augmentation:
+            # Aggressive spatial augmentations for small datasets
+            augmentation_stages.extend([
+                RandomSpatialCrop(
+                    crop_scale_range=(args.spatial_crop_strength * (0.9 if args.extreme_augmentation else 1.0), 1.0),
+                    prob=0.9 if args.extreme_augmentation else 0.8
+                ),
+                RandomHorizontalFlip(prob=0.7 if args.extreme_augmentation else 0.6),
+            ])
+        else:
+            # Moderate spatial augmentations for medium datasets - basic only
+            augmentation_stages.extend([
+                RandomHorizontalFlip(prob=0.5),  # Basic horizontal flip only
+            ])
         
         # STAGE 2.5: EXTREME spatial augmentations (only in extreme mode)
         if args.extreme_augmentation:
@@ -386,17 +413,33 @@ def create_transforms(args, is_training=True):
             ])
         
         # STAGE 3: Color/intensity augmentations (before normalization)
-        augmentation_stages.extend([
-            RandomBrightnessContrast(
-                brightness_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                contrast_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                prob=0.9 if args.extreme_augmentation else (0.8 if args.aggressive_augmentation else 0.5)
-            ),
-            RandomGaussianNoise(
-                std_range=(0.01, args.noise_strength * (1.3 if args.extreme_augmentation else 1.0)),
-                prob=0.6 if args.extreme_augmentation else (0.5 if args.aggressive_augmentation else 0.3)
-            ),
-        ])
+        if args.aggressive_augmentation or args.extreme_augmentation:
+            # Aggressive color augmentations for small datasets
+            augmentation_stages.extend([
+                RandomBrightnessContrast(
+                    brightness_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+                    contrast_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+                    prob=0.9 if args.extreme_augmentation else 0.8
+                ),
+                RandomGaussianNoise(
+                    std_range=(0.01, args.noise_strength * (1.3 if args.extreme_augmentation else 1.0)),
+                    prob=0.6 if args.extreme_augmentation else 0.5
+                ),
+            ])
+        else:
+            # Moderate color augmentations for medium datasets - basic color jitter only
+            augmentation_stages.extend([
+                RandomBrightnessContrast(
+                    brightness_range=args.color_aug_strength * 0.5,  # Reduced strength
+                    contrast_range=args.color_aug_strength * 0.5,    # Reduced strength
+                    prob=0.5  # Moderate probability
+                ),
+                # Minimal noise for moderate mode
+                RandomGaussianNoise(
+                    std_range=(0.005, args.noise_strength * 0.5),
+                    prob=0.3
+                ),
+            ])
         
         # STAGE 4: Standard preprocessing
         augmentation_stages.extend([
@@ -433,7 +476,12 @@ def create_transforms(args, is_training=True):
             logger.info(f"   - Color variation: ±{args.color_aug_strength*100:.1f}%")
             logger.info(f"   - Gaussian noise: up to {args.noise_strength:.3f} std")
         else:
-            logger.info("📊 Standard augmentation mode")
+            logger.info("📊 MODERATE AUGMENTATION MODE for medium dataset (2916 clips)")
+            logger.info(f"   - Light temporal jitter: ±1 frame only")
+            logger.info(f"   - Minimal frame dropout: {args.dropout_prob*0.5*100:.1f}% probability")
+            logger.info(f"   - Basic horizontal flip: 50% probability")
+            logger.info(f"   - Reduced color jitter: ±{args.color_aug_strength*0.5*100:.1f}%")
+            logger.info(f"   - Minimal noise: up to {args.noise_strength*0.5:.3f} std")
         
         return transform
     

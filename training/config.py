@@ -175,23 +175,23 @@ def parse_args():
                        help='Factor for ReduceLROnPlateau scheduler in Phase 1 (gradual fine-tuning only).')
     
     # === AUGMENTATION CONFIGURATION ===
-    parser.add_argument('--augmentation_strength', type=str, default='aggressive',
+    parser.add_argument('--augmentation_strength', type=str, default='moderate',
                        choices=['none', 'mild', 'moderate', 'aggressive', 'extreme'],
                        help='Overall augmentation strength (none, mild, moderate, aggressive, extreme)')
-    parser.add_argument('--aggressive_augmentation', action='store_true', default=True,
+    parser.add_argument('--aggressive_augmentation', action='store_true', default=False,
                        help='Enable aggressive augmentation pipeline for small datasets (deprecated)')
     parser.add_argument('--extreme_augmentation', action='store_true', default=False,
                        help='Enable EXTREME augmentation with all techniques (use for very small datasets) (deprecated)')
     parser.add_argument('--temporal_jitter_strength', type=int, default=3,
                        help='Max temporal jitter in frames (higher = more temporal variation)')
-    parser.add_argument('--dropout_prob', type=float, default=0.2,
-                       help='Frame dropout probability (higher = more aggressive temporal dropout)')
+    parser.add_argument('--dropout_prob', type=float, default=0.05,
+                       help='Frame dropout probability (reduced for medium dataset size)')
     parser.add_argument('--spatial_crop_strength', type=float, default=0.7,
                        help='Minimum crop scale (lower = more aggressive spatial crops)')
     parser.add_argument('--color_aug_strength', type=float, default=0.3,
                        help='Color augmentation strength (higher = more variation)')
-    parser.add_argument('--noise_strength', type=float, default=0.06,
-                       help='Maximum Gaussian noise standard deviation')
+    parser.add_argument('--noise_strength', type=float, default=0.02,
+                       help='Maximum Gaussian noise standard deviation (reduced for medium dataset)')
     parser.add_argument('--gpu_augmentation', action='store_true', default=False,
                        help='Use GPU-based augmentation instead of CPU augmentation (recommended for dual GPU setups)')
     parser.add_argument('--severity_aware_augmentation', action='store_true', default=False,

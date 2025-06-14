@@ -334,16 +334,16 @@ python train_modular.py \
 ## Augmentation Configuration
 
 ### Augmentation Strength
-- **`--augmentation_strength`** (str, default='aggressive')  
-  Overall augmentation strength:
+- **`--augmentation_strength`** (str, default='moderate')  
+  Overall augmentation strength optimized for medium dataset size (2916 clips):
   - **none**: No augmentation
   - **mild**: Light augmentation
-  - **moderate**: Standard augmentation
-  - **aggressive**: Strong augmentation (recommended for small datasets)
+  - **moderate**: Balanced augmentation (recommended for medium datasets like VARS-Training)
+  - **aggressive**: Strong augmentation (for small datasets)
   - **extreme**: Maximum augmentation (for very small datasets)
 
 ### Legacy Augmentation Flags
-- **`--aggressive_augmentation`** (flag, default=True)  
+- **`--aggressive_augmentation`** (flag, default=False)  
   Enable aggressive augmentation pipeline. Use `--augmentation_strength` instead.
 
 - **`--extreme_augmentation`** (flag, default=False)  
@@ -353,8 +353,8 @@ python train_modular.py \
 - **`--temporal_jitter_strength`** (int, default=3)  
   Max temporal jitter in frames. Higher = more temporal variation.
 
-- **`--dropout_prob`** (float, default=0.2)  
-  Frame dropout probability. Higher = more aggressive temporal dropout.
+- **`--dropout_prob`** (float, default=0.05)  
+  Frame dropout probability. Reduced for medium dataset size.
 
 - **`--spatial_crop_strength`** (float, default=0.7)  
   Minimum crop scale. Lower = more aggressive spatial crops.
@@ -362,8 +362,8 @@ python train_modular.py \
 - **`--color_aug_strength`** (float, default=0.3)  
   Color augmentation strength. Higher = more color variation.
 
-- **`--noise_strength`** (float, default=0.06)  
-  Maximum Gaussian noise standard deviation.
+- **`--noise_strength`** (float, default=0.02)  
+  Maximum Gaussian noise standard deviation. Reduced for medium dataset.
 
 ### GPU Augmentation
 - **`--gpu_augmentation`** (flag, default=False)  
