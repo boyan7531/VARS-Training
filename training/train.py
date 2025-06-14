@@ -34,6 +34,7 @@ from .checkpoint_utils import (
     log_epoch_summary, log_configuration_summary, create_training_history,
     update_training_history, log_completion_summary
 )
+from .freezing.early_gradual_manager import EarlyGradualFreezingManager
 
 # Set up logging
 logging.basicConfig(
@@ -217,6 +218,23 @@ def handle_gradual_finetuning_transition(args, model, optimizer, scheduler, epoc
                     
                     if update_info['unfrozen_layers']:
                         logger.info(f"[GRADIENT_GUIDED] Newly unfrozen layers: {update_info['unfrozen_layers']}")
+        
+        elif isinstance(freezing_manager, EarlyGradualFreezingManager):
+            # Early gradual unfreezing manager
+            if val_metric is not None:
+                # Update freezing status - this happens every epoch
+                update_info = freezing_manager.update_after_epoch(val_metric, epoch)
+                
+                # Always log parameter status for detailed tracking
+                freezing_manager.log_status(epoch)
+                
+                # Check if we need to rebuild optimizer
+                if update_info['rebuild_optimizer']:
+                    rebuild_optimizer = True
+                    logger.info(f"[EARLY_GRADUAL] Rebuilding optimizer due to layer changes")
+                    
+                    if update_info['unfrozen_layers']:
+                        logger.info(f"[EARLY_GRADUAL] Newly unfrozen layers: {update_info['unfrozen_layers']}")
     
     # Traditional gradual fine-tuning with fixed phases
     elif args.gradual_finetuning:
@@ -660,67 +678,13 @@ def main():
             scaler_calibration_reset = True
         
         # Validation
-        # Use MViT-specific memory cleanup interval for validation too
-        mvit_memory_interval = getattr(args, 'mvit_memory_cleanup_interval', 5)
-        memory_cleanup_interval_for_validation = (
-            max(mvit_memory_interval - 2, 1) if args.backbone_type.lower() == 'mvit'  # Even more aggressive for validation
-            else args.memory_cleanup_interval
-        )
+        val_metrics = validate_one_epoch(model, val_loader, criterion_severity, criterion_action, device, scaler)
         
-        val_metrics = validate_one_epoch(
-            model, val_loader, device,
-            loss_config={
-                'function': args.loss_function,
-                'weights': args.main_task_weights,
-                'label_smoothing': args.label_smoothing,
-                'focal_gamma': args.focal_gamma,
-                'severity_class_weights': severity_class_weights
-            },
-            max_batches=num_batches_to_run,
-            memory_cleanup_interval=memory_cleanup_interval_for_validation
-        )
-        
-        # Reset model to training mode and clean memory
-        model.train()
-        cleanup_memory()
-
-        # Emergency unfreezing check for stuck training
-        if (freezing_manager is not None and 
-            epoch >= args.emergency_unfreeze_epoch and 
-            len(getattr(freezing_manager, 'unfrozen_layers', set())) == 0):
-            
-            logger.warning(f"[EMERGENCY] No layers unfrozen by epoch {epoch}! Force unfreezing backbone layers...")
-            
-            if hasattr(freezing_manager, 'emergency_unfreeze'):
-                emergency_success = freezing_manager.emergency_unfreeze(
-                    min_layers=args.min_unfreeze_layers,
-                    use_gradual=getattr(args, 'emergency_unfreeze_gradual', True)
-                )
-                
-                if emergency_success:
-                    optimizer, scheduler = handle_gradual_finetuning_transition(
-                        args, model, optimizer, scheduler, epoch,
-                        freezing_manager=freezing_manager, 
-                        val_metric=val_metrics['sev_acc'],
-                        train_loader=train_loader
-                    )
-            else:
-                # Fallback: unfreeze first few backbone layers manually
-                unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=args.min_unfreeze_layers)
-                log_trainable_parameters(model)
-                
-                # Rebuild optimizer with new parameters
-                current_lr = optimizer.param_groups[0]['lr']
-                if args.discriminative_lr:
-                    param_groups = setup_discriminative_optimizer(model, current_lr, args.backbone_lr)
-                    optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
-                else:
-                    optimizer = torch.optim.AdamW(model.parameters(), lr=current_lr, weight_decay=args.weight_decay)
-                
-                logger.info(f"[EMERGENCY] Manually unfroze {args.min_unfreeze_layers} backbone layers")
+        # Log trainable parameter count every epoch (requirement #10)
+        log_trainable_parameters(model, epoch)
         
         # Check for validation plateau-based early unfreezing
-        elif (freezing_manager is not None and 
+        if (freezing_manager is not None and 
               hasattr(freezing_manager, 'emergency_unfreeze') and
               epoch >= getattr(args, 'validation_plateau_patience', 2) and
               len(getattr(freezing_manager, 'unfrozen_layers', set())) == 0):

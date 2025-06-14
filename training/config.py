@@ -109,12 +109,20 @@ def parse_args():
     
     # === ENHANCED FREEZING STRATEGY OPTIONS ===
     parser.add_argument('--freezing_strategy', type=str, default='fixed', 
-                       choices=['none', 'fixed', 'adaptive', 'progressive', 'gradient_guided', 'advanced'],
-                       help='Strategy for parameter freezing (none=no freezing, fixed=timed phases, adaptive/progressive/gradient_guided/advanced)')
-    parser.add_argument('--adaptive_patience', type=int, default=3,
-                       help='Epochs to wait before unfreezing the next layer in adaptive mode')
-    parser.add_argument('--adaptive_min_improvement', type=float, default=0.001,
-                       help='Minimum validation improvement to reset patience counter in adaptive mode')
+                       choices=['none', 'fixed', 'adaptive', 'progressive', 'gradient_guided', 'advanced', 'early_gradual'],
+                       help='Strategy for parameter freezing (none=no freezing, fixed=timed phases, adaptive/progressive/gradient_guided/advanced, early_gradual=freeze 1 epoch then unfreeze 1 block per epoch)')
+    parser.add_argument('--adaptive_patience', type=int, default=2,
+                       help='Epochs to wait before unfreezing the next layer in adaptive mode (reduced for faster response)')
+    parser.add_argument('--adaptive_min_improvement', type=float, default=0.005,
+                       help='Minimum validation improvement to reset patience counter in adaptive mode (increased for more reliable signals)')
+    
+    # Early gradual freezing specific parameters
+    parser.add_argument('--early_gradual_freeze_epochs', type=int, default=1,
+                       help='Number of epochs to keep backbone frozen before starting gradual unfreezing (early_gradual strategy)')
+    parser.add_argument('--early_gradual_blocks_per_epoch', type=int, default=1,
+                       help='Number of blocks to unfreeze per epoch in early_gradual strategy')
+    parser.add_argument('--early_gradual_target_ratio', type=float, default=0.5,
+                       help='Target ratio of backbone parameters to unfreeze (0.5 = half the backbone)')
     
     # Gradient-guided freezing specific parameters
     parser.add_argument('--importance_threshold', type=float, default=0.01,

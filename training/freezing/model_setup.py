@@ -13,6 +13,8 @@ from model import MultiTaskMultiViewResNet3D, ModelConfig
 from .base_utils import freeze_backbone, log_trainable_parameters
 from .smart_manager import SmartFreezingManager
 from .gradient_guided_manager import GradientGuidedFreezingManager
+from .advanced_manager import AdvancedFreezingManager
+from .early_gradual_manager import EarlyGradualFreezingManager
 
 # Import AdvancedFreezingManager dynamically to avoid circular imports
 try:
@@ -154,6 +156,26 @@ def setup_freezing_strategy(args, model):
         log_trainable_parameters(model)
         
         logger.info(f"[SMART] Smart freezing manager initialized")
+        
+    elif args.freezing_strategy == 'early_gradual':
+        # Early gradual unfreezing strategy
+        logger.info("⚡ Early gradual unfreezing strategy")
+        logger.info(f"   - Freeze epochs: {args.early_gradual_freeze_epochs}")
+        logger.info(f"   - Blocks per epoch: {args.early_gradual_blocks_per_epoch}")
+        logger.info(f"   - Target ratio: {args.early_gradual_target_ratio*100:.0f}% of backbone")
+        
+        freezing_manager = EarlyGradualFreezingManager(
+            model,
+            freeze_epochs=args.early_gradual_freeze_epochs,
+            blocks_per_epoch=args.early_gradual_blocks_per_epoch,
+            target_ratio=args.early_gradual_target_ratio
+        )
+        
+        # Start with backbone frozen
+        freezing_manager.freeze_all_backbone()
+        log_trainable_parameters(model)
+        
+        logger.info(f"[EARLY_GRADUAL] Early gradual freezing manager initialized")
         
     elif args.gradual_finetuning:
         # Original gradual fine-tuning (fixed strategy)

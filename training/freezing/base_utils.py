@@ -279,14 +279,60 @@ def get_phase_info(epoch, phase1_epochs, total_epochs):
         return 2, f"Phase 2: Gradual unfreezing"
 
 
-def log_trainable_parameters(model):
-    """Log the number of trainable parameters."""
+def log_trainable_parameters(model, epoch=None):
+    """Log detailed information about trainable parameters."""
     # Handle DataParallel wrapper
     actual_model = model.module if hasattr(model, 'module') else model
     
+    # Get total model parameters
     total_params = sum(p.numel() for p in actual_model.parameters())
     trainable_params = sum(p.numel() for p in actual_model.parameters() if p.requires_grad)
     frozen_params = total_params - trainable_params
     
-    logger.info(f"[PARAMS] Total={total_params:,}, Trainable={trainable_params:,}, Frozen={frozen_params:,}")
+    # Get backbone-specific parameters
+    backbone_trainable = 0
+    backbone_total = 0
+    
+    # Handle different model structures to get backbone
+    try:
+        if hasattr(actual_model, 'mvit_processor'):
+            # Optimized MViT model - backbone is inside mvit_processor
+            backbone = actual_model.mvit_processor.backbone
+        elif hasattr(actual_model, 'backbone'):
+            # Standard model structure
+            if hasattr(actual_model.backbone, 'backbone'):
+                # ResNet3D model: actual_model.backbone.backbone
+                backbone = actual_model.backbone.backbone
+            else:
+                # MViT model: actual_model.backbone directly
+                backbone = actual_model.backbone
+        else:
+            backbone = None
+        
+        if backbone:
+            backbone_trainable = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
+            backbone_total = sum(p.numel() for p in backbone.parameters())
+    except Exception as e:
+        logger.warning(f"Could not analyze backbone parameters: {e}")
+        backbone = None
+    
+    # Calculate head parameters (non-backbone)
+    head_params = trainable_params - backbone_trainable
+    
+    # Create epoch prefix for logging
+    epoch_prefix = f"Epoch {epoch} " if epoch is not None else ""
+    
+    # Log comprehensive parameter information
+    logger.info(f"[PARAMS] {epoch_prefix}Parameter Status:")
+    logger.info(f"  📊 Total model: {trainable_params:,}/{total_params:,} trainable ({trainable_params/total_params*100:.1f}%)")
+    
+    if backbone is not None:
+        backbone_ratio = backbone_trainable / backbone_total * 100 if backbone_total > 0 else 0
+        logger.info(f"  🧠 Backbone: {backbone_trainable:,}/{backbone_total:,} trainable ({backbone_ratio:.1f}%)")
+        logger.info(f"  🎯 Classification heads: {head_params:,} trainable")
+    else:
+        logger.info(f"  🎯 Non-backbone parameters: {head_params:,} trainable")
+    
+    logger.info(f"  ❄️  Frozen parameters: {frozen_params:,}")
+    
     return trainable_params, total_params 

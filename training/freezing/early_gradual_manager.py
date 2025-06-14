@@ -1,0 +1,243 @@
+"""
+Early Gradual Freezing Manager
+
+This module implements a simple but effective freezing strategy:
+1. Freeze backbone for the first epoch only
+2. Unfreeze 1 block per epoch until half of the backbone is trainable
+3. Log trainable parameter count every epoch
+"""
+
+import torch
+import torch.nn as nn
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class EarlyGradualFreezingManager:
+    """
+    Early gradual unfreezing manager that:
+    - Freezes backbone for only the first epoch
+    - Unfreezes 1 block per epoch until target ratio is reached
+    - Provides detailed parameter logging every epoch
+    """
+    
+    def __init__(self, model, freeze_epochs=1, blocks_per_epoch=1, target_ratio=0.5):
+        self.model = model
+        self.actual_model = model.module if hasattr(model, 'module') else model
+        self.freeze_epochs = freeze_epochs
+        self.blocks_per_epoch = blocks_per_epoch
+        self.target_ratio = target_ratio
+        
+        # State tracking
+        self.unfrozen_blocks = []
+        self.total_backbone_params = 0
+        self.current_unfrozen_params = 0
+        self.target_unfrozen_params = 0
+        
+        # Initialize backbone layer information
+        self.backbone_blocks = self._get_backbone_blocks()
+        self._calculate_parameter_targets()
+        
+        logger.info(f"[EARLY_GRADUAL] Initialized with {len(self.backbone_blocks)} backbone blocks")
+        logger.info(f"[EARLY_GRADUAL] Target: {self.target_ratio*100:.0f}% of backbone ({self.target_unfrozen_params:,}/{self.total_backbone_params:,} parameters)")
+    
+    def _get_backbone_blocks(self):
+        """Get ordered list of backbone blocks for gradual unfreezing."""
+        # Handle different model structures
+        if hasattr(self.actual_model, 'mvit_processor'):
+            # Optimized MViT model - backbone is inside mvit_processor
+            backbone = self.actual_model.mvit_processor.backbone
+        elif hasattr(self.actual_model, 'backbone'):
+            # Standard model structure
+            if hasattr(self.actual_model.backbone, 'backbone'):
+                # ResNet3D model: actual_model.backbone.backbone
+                backbone = self.actual_model.backbone.backbone
+            else:
+                # MViT model: actual_model.backbone directly
+                backbone = self.actual_model.backbone
+        else:
+            raise AttributeError("Model does not have accessible backbone")
+        
+        blocks = []
+        
+        # Detect architecture and get blocks in unfreezing order (last to first)
+        if hasattr(backbone, 'layer4'):
+            # ResNet3D architecture - unfreeze from layer4 backwards
+            if hasattr(backbone, 'layer4'):
+                for i, block in enumerate(backbone.layer4):
+                    blocks.append((f'layer4.{i}', block))
+            if hasattr(backbone, 'layer3'):
+                for i, block in enumerate(backbone.layer3):
+                    blocks.append((f'layer3.{i}', block))
+            if hasattr(backbone, 'layer2'):
+                for i, block in enumerate(backbone.layer2):
+                    blocks.append((f'layer2.{i}', block))
+            if hasattr(backbone, 'layer1'):
+                for i, block in enumerate(backbone.layer1):
+                    blocks.append((f'layer1.{i}', block))
+                    
+        elif hasattr(backbone, 'blocks'):
+            # MViT architecture - unfreeze from last blocks backwards
+            total_blocks = len(backbone.blocks)
+            for i in range(total_blocks - 1, -1, -1):  # Reverse order
+                blocks.append((f'block_{i}', backbone.blocks[i]))
+        else:
+            logger.warning("[EARLY_GRADUAL] Unknown backbone architecture")
+            # Fallback: treat entire backbone as one block
+            blocks.append(('entire_backbone', backbone))
+        
+        return blocks
+    
+    def _calculate_parameter_targets(self):
+        """Calculate total backbone parameters and target unfrozen parameters."""
+        # Handle different model structures to get backbone
+        if hasattr(self.actual_model, 'mvit_processor'):
+            backbone = self.actual_model.mvit_processor.backbone
+        elif hasattr(self.actual_model, 'backbone'):
+            if hasattr(self.actual_model.backbone, 'backbone'):
+                backbone = self.actual_model.backbone.backbone
+            else:
+                backbone = self.actual_model.backbone
+        else:
+            raise AttributeError("Model does not have accessible backbone")
+        
+        self.total_backbone_params = sum(p.numel() for p in backbone.parameters())
+        self.target_unfrozen_params = int(self.total_backbone_params * self.target_ratio)
+    
+    def freeze_all_backbone(self):
+        """Freeze all backbone parameters initially."""
+        # Handle different model structures to get backbone
+        if hasattr(self.actual_model, 'mvit_processor'):
+            backbone = self.actual_model.mvit_processor.backbone
+        elif hasattr(self.actual_model, 'backbone'):
+            if hasattr(self.actual_model.backbone, 'backbone'):
+                backbone = self.actual_model.backbone.backbone
+            else:
+                backbone = self.actual_model.backbone
+        else:
+            raise AttributeError("Model does not have accessible backbone")
+        
+        frozen_params = 0
+        for param in backbone.parameters():
+            param.requires_grad = False
+            frozen_params += param.numel()
+        
+        self.current_unfrozen_params = 0
+        logger.info(f"[EARLY_GRADUAL] Froze entire backbone ({frozen_params:,} parameters)")
+        return frozen_params
+    
+    def should_unfreeze_blocks(self, epoch):
+        """Determine if we should unfreeze blocks at this epoch."""
+        # Don't unfreeze during the initial freeze period
+        if epoch < self.freeze_epochs:
+            return False
+        
+        # Don't unfreeze if we've already reached the target
+        if self.current_unfrozen_params >= self.target_unfrozen_params:
+            return False
+        
+        # Don't unfreeze if no more blocks available
+        if len(self.unfrozen_blocks) >= len(self.backbone_blocks):
+            return False
+        
+        return True
+    
+    def unfreeze_next_blocks(self, epoch):
+        """Unfreeze the next set of blocks."""
+        if not self.should_unfreeze_blocks(epoch):
+            return []
+        
+        newly_unfrozen = []
+        blocks_to_unfreeze = min(self.blocks_per_epoch, len(self.backbone_blocks) - len(self.unfrozen_blocks))
+        
+        for i in range(blocks_to_unfreeze):
+            if len(self.unfrozen_blocks) < len(self.backbone_blocks):
+                block_idx = len(self.unfrozen_blocks)
+                block_name, block_module = self.backbone_blocks[block_idx]
+                
+                # Unfreeze this block
+                block_params = 0
+                for param in block_module.parameters():
+                    if not param.requires_grad:
+                        param.requires_grad = True
+                        block_params += param.numel()
+                
+                if block_params > 0:
+                    self.unfrozen_blocks.append(block_name)
+                    self.current_unfrozen_params += block_params
+                    newly_unfrozen.append(block_name)
+                    
+                    logger.info(f"[EARLY_GRADUAL] Epoch {epoch}: Unfroze {block_name} ({block_params:,} parameters)")
+        
+        if newly_unfrozen:
+            progress = self.current_unfrozen_params / self.target_unfrozen_params * 100
+            logger.info(f"[EARLY_GRADUAL] Progress: {self.current_unfrozen_params:,}/{self.target_unfrozen_params:,} parameters ({progress:.1f}% of target)")
+        
+        return newly_unfrozen
+    
+    def update_after_epoch(self, val_metric, epoch):
+        """Update freezing state after each epoch."""
+        update_info = {
+            'rebuild_optimizer': False,
+            'unfrozen_layers': [],
+            'rollback_performed': False
+        }
+        
+        # Unfreeze blocks if appropriate
+        newly_unfrozen = self.unfreeze_next_blocks(epoch)
+        if newly_unfrozen:
+            update_info['unfrozen_layers'] = newly_unfrozen
+            update_info['rebuild_optimizer'] = True
+        
+        return update_info
+    
+    def log_status(self, epoch):
+        """Log detailed parameter status for this epoch."""
+        # Get total model parameters
+        total_model_params = sum(p.numel() for p in self.actual_model.parameters())
+        trainable_model_params = sum(p.numel() for p in self.actual_model.parameters() if p.requires_grad)
+        
+        # Get backbone-specific parameters
+        if hasattr(self.actual_model, 'mvit_processor'):
+            backbone = self.actual_model.mvit_processor.backbone
+        elif hasattr(self.actual_model, 'backbone'):
+            if hasattr(self.actual_model.backbone, 'backbone'):
+                backbone = self.actual_model.backbone.backbone
+            else:
+                backbone = self.actual_model.backbone
+        else:
+            backbone = None
+        
+        if backbone:
+            backbone_trainable = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
+            backbone_total = sum(p.numel() for p in backbone.parameters())
+            backbone_ratio = backbone_trainable / backbone_total * 100 if backbone_total > 0 else 0
+        else:
+            backbone_trainable = 0
+            backbone_total = 0
+            backbone_ratio = 0
+        
+        # Calculate head parameters (non-backbone)
+        head_params = trainable_model_params - backbone_trainable
+        
+        logger.info(f"[EARLY_GRADUAL] Epoch {epoch} parameter status:")
+        logger.info(f"  📊 Total model: {trainable_model_params:,}/{total_model_params:,} trainable ({trainable_model_params/total_model_params*100:.1f}%)")
+        logger.info(f"  🧠 Backbone: {backbone_trainable:,}/{backbone_total:,} trainable ({backbone_ratio:.1f}%)")
+        logger.info(f"  🎯 Classification heads: {head_params:,} trainable")
+        logger.info(f"  🔓 Unfrozen blocks: {len(self.unfrozen_blocks)}/{len(self.backbone_blocks)} ({', '.join(self.unfrozen_blocks) if self.unfrozen_blocks else 'none'})")
+        
+        # Progress towards target
+        if self.target_unfrozen_params > 0:
+            target_progress = backbone_trainable / self.target_unfrozen_params * 100
+            logger.info(f"  🎯 Target progress: {backbone_trainable:,}/{self.target_unfrozen_params:,} ({target_progress:.1f}%)")
+        
+        return {
+            'total_params': total_model_params,
+            'trainable_params': trainable_model_params,
+            'backbone_trainable': backbone_trainable,
+            'backbone_total': backbone_total,
+            'backbone_ratio': backbone_ratio,
+            'unfrozen_blocks': len(self.unfrozen_blocks),
+            'target_progress': backbone_trainable / self.target_unfrozen_params if self.target_unfrozen_params > 0 else 0
+        } 
