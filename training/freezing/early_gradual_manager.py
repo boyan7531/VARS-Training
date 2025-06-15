@@ -10,6 +10,7 @@ This module implements a simple but effective freezing strategy:
 import torch
 import torch.nn as nn
 import logging
+from .base_utils import _get_backbone_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -36,58 +37,13 @@ class EarlyGradualFreezingManager:
         self.target_unfrozen_params = 0
         
         # Initialize backbone layer information
-        self.backbone_blocks = self._get_backbone_blocks()
+        self.backbone_blocks = _get_backbone_blocks(self.model)
         self._calculate_parameter_targets()
         
         logger.info(f"[EARLY_GRADUAL] Initialized with {len(self.backbone_blocks)} backbone blocks")
         logger.info(f"[EARLY_GRADUAL] Target: {self.target_ratio*100:.0f}% of backbone ({self.target_unfrozen_params:,}/{self.total_backbone_params:,} parameters)")
     
-    def _get_backbone_blocks(self):
-        """Get ordered list of backbone blocks for gradual unfreezing."""
-        # Handle different model structures
-        if hasattr(self.actual_model, 'mvit_processor'):
-            # Optimized MViT model - backbone is inside mvit_processor
-            backbone = self.actual_model.mvit_processor.backbone
-        elif hasattr(self.actual_model, 'backbone'):
-            # Standard model structure
-            if hasattr(self.actual_model.backbone, 'backbone'):
-                # ResNet3D model: actual_model.backbone.backbone
-                backbone = self.actual_model.backbone.backbone
-            else:
-                # MViT model: actual_model.backbone directly
-                backbone = self.actual_model.backbone
-        else:
-            raise AttributeError("Model does not have accessible backbone")
-        
-        blocks = []
-        
-        # Detect architecture and get blocks in unfreezing order (last to first)
-        if hasattr(backbone, 'layer4'):
-            # ResNet3D architecture - unfreeze from layer4 backwards
-            if hasattr(backbone, 'layer4'):
-                for i, block in enumerate(backbone.layer4):
-                    blocks.append((f'layer4.{i}', block))
-            if hasattr(backbone, 'layer3'):
-                for i, block in enumerate(backbone.layer3):
-                    blocks.append((f'layer3.{i}', block))
-            if hasattr(backbone, 'layer2'):
-                for i, block in enumerate(backbone.layer2):
-                    blocks.append((f'layer2.{i}', block))
-            if hasattr(backbone, 'layer1'):
-                for i, block in enumerate(backbone.layer1):
-                    blocks.append((f'layer1.{i}', block))
-                    
-        elif hasattr(backbone, 'blocks'):
-            # MViT architecture - unfreeze from last blocks backwards
-            total_blocks = len(backbone.blocks)
-            for i in range(total_blocks - 1, -1, -1):  # Reverse order
-                blocks.append((f'block_{i}', backbone.blocks[i]))
-        else:
-            logger.warning("[EARLY_GRADUAL] Unknown backbone architecture")
-            # Fallback: treat entire backbone as one block
-            blocks.append(('entire_backbone', backbone))
-        
-        return blocks
+
     
     def _calculate_parameter_targets(self):
         """Calculate total backbone parameters and target unfrozen parameters."""

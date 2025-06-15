@@ -335,4 +335,119 @@ def log_trainable_parameters(model, epoch=None):
     
     logger.info(f"  ❄️  Frozen parameters: {frozen_params:,}")
     
-    return trainable_params, total_params 
+    return trainable_params, total_params
+
+
+def _get_backbone_blocks(model):
+    """
+    Get ordered list of backbone blocks for gradual unfreezing.
+    
+    This function handles different model structures and architectures to extract
+    backbone blocks in the appropriate order for gradual unfreezing strategies.
+    
+    Args:
+        model: The model (can be wrapped in DataParallel)
+        
+    Returns:
+        List of tuples (block_name, block_module) ordered for unfreezing
+    """
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    # Handle different model structures
+    if hasattr(actual_model, 'mvit_processor'):
+        # Optimized MViT model - backbone is inside mvit_processor
+        backbone = actual_model.mvit_processor.backbone
+    elif hasattr(actual_model, 'backbone'):
+        # Standard model structure
+        if hasattr(actual_model.backbone, 'backbone'):
+            # ResNet3D model: actual_model.backbone.backbone
+            backbone = actual_model.backbone.backbone
+        else:
+            # MViT model: actual_model.backbone directly
+            backbone = actual_model.backbone
+    else:
+        raise AttributeError("Model does not have accessible backbone")
+    
+    blocks = []
+    
+    # Detect architecture and get blocks in unfreezing order (last to first)
+    if hasattr(backbone, 'layer4'):
+        # ResNet3D architecture - unfreeze from layer4 backwards
+        if hasattr(backbone, 'layer4'):
+            for i, block in enumerate(backbone.layer4):
+                blocks.append((f'layer4.{i}', block))
+        if hasattr(backbone, 'layer3'):
+            for i, block in enumerate(backbone.layer3):
+                blocks.append((f'layer3.{i}', block))
+        if hasattr(backbone, 'layer2'):
+            for i, block in enumerate(backbone.layer2):
+                blocks.append((f'layer2.{i}', block))
+        if hasattr(backbone, 'layer1'):
+            for i, block in enumerate(backbone.layer1):
+                blocks.append((f'layer1.{i}', block))
+                
+    elif hasattr(backbone, 'blocks'):
+        # MViT architecture - unfreeze from last blocks backwards
+        total_blocks = len(backbone.blocks)
+        for i in range(total_blocks - 1, -1, -1):  # Reverse order
+            blocks.append((f'block_{i}', backbone.blocks[i]))
+    else:
+        logger.warning("[BACKBONE_BLOCKS] Unknown backbone architecture")
+        # Fallback: treat entire backbone as one block
+        blocks.append(('entire_backbone', backbone))
+    
+    return blocks
+
+
+def _get_backbone_layers(model):
+    """
+    Get ordered list of backbone layers for progressive unfreezing.
+    
+    This is a layer-level version of _get_backbone_blocks() that groups
+    blocks into layers rather than individual blocks.
+    
+    Args:
+        model: The model (can be wrapped in DataParallel)
+        
+    Returns:
+        List of tuples (layer_name, layer_module) ordered for unfreezing
+    """
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    # Handle different model structures
+    if hasattr(actual_model, 'mvit_processor'):
+        # Optimized MViT model - backbone is inside mvit_processor
+        backbone = actual_model.mvit_processor.backbone
+    elif hasattr(actual_model, 'backbone'):
+        # Standard model structure
+        backbone = actual_model.backbone
+        # For ResNet3D models, the actual backbone is one level deeper
+        if hasattr(backbone, 'backbone'):
+            backbone = backbone.backbone
+    else:
+        raise AttributeError("Model does not have accessible backbone")
+    
+    layers = []
+    
+    # Detect model type and get appropriate layers
+    if hasattr(backbone, 'layer4'):
+        # ResNet3D architecture
+        if hasattr(backbone, 'layer4'): layers.append(('layer4', backbone.layer4))
+        if hasattr(backbone, 'layer3'): layers.append(('layer3', backbone.layer3))
+        if hasattr(backbone, 'layer2'): layers.append(('layer2', backbone.layer2))
+        if hasattr(backbone, 'layer1'): layers.append(('layer1', backbone.layer1))
+        if hasattr(backbone, 'conv1'): layers.append(('conv1', backbone.conv1))
+    elif hasattr(backbone, 'blocks'):
+        # MViT architecture - use last few transformer blocks
+        total_blocks = len(backbone.blocks)
+        # Add blocks in reverse order (last blocks first for unfreezing)
+        for i in range(min(4, total_blocks)):  # Up to 4 blocks
+            block_idx = total_blocks - 1 - i
+            layers.append((f'block_{block_idx}', backbone.blocks[block_idx]))
+    else:
+        logger.warning("[BACKBONE_LAYERS] Unknown backbone architecture, will use entire backbone")
+        layers.append(('entire_backbone', backbone))
+    
+    return layers 

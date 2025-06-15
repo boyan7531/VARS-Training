@@ -10,6 +10,7 @@ import torch.nn as nn
 from collections import defaultdict
 import numpy as np
 import logging
+from .base_utils import _get_backbone_layers
 
 logger = logging.getLogger(__name__)
 
@@ -32,45 +33,7 @@ class SmartFreezingManager:
         self.unfrozen_layers = []
         self.gradient_history = defaultdict(list)
         
-    def get_backbone_layers(self):
-        """Get ordered list of backbone layers for progressive unfreezing."""
-        actual_model = self.model.module if hasattr(self.model, 'module') else self.model
-        
-        # Handle different model structures
-        if hasattr(actual_model, 'mvit_processor'):
-            # Optimized MViT model - backbone is inside mvit_processor
-            backbone = actual_model.mvit_processor.backbone
-        elif hasattr(actual_model, 'backbone'):
-            # Standard model structure
-            backbone = actual_model.backbone
-            # For ResNet3D models, the actual backbone is one level deeper
-            if hasattr(backbone, 'backbone'):
-                backbone = backbone.backbone
-        else:
-            raise AttributeError("Model does not have accessible backbone")
-        
-        layers = []
-        
-        # Detect model type and get appropriate layers
-        if hasattr(backbone, 'layer4'):
-            # ResNet3D architecture
-            if hasattr(backbone, 'layer4'): layers.append(('layer4', backbone.layer4))
-            if hasattr(backbone, 'layer3'): layers.append(('layer3', backbone.layer3))
-            if hasattr(backbone, 'layer2'): layers.append(('layer2', backbone.layer2))
-            if hasattr(backbone, 'layer1'): layers.append(('layer1', backbone.layer1))
-            if hasattr(backbone, 'conv1'): layers.append(('conv1', backbone.conv1))
-        elif hasattr(backbone, 'blocks'):
-            # MViT architecture - use last few transformer blocks
-            total_blocks = len(backbone.blocks)
-            # Add blocks in reverse order (last blocks first for unfreezing)
-            for i in range(min(4, total_blocks)):  # Up to 4 blocks
-                block_idx = total_blocks - 1 - i
-                layers.append((f'block_{block_idx}', backbone.blocks[block_idx]))
-        else:
-            logger.warning("[SMART_FREEZE] Unknown backbone architecture, will use entire backbone")
-            layers.append(('entire_backbone', backbone))
-        
-        return layers
+
     
     def freeze_all_backbone(self):
         """Freeze all backbone parameters."""
@@ -170,7 +133,7 @@ class SmartFreezingManager:
         })
         
         # Backbone layers (exponentially decreasing LR)
-        layers = self.get_backbone_layers()
+        layers = _get_backbone_layers(self.model)
         for i, (layer_name, layer) in enumerate(layers):
             layer_params = [p for p in layer.parameters() if p.requires_grad]
             if layer_params:
@@ -189,7 +152,7 @@ class SmartFreezingManager:
         if not self.should_unfreeze_next_layer(current_val_acc):
             return False
             
-        layers = self.get_backbone_layers()
+        layers = _get_backbone_layers(self.model)
         for layer_name, layer in layers:
             if layer_name not in self.unfrozen_layers:
                 self.unfreeze_layer(layer_name, layer)
