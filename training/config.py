@@ -95,12 +95,12 @@ def parse_args():
                        help='Maximum ratio between highest and lowest class weight (reduced from 12 to prevent training instability)')
     parser.add_argument('--use_class_balanced_sampler', action='store_true', default=True,
                        help='Use class-balanced sampler to oversample minority classes')
-    parser.add_argument('--oversample_factor', type=float, default=4.0,
-                       help='Factor by which to oversample minority classes (higher = more aggressive)')
+    parser.add_argument('--oversample_factor', type=float, default=2.0,
+                       help='Factor by which to oversample minority classes (reduced from 4.0 to prevent overfitting)')
     parser.add_argument('--use_alternating_sampler', action='store_true', default=False,
                        help='Use alternating sampler that switches between severity and action balancing per epoch')
-    parser.add_argument('--action_oversample_factor', type=float, default=4.0,
-                       help='Factor by which to oversample minority action classes (higher = more aggressive)')
+    parser.add_argument('--action_oversample_factor', type=float, default=2.0,
+                       help='Factor by which to oversample minority action classes (reduced from 4.0 to prevent overfitting)')
     parser.add_argument('--use_action_balanced_sampler_only', action='store_true', default=False,
                        help='Use only action-balanced sampler (ignore severity balancing)')
     parser.add_argument('--use_strong_action_weights', action='store_true', default=False,
@@ -114,8 +114,8 @@ def parse_args():
                        help='Disable all class balancing techniques (use with caution)')
     
     # === NEW STRATEGIES FOR CLASS IMBALANCE ===
-    parser.add_argument('--progressive_class_balancing', action='store_true', default=False,
-                       help='Enable progressive class-balanced sampling that increases minority representation over time')
+    parser.add_argument('--progressive_class_balancing', action='store_true', default=True,
+                       help='Enable progressive class-balanced sampling that increases minority representation over time (recommended over fixed oversampling)')
     parser.add_argument('--progressive_start_factor', type=float, default=1.5,
                        help='Starting balancing factor for progressive sampling (default: 1.5)')
     parser.add_argument('--progressive_end_factor', type=float, default=3.0,
@@ -187,8 +187,12 @@ def parse_args():
                        help='Number of epochs for Phase 2 (gradual unfreezing)')
     parser.add_argument('--head_lr', type=float, default=1e-3, 
                        help='Learning rate for classification heads (used when backbone is frozen)')
-    parser.add_argument('--backbone_lr', type=float, default=1e-4, 
+    parser.add_argument('--backbone_lr', type=float, default=1e-4,
                        help='Learning rate for unfrozen backbone layers (typically head_lr/10 = 1e-4)')
+    parser.add_argument('--backbone_lr_ratio_after_half', type=float, default=0.6,
+                       help='Backbone LR ratio relative to head LR after ≥50% of backbone is unfrozen (default: 0.6)')
+    parser.add_argument('--enable_backbone_lr_boost', action='store_true', default=True,
+                       help='Enable automatic backbone LR boost when ≥50% of backbone is unfrozen')
     parser.add_argument('--unfreeze_blocks', type=int, default=3,
                        help='Number of final residual blocks to unfreeze in Phase 2')
     parser.add_argument('--phase2_backbone_lr_scale_factor', type=float, default=1.0,

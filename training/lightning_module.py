@@ -216,7 +216,8 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                 self.loss_config.update({
                     'severity_class_weights': severity_weights_for_loss,
                     'action_class_weights': action_weights_for_loss,
-                    'class_gamma_map': self.class_gamma_map
+                    'class_gamma_map': self.class_gamma_map,
+                    'using_oversampling': self.args.use_class_balanced_sampler or self.args.use_action_balanced_sampler_only
                 })
     
     def configure_optimizers(self):
@@ -476,6 +477,11 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         # Handle gradual fine-tuning phase transitions
         if self.args.gradual_finetuning:
             self._handle_phase_transition()
+        
+        # OPTIMIZATION: Boost backbone LR when ≥50% of backbone is unfrozen
+        from .freezing.base_utils import boost_backbone_lr_if_needed
+        optimizer = self.optimizers()
+        boost_backbone_lr_if_needed(self.args, optimizer, self.model, self.current_epoch)
         
         # Memory cleanup
         cleanup_memory()

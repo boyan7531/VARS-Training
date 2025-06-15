@@ -303,10 +303,25 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
     main_weights = loss_config.get('weights', [1.0, 1.0])
     label_smoothing = loss_config.get('label_smoothing', 0.0)
     
+    # OPTIMIZATION: Disable label smoothing when using oversampling + class weights
+    # This prevents gradient flattening for rare classes that are already amplified
+    severity_class_weights = loss_config.get('severity_class_weights', None)
+    action_class_weights = loss_config.get('action_class_weights', None)
+    using_oversampling = loss_config.get('using_oversampling', False)
+    
+    # Auto-disable label smoothing if we're using both oversampling and class weights
+    if label_smoothing > 0 and using_oversampling and (severity_class_weights is not None or action_class_weights is not None):
+        label_smoothing = 0.0
+        # Only log once per training run to avoid spam
+        if not hasattr(calculate_multitask_loss, '_logged_smoothing_disabled'):
+            if is_main_process():
+                logger.info("🎯 Auto-disabled label smoothing: oversampling + class weights detected")
+                logger.info("   This prevents gradient flattening for amplified rare classes")
+            calculate_multitask_loss._logged_smoothing_disabled = True
+    
     if loss_function == 'adaptive_focal':
         # Use adaptive focal loss with class-specific gamma values
         class_gamma_map = loss_config.get('class_gamma_map', None)
-        severity_class_weights = loss_config.get('severity_class_weights', None)
         
         adaptive_focal_criterion = AdaptiveFocalLoss(
             class_gamma_map=class_gamma_map,
@@ -316,7 +331,6 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
         loss_sev = adaptive_focal_criterion(sev_logits, batch_data["label_severity"]) * main_weights[0]
         
         # Action type loss - use class weights if available
-        action_class_weights = loss_config.get('action_class_weights')
         if action_class_weights is not None:
             loss_act = nn.CrossEntropyLoss(
                 label_smoothing=label_smoothing,
@@ -327,7 +341,6 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
     
     elif loss_function == 'focal':
         focal_gamma = loss_config.get('focal_gamma', 2.0)
-        severity_class_weights = loss_config.get('severity_class_weights', None)
         
         # Guard: When using focal loss with ClassBalancedSampler, alpha should be None
         # to avoid double-balancing (oversampling + class weights = excessive minority class focus)
@@ -345,7 +358,6 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
         loss_sev = focal_criterion(sev_logits, batch_data["label_severity"]) * main_weights[0]
         
         # Action type loss - use class weights if available
-        action_class_weights = loss_config.get('action_class_weights')
         if action_class_weights is not None:
             loss_act = nn.CrossEntropyLoss(
                 label_smoothing=label_smoothing,
@@ -355,8 +367,6 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
             loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
     
     elif loss_function == 'weighted':
-        severity_class_weights = loss_config.get('severity_class_weights') # Should be provided for this option
-        action_class_weights = loss_config.get('action_class_weights') # Optional action class weights
         
         loss_sev = nn.CrossEntropyLoss(
             label_smoothing=label_smoothing, 

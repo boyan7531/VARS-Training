@@ -307,52 +307,122 @@ def log_trainable_parameters(model, epoch=None):
     backbone_trainable = 0
     backbone_total = 0
     
-    # Handle different model structures to get backbone
-    try:
-        if hasattr(actual_model, 'mvit_processor'):
-            # Optimized MViT model - backbone is inside mvit_processor
-            backbone = actual_model.mvit_processor.backbone
-        elif hasattr(actual_model, 'backbone'):
-            # Standard model structure
-            if hasattr(actual_model.backbone, 'backbone'):
-                # ResNet3D model: actual_model.backbone.backbone
-                backbone = actual_model.backbone.backbone
-            else:
-                # MViT model: actual_model.backbone directly
-                backbone = actual_model.backbone
+    # Handle different model structures
+    if hasattr(actual_model, 'mvit_processor'):
+        # Optimized MViT model - backbone is inside mvit_processor
+        backbone = actual_model.mvit_processor.backbone
+    elif hasattr(actual_model, 'backbone'):
+        # Standard model structure
+        if hasattr(actual_model.backbone, 'backbone'):
+            # ResNet3D model: actual_model.backbone.backbone
+            backbone = actual_model.backbone.backbone
         else:
-            backbone = None
-        
-        if backbone:
-            backbone_trainable = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
-            backbone_total = sum(p.numel() for p in backbone.parameters())
-    except Exception as e:
-        if is_main_process:
-            logger.warning(f"Could not analyze backbone parameters: {e}")
+            # MViT model: actual_model.backbone directly
+            backbone = actual_model.backbone
+    else:
         backbone = None
+    
+    if backbone:
+        backbone_trainable = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
+        backbone_total = sum(p.numel() for p in backbone.parameters())
     
     # Calculate head parameters (non-backbone)
     head_params = trainable_params - backbone_trainable
     
-    # Only log from main process to avoid duplicates in distributed training
     if is_main_process:
-        # Create epoch prefix for logging
-        epoch_prefix = f"Epoch {epoch} " if epoch is not None else ""
-        
-        # Log comprehensive parameter information
-        logger.info(f"[PARAMS] {epoch_prefix}Parameter Status:")
-        logger.info(f"  📊 Total model: {trainable_params:,}/{total_params:,} trainable ({trainable_params/total_params*100:.1f}%)")
-        
-        if backbone is not None:
-            backbone_ratio = backbone_trainable / backbone_total * 100 if backbone_total > 0 else 0
-            logger.info(f"  🧠 Backbone: {backbone_trainable:,}/{backbone_total:,} trainable ({backbone_ratio:.1f}%)")
-            logger.info(f"  🎯 Classification heads: {head_params:,} trainable")
-        else:
-            logger.info(f"  🎯 Non-backbone parameters: {head_params:,} trainable")
-        
-        logger.info(f"  ❄️  Frozen parameters: {frozen_params:,}")
+        epoch_str = f" (Epoch {epoch})" if epoch is not None else ""
+        logger.info(f"📊 Trainable Parameters{epoch_str}:")
+        logger.info(f"  Total model: {trainable_params:,}/{total_params:,} ({trainable_params/total_params*100:.1f}%)")
+        logger.info(f"  Backbone: {backbone_trainable:,}/{backbone_total:,} ({backbone_trainable/backbone_total*100:.1f}%)")
+        logger.info(f"  Classification heads: {head_params:,}")
+
+
+def get_backbone_unfrozen_ratio(model):
+    """
+    Calculate the ratio of unfrozen backbone parameters.
     
-    return trainable_params, total_params
+    Args:
+        model: The model (can be wrapped in DataParallel)
+        
+    Returns:
+        float: Ratio of unfrozen backbone parameters (0.0 to 1.0)
+    """
+    # Handle DataParallel wrapper
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    # Handle different model structures
+    if hasattr(actual_model, 'mvit_processor'):
+        # Optimized MViT model - backbone is inside mvit_processor
+        backbone = actual_model.mvit_processor.backbone
+    elif hasattr(actual_model, 'backbone'):
+        # Standard model structure
+        if hasattr(actual_model.backbone, 'backbone'):
+            # ResNet3D model: actual_model.backbone.backbone
+            backbone = actual_model.backbone.backbone
+        else:
+            # MViT model: actual_model.backbone directly
+            backbone = actual_model.backbone
+    else:
+        return 0.0  # No backbone found
+    
+    backbone_trainable = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
+    backbone_total = sum(p.numel() for p in backbone.parameters())
+    
+    if backbone_total == 0:
+        return 0.0
+    
+    return backbone_trainable / backbone_total
+
+
+def boost_backbone_lr_if_needed(args, optimizer, model, epoch):
+    """
+    Boost backbone learning rate when ≥50% of backbone is unfrozen.
+    
+    Args:
+        args: Training arguments
+        optimizer: The optimizer
+        model: The model
+        epoch: Current epoch
+        
+    Returns:
+        bool: True if LR was boosted, False otherwise
+    """
+    # Check if boost is enabled and not already applied
+    if not getattr(args, 'enable_backbone_lr_boost', True):
+        return False
+    
+    if getattr(args, 'lr_ratio_bumped', False):
+        return False  # Already boosted
+    
+    # Calculate backbone unfrozen ratio
+    unfrozen_ratio = get_backbone_unfrozen_ratio(model)
+    
+    # Check if we've reached the threshold
+    if unfrozen_ratio >= 0.5:
+        # Find backbone parameter groups and boost their LR
+        target_ratio = getattr(args, 'backbone_lr_ratio_after_half', 0.6)
+        head_lr = args.lr if hasattr(args, 'lr') else args.head_lr
+        new_backbone_lr = head_lr * target_ratio
+        
+        boosted_groups = 0
+        for group in optimizer.param_groups:
+            group_name = group.get('name', '')
+            # Look for backbone-related parameter groups
+            if ('backbone' in group_name.lower() and 
+                'head' not in group_name.lower()):
+                old_lr = group['lr']
+                group['lr'] = new_backbone_lr
+                boosted_groups += 1
+                logger.info(f"🔧 Boosted {group_name} LR: {old_lr:.2e} → {new_backbone_lr:.2e}")
+        
+        if boosted_groups > 0:
+            args.lr_ratio_bumped = True
+            logger.info(f"🚀 Backbone LR boost applied at epoch {epoch}")
+            logger.info(f"   Unfrozen ratio: {unfrozen_ratio:.1%} (≥50% threshold reached)")
+            logger.info(f"   New backbone LR ratio: {target_ratio:.1f} (was ~{args.backbone_lr/head_lr:.1f})")
+            return True
+    
+    return False
 
 
 def _get_backbone_blocks(model):

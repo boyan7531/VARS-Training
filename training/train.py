@@ -691,7 +691,8 @@ def main():
                         'focal_gamma': args.focal_gamma,
                         'severity_class_weights': None if (args.use_class_balanced_sampler and not args.use_action_balanced_sampler_only) else severity_class_weights,
                         'action_class_weights': action_class_weights,
-                        'class_gamma_map': class_gamma_map
+                        'class_gamma_map': class_gamma_map,
+                        'using_oversampling': args.use_class_balanced_sampler or args.use_action_balanced_sampler_only
                     },
                     scaler=scaler, 
                     max_batches=num_batches_to_run, 
@@ -737,7 +738,8 @@ def main():
                     'focal_gamma': args.focal_gamma,
                     'severity_class_weights': None if (args.use_class_balanced_sampler and not args.use_action_balanced_sampler_only) else severity_class_weights,
                     'action_class_weights': action_class_weights,
-                    'class_gamma_map': class_gamma_map
+                    'class_gamma_map': class_gamma_map,
+                    'using_oversampling': args.use_class_balanced_sampler or args.use_action_balanced_sampler_only
                 },
                 scaler=scaler, 
                 max_batches=num_batches_to_run, 
@@ -768,7 +770,8 @@ def main():
                 'focal_gamma': args.focal_gamma,
                 'severity_class_weights': None if (args.use_class_balanced_sampler and not args.use_action_balanced_sampler_only) else severity_class_weights,
                 'action_class_weights': action_class_weights,
-                'class_gamma_map': class_gamma_map
+                'class_gamma_map': class_gamma_map,
+                'using_oversampling': args.use_class_balanced_sampler or args.use_action_balanced_sampler_only
             },
             confusion_matrix_dict=val_confusion_matrices
         )
@@ -839,6 +842,10 @@ def main():
             val_metric=val_metrics['sev_acc'],  # Use the correct key from validation metrics
             train_loader=train_loader
         )
+        
+        # OPTIMIZATION: Boost backbone LR when ≥50% of backbone is unfrozen
+        from training.freezing.base_utils import boost_backbone_lr_if_needed
+        boost_backbone_lr_if_needed(args, optimizer, model, epoch)
 
         # Update learning rate
         if scheduler is not None:
