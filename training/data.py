@@ -6,11 +6,22 @@ This module handles dataset creation, transforms, data loaders, and augmentation
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from torchvision.transforms import Compose, CenterCrop
+from torch.utils.data import DataLoader, Dataset
+import torchvision.transforms as transforms
+from torchvision.transforms import v2
 import numpy as np
+import cv2
 import random
 import logging
+from pathlib import Path
+from collections import defaultdict, deque
+import time
+import threading
+from typing import Optional
+
+# Distributed training imports
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
 
 # Import transforms directly
 from pytorchvideo.transforms import ShortSideScale, Normalize as VideoNormalize
@@ -296,7 +307,7 @@ class PerFrameCenterCrop(torch.nn.Module):
     """Applies CenterCrop to each frame of a (C, T, H, W) video tensor."""
     def __init__(self, size):
         super().__init__()
-        self.cropper = CenterCrop(size)
+        self.cropper = transforms.CenterCrop(size)
 
     def forward(self, clip_cthw):
         clip_tchw = clip_cthw.permute(1, 0, 2, 3)
@@ -459,7 +470,7 @@ def create_transforms(args, is_training=True):
         ])
         
         # Create the final transform
-        transform = Compose(augmentation_stages)
+        transform = transforms.Compose(augmentation_stages)
         
         # Log augmentation settings
         if args.extreme_augmentation:
@@ -497,7 +508,7 @@ def create_transforms(args, is_training=True):
     
     else:
         # Standard validation transforms (NO augmentation for consistent evaluation)
-        return Compose([
+        return transforms.Compose([
             ConvertToFloatAndScale(),
             VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ShortSideScale(size=args.img_height),
@@ -590,7 +601,10 @@ def create_dataloaders(args, train_dataset, val_dataset):
     
     logger.info("Creating data loaders...")
     
-    # Import optimization features if available
+    # Import sampling classes
+    from dataset import ClassBalancedSampler, ActionBalancedSampler, AlternatingSampler
+    
+    # Import optimization features if available 
     try:
         from .data_optimization import create_optimized_dataloader, DataLoadingProfiler
         use_optimization = getattr(args, 'enable_data_optimization', True)
@@ -599,16 +613,31 @@ def create_dataloaders(args, train_dataset, val_dataset):
         logger.warning("Data optimization module not available, using standard DataLoader")
         use_optimization = False
     
+    # Check if we're in distributed training mode
+    is_distributed = dist.is_available() and dist.is_initialized()
+    if is_distributed:
+        logger.info(f"🌐 Distributed training detected: {dist.get_world_size()} GPUs")
+    
     # Setup training loader with optional class balancing
     if args.use_class_balanced_sampler and not args.test_run:
         # Choose between different sampling strategies
         if args.use_alternating_sampler:
             logger.info("🔄 Using AlternatingSampler to address both severity and action imbalance!")
-            train_sampler = AlternatingSampler(
-                train_dataset,
-                severity_oversample_factor=args.oversample_factor,
-                action_oversample_factor=args.action_oversample_factor
-            )
+            if is_distributed:
+                # For distributed training, wrap the sampler
+                base_sampler = AlternatingSampler(
+                    train_dataset,
+                    severity_oversample_factor=args.oversample_factor,
+                    action_oversample_factor=args.action_oversample_factor
+                )
+                train_sampler = DistributedSamplerWrapper(base_sampler)
+                logger.info("   - Using DistributedSamplerWrapper for multi-GPU training")
+            else:
+                train_sampler = AlternatingSampler(
+                    train_dataset,
+                    severity_oversample_factor=args.oversample_factor,
+                    action_oversample_factor=args.action_oversample_factor
+                )
             
             logger.info(f"   - Severity oversample factor: {args.oversample_factor}x")
             logger.info(f"   - Action oversample factor: {args.action_oversample_factor}x")
@@ -616,32 +645,58 @@ def create_dataloaders(args, train_dataset, val_dataset):
             logger.info(f"   - Initial samples per epoch: {len(train_sampler)}")
         elif args.use_action_balanced_sampler_only:
             logger.info("⚖️ Using ActionBalancedSampler to address action type imbalance!")
-            train_sampler = ActionBalancedSampler(
-                train_dataset, 
-                oversample_factor=args.action_oversample_factor
-            )
+            if is_distributed:
+                train_sampler = DistributedActionBalancedSampler(
+                    train_dataset, 
+                    oversample_factor=args.action_oversample_factor
+                )
+                logger.info("   - Using distributed-aware ActionBalancedSampler")
+            else:
+                train_sampler = ActionBalancedSampler(
+                    train_dataset, 
+                    oversample_factor=args.action_oversample_factor
+                )
             
             logger.info(f"   - Action oversample factor: {args.action_oversample_factor}x for minority action classes")
             logger.info(f"   - Effective training samples per epoch: {len(train_sampler)}")
         elif args.progressive_class_balancing:
             logger.info("🚀 Using ProgressiveClassBalancedSampler for dynamic class balancing!")
-            train_sampler = ProgressiveClassBalancedSampler(
-                train_dataset,
-                oversample_factor_start=args.progressive_start_factor,  # Start with mild oversampling
-                oversample_factor_end=args.progressive_end_factor,  # End with full oversampling
-                duration_epochs=args.progressive_epochs,  # Duration of progression
-                current_epoch=0  # Start at epoch 0
-            )
+            if is_distributed:
+                # For progressive sampler, wrap with DistributedSamplerWrapper since it's more complex
+                base_sampler = ProgressiveClassBalancedSampler(
+                    train_dataset,
+                    oversample_factor_start=args.progressive_start_factor,
+                    oversample_factor_end=args.progressive_end_factor,
+                    duration_epochs=args.progressive_epochs,
+                    current_epoch=0
+                )
+                train_sampler = DistributedSamplerWrapper(base_sampler)
+                logger.info("   - Using DistributedSamplerWrapper for multi-GPU training")
+            else:
+                train_sampler = ProgressiveClassBalancedSampler(
+                    train_dataset,
+                    oversample_factor_start=args.progressive_start_factor,  # Start with mild oversampling
+                    oversample_factor_end=args.progressive_end_factor,  # End with full oversampling
+                    duration_epochs=args.progressive_epochs,  # Duration of progression
+                    current_epoch=0  # Start at epoch 0
+                )
             
             logger.info(f"   - Progressive balancing from {args.progressive_start_factor}x to {args.progressive_end_factor}x")
             logger.info(f"   - Duration: {args.progressive_epochs} epochs")
             logger.info(f"   - Initial samples per epoch: {len(train_sampler)}")
         else:
             logger.info("🎯 Using ClassBalancedSampler to address severity class imbalance!")
-            train_sampler = ClassBalancedSampler(
-                train_dataset, 
-                oversample_factor=args.oversample_factor
-            )
+            if is_distributed:
+                train_sampler = DistributedClassBalancedSampler(
+                    train_dataset, 
+                    oversample_factor=args.oversample_factor
+                )
+                logger.info("   - Using distributed-aware ClassBalancedSampler")
+            else:
+                train_sampler = ClassBalancedSampler(
+                    train_dataset, 
+                    oversample_factor=args.oversample_factor
+                )
             
             logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority severity classes")
             logger.info(f"   - Effective training samples per epoch: {len(train_sampler)}")
@@ -713,12 +768,19 @@ def create_dataloaders(args, train_dataset, val_dataset):
     else: # args.num_workers >= 4
         val_num_workers = args.num_workers // 2
         
-    # Create validation loader (optimization less critical for validation)
+        # Create validation loader (optimization less critical for validation)  
+    val_sampler = None
+    if is_distributed:
+        # Use DistributedSampler for validation to ensure each GPU sees different data
+        val_sampler = DistributedSampler(val_dataset, shuffle=False)
+        logger.info("   - Using DistributedSampler for validation data")
+    
     if use_optimization:
         val_loader = create_optimized_dataloader(
             dataset=val_dataset, 
             batch_size=args.batch_size,
-            shuffle=False, 
+            sampler=val_sampler,
+            shuffle=False if val_sampler is not None else False, 
             num_workers=val_num_workers,
             pin_memory=True,
             prefetch_factor=args.prefetch_factor,
@@ -729,7 +791,8 @@ def create_dataloaders(args, train_dataset, val_dataset):
         val_loader = DataLoader(
             val_dataset, 
             batch_size=args.batch_size,
-            shuffle=False, 
+            sampler=val_sampler,
+            shuffle=False if val_sampler is not None else False, 
             num_workers=val_num_workers,
             pin_memory=True,
             persistent_workers=True if val_num_workers > 0 else False,  # Only enable if num_workers > 0
@@ -911,3 +974,276 @@ class ProgressiveClassBalancedSampler(torch.utils.data.Sampler):
     def __len__(self):
         """Return the total size of the sampler."""
         return self.total_size 
+
+
+class DistributedSamplerWrapper:
+    """
+    Wrapper that makes custom samplers compatible with distributed training.
+    
+    This ensures that:
+    1. Each GPU sees different data (no duplication)
+    2. The effective epoch size remains consistent regardless of number of GPUs
+    3. Custom sampling logic (class balancing, etc.) is preserved
+    
+    Compatible with PyTorch >= 1.12's DistributedSamplerWrapper approach.
+    """
+    def __init__(self, sampler, num_replicas=None, rank=None, shuffle=True):
+        if num_replicas is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            num_replicas = dist.get_world_size()
+        if rank is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            rank = dist.get_rank()
+        
+        self.sampler = sampler
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.epoch = 0
+        self.shuffle = shuffle
+        
+    def __iter__(self):
+        # Get indices from the underlying sampler
+        if hasattr(self.sampler, 'set_epoch'):
+            # Set epoch for underlying sampler if it supports it
+            self.sampler.set_epoch(self.epoch)
+        
+        indices = list(self.sampler)
+        
+        # Add extra samples to make it evenly divisible across GPUs
+        indices += indices[:(self.num_replicas - len(indices) % self.num_replicas) % self.num_replicas]
+        assert len(indices) % self.num_replicas == 0
+        
+        # Subsample for this rank
+        indices = indices[self.rank:len(indices):self.num_replicas]
+        
+        if self.shuffle:
+            # Shuffle indices in a deterministic way based on epoch
+            g = torch.Generator()
+            g.manual_seed(self.epoch)
+            random_indices = torch.randperm(len(indices), generator=g).tolist()
+            indices = [indices[i] for i in random_indices]
+            
+        return iter(indices)
+    
+    def __len__(self):
+        return len(self.sampler) // self.num_replicas
+    
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+        if hasattr(self.sampler, 'set_epoch'):
+            self.sampler.set_epoch(epoch)
+
+
+class DistributedClassBalancedSampler(torch.utils.data.Sampler):
+    """
+    Distributed-aware version of ClassBalancedSampler.
+    
+    Each GPU gets a balanced subsample of the data, ensuring:
+    1. No data duplication across GPUs
+    2. Class balance is maintained on each GPU
+    3. Total epoch size is consistent regardless of number of GPUs
+    """
+    def __init__(self, dataset, oversample_factor=3.0, num_replicas=None, rank=None):
+        if num_replicas is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            num_replicas = dist.get_world_size()
+        if rank is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available") 
+            rank = dist.get_rank()
+            
+        self.dataset = dataset
+        self.oversample_factor = oversample_factor
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.epoch = 0
+        
+        # Import from dataset.py
+        from dataset import SEVERITY_LABELS
+        
+        # Count samples per severity class
+        self.class_counts = defaultdict(int)
+        self.class_indices = defaultdict(list)
+        
+        for idx, action in enumerate(dataset.actions):
+            severity_label = action['label_severity']
+            self.class_counts[severity_label] += 1
+            self.class_indices[severity_label].append(idx)
+        
+        # Calculate sampling weights (same logic as original)
+        max_count = 1
+        if self.class_counts:
+            max_count = max(self.class_counts.values())
+        
+        self.sampling_weights = {}
+        for class_id, count in self.class_counts.items():
+            if count == 0:
+                self.sampling_weights[class_id] = 0
+                continue
+
+            if class_id == SEVERITY_LABELS.get("1.0", 1):  # Majority class
+                self.sampling_weights[class_id] = 1.0
+            else:  # Minority classes
+                self.sampling_weights[class_id] = min(oversample_factor, max_count / count)
+        
+        # Calculate total samples per epoch
+        self.total_samples = 0
+        for class_id, count in self.class_counts.items():
+            if class_id in self.sampling_weights:
+                self.total_samples += int(count * self.sampling_weights[class_id])
+        
+        # Calculate per-replica samples
+        self.num_samples = self.total_samples // self.num_replicas
+        self.total_size = self.num_samples * self.num_replicas
+        
+        if self.rank == 0:
+            logger.info(f"DistributedClassBalancedSampler: {self.total_samples} total samples across {self.num_replicas} GPUs")
+            logger.info(f"Per-GPU samples: {self.num_samples}")
+            logger.info(f"Class distribution: {dict(self.class_counts)}")
+            logger.info(f"Sampling weights: {self.sampling_weights}")
+    
+    def __iter__(self):
+        # Set random seed based on epoch for reproducibility
+        g = torch.Generator()
+        g.manual_seed(self.epoch)
+        
+        # Generate all indices using original logic
+        all_indices = []
+        for class_id, class_indices in self.class_indices.items():
+            weight = self.sampling_weights[class_id]
+            num_samples = int(len(class_indices) * weight)
+            
+            if weight > 1.0:
+                # Use generator for deterministic sampling
+                sampled_indices = [class_indices[torch.randint(len(class_indices), (1,), generator=g).item()] 
+                                 for _ in range(num_samples)]
+            else:
+                sampled_indices = class_indices[:num_samples]
+            
+            all_indices.extend(sampled_indices)
+        
+        # Shuffle all indices
+        shuffle_indices = torch.randperm(len(all_indices), generator=g).tolist()
+        all_indices = [all_indices[i] for i in shuffle_indices]
+        
+        # Pad to be evenly divisible by num_replicas
+        while len(all_indices) < self.total_size:
+            all_indices.extend(all_indices[:self.total_size - len(all_indices)])
+        
+        # Subsample for this rank
+        indices = all_indices[self.rank:self.total_size:self.num_replicas]
+        
+        return iter(indices)
+    
+    def __len__(self):
+        return self.num_samples
+    
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+
+
+class DistributedActionBalancedSampler(torch.utils.data.Sampler):
+    """
+    Distributed-aware version of ActionBalancedSampler.
+    """
+    def __init__(self, dataset, oversample_factor=3.0, num_replicas=None, rank=None):
+        if num_replicas is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            num_replicas = dist.get_world_size()
+        if rank is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available") 
+            rank = dist.get_rank()
+            
+        self.dataset = dataset
+        self.oversample_factor = oversample_factor
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.epoch = 0
+        
+        # Import from dataset.py
+        from dataset import ACTION_TYPE_LABELS
+        
+        # Count samples per action type class
+        self.class_counts = defaultdict(int)
+        self.class_indices = defaultdict(list)
+        
+        for idx, action in enumerate(dataset.actions):
+            action_label = action['label_type']
+            self.class_counts[action_label] += 1
+            self.class_indices[action_label].append(idx)
+        
+        # Calculate sampling weights (same logic as original)
+        max_count = 1
+        if self.class_counts:
+            max_count = max(self.class_counts.values())
+        
+        self.sampling_weights = {}
+        for class_id, count in self.class_counts.items():
+            if count == 0:
+                self.sampling_weights[class_id] = 0
+                continue
+
+            if class_id == ACTION_TYPE_LABELS.get("Standing tackling", 8):  # Majority class
+                self.sampling_weights[class_id] = 1.0
+            else:  # Minority classes
+                self.sampling_weights[class_id] = min(oversample_factor, max_count / count)
+        
+        # Calculate total samples per epoch
+        self.total_samples = 0
+        for class_id, count in self.class_counts.items():
+            if class_id in self.sampling_weights:
+                self.total_samples += int(count * self.sampling_weights[class_id])
+        
+        # Calculate per-replica samples
+        self.num_samples = self.total_samples // self.num_replicas
+        self.total_size = self.num_samples * self.num_replicas
+        
+        if self.rank == 0:
+            logger.info(f"DistributedActionBalancedSampler: {self.total_samples} total samples across {self.num_replicas} GPUs")
+            logger.info(f"Per-GPU samples: {self.num_samples}")
+            logger.info(f"Action class distribution: {dict(self.class_counts)}")
+            logger.info(f"Action sampling weights: {self.sampling_weights}")
+    
+    def __iter__(self):
+        # Set random seed based on epoch for reproducibility
+        g = torch.Generator()
+        g.manual_seed(self.epoch)
+        
+        # Generate all indices using original logic
+        all_indices = []
+        for class_id, class_indices in self.class_indices.items():
+            weight = self.sampling_weights[class_id]
+            num_samples = int(len(class_indices) * weight)
+            
+            if weight > 1.0:
+                # Use generator for deterministic sampling
+                sampled_indices = [class_indices[torch.randint(len(class_indices), (1,), generator=g).item()] 
+                                 for _ in range(num_samples)]
+            else:
+                sampled_indices = class_indices[:num_samples]
+            
+            all_indices.extend(sampled_indices)
+        
+        # Shuffle all indices
+        shuffle_indices = torch.randperm(len(all_indices), generator=g).tolist()
+        all_indices = [all_indices[i] for i in shuffle_indices]
+        
+        # Pad to be evenly divisible by num_replicas
+        while len(all_indices) < self.total_size:
+            all_indices.extend(all_indices[:self.total_size - len(all_indices)])
+        
+        # Subsample for this rank
+        indices = all_indices[self.rank:self.total_size:self.num_replicas]
+        
+        return iter(indices)
+    
+    def __len__(self):
+        return self.num_samples
+    
+    def set_epoch(self, epoch):
+        self.epoch = epoch 
