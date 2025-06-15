@@ -288,8 +288,8 @@ class CustomEarlyStoppingCallback(EarlyStopping):
     def __init__(
         self,
         monitor: str = 'val_combined_acc',
-        min_delta: float = 0.001,
-        patience: int = 10,
+        min_delta: float = 0.01,
+        patience: int = 20,
         mode: str = 'max',
         restore_best_weights: bool = True,
         **kwargs
@@ -426,7 +426,7 @@ def create_lightning_callbacks(args: Any) -> list:
             monitor='val_combined_acc',
             patience=args.early_stopping_patience,
             mode='max',
-            min_delta=0.001,
+            min_delta=0.01,
             restore_best_weights=True
         )
         callbacks.append(early_stopping)

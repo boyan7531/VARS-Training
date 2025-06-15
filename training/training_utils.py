@@ -315,7 +315,7 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
 
 class EarlyStopping:
     """Early stopping utility."""
-    def __init__(self, patience=10, min_delta=0, restore_best_weights=True):
+    def __init__(self, patience=20, min_delta=0.01, restore_best_weights=True):
         self.patience = patience
         self.min_delta = min_delta
         self.restore_best_weights = restore_best_weights

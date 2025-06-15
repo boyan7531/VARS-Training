@@ -465,7 +465,7 @@ def process_config(args):
             args.early_stopping_patience = args.phase1_epochs + args.phase2_epochs // 2
             logger.info(f"💡 Default early stopping patience set to {args.early_stopping_patience} for gradual fine-tuning.")
         else:
-            args.early_stopping_patience = 10
+            args.early_stopping_patience = 20
             logger.info(f"💡 Default early stopping patience set to {args.early_stopping_patience} for standard training.")
     else:
         logger.info(f"💡 User-defined early stopping patience: {args.early_stopping_patience}")
