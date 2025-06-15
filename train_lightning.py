@@ -191,6 +191,12 @@ def main():
     # Parse arguments
     args = parse_args()
     
+    # Apply auto learning rate scaling if enabled
+    if getattr(args, 'auto_lr_scale', False):
+        base_lr = args.lr
+        args.lr = args.lr * (args.batch_size / 256)
+        logger.info(f"Auto LR scaling: base_lr {base_lr:.2e} -> scaled_lr {args.lr:.2e} for batch_size {args.batch_size}")
+    
     # Set random seed for reproducibility
     set_seed(args.seed)
     

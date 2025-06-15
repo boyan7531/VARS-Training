@@ -168,11 +168,33 @@ def log_epoch_summary(epoch, total_epochs, epoch_time, train_metrics, val_metric
     # Overfitting indicator
     overfit_indicator = " [OVERFIT!]" if overfitting_detected else ""
 
-    # Compact epoch summary
-    logger.info(f"Epoch {epoch+1:2d}/{total_epochs} [{epoch_time:.1f}s]{phase_indicator} "
-               f"| Train: Loss={train_loss:.3f}, Acc={train_combined_acc:.3f} "
-               f"| Val: Loss={val_loss:.3f}, Acc={val_combined_acc:.3f} "
-               f"| LR={current_lr:.1e}{lr_change_indicator}{best_indicator}{optim_indicator}{overfit_indicator}")
+    # Detailed epoch summary with explicit metrics
+    logger.info("=" * 80)
+    logger.info(f"EPOCH {epoch+1:2d}/{total_epochs} SUMMARY [{epoch_time:.1f}s]{phase_indicator}{best_indicator}{optim_indicator}{overfit_indicator}")
+    logger.info("=" * 80)
+    logger.info(f"📈 TRAINING METRICS:")
+    logger.info(f"   Loss: {train_loss:.4f}")
+    logger.info(f"   Severity Accuracy: {train_sev_acc:.4f} ({train_sev_acc*100:.2f}%)")
+    logger.info(f"   Action/Offence Accuracy: {train_act_acc:.4f} ({train_act_acc*100:.2f}%)")
+    logger.info(f"   Combined Accuracy: {train_combined_acc:.4f} ({train_combined_acc*100:.2f}%)")
+    logger.info(f"   Severity F1: {train_sev_f1:.4f}")
+    logger.info(f"   Action/Offence F1: {train_act_f1:.4f}")
+    logger.info("")
+    logger.info(f"📊 VALIDATION METRICS:")
+    logger.info(f"   Loss: {val_loss:.4f}")
+    logger.info(f"   Severity Accuracy: {val_sev_acc:.4f} ({val_sev_acc*100:.2f}%)")
+    logger.info(f"   Action/Offence Accuracy: {val_act_acc:.4f} ({val_act_acc*100:.2f}%)")
+    logger.info(f"   Combined Accuracy: {val_combined_acc:.4f} ({val_combined_acc*100:.2f}%)")
+    logger.info(f"   Severity F1: {val_sev_f1:.4f}")
+    logger.info(f"   Action/Offence F1: {val_act_f1:.4f}")
+    logger.info("")
+    logger.info(f"🎯 TRAINING STATUS:")
+    logger.info(f"   Learning Rate: {current_lr:.2e}{lr_change_indicator}")
+    logger.info(f"   Best Val Accuracy: {best_val_acc:.4f} ({best_val_acc*100:.2f}%)")
+    if is_new_best:
+        improvement = val_combined_acc - best_val_acc
+        logger.info(f"   🎉 NEW BEST MODEL! Improvement: +{improvement:.4f} (+{improvement*100:.2f}%)")
+    logger.info("=" * 80)
     
     return val_combined_acc
 
