@@ -323,7 +323,7 @@ class GPUAugTransform(torch.nn.Module):
 
         clips = clips.to(self.device)
         clips = self.aug(clips.unsqueeze(0)).squeeze(0)
-        return clips.cpu()  # Return tensor, not numpy array
+        return clips  # Keep tensor on GPU to avoid PCIe round-trip
 
 
 def worker_init_fn(worker_id):
