@@ -1,0 +1,22 @@
+# @package _global_
+# Focal loss configuration with optimizations
+
+loss:
+  # Loss function type
+  function: "focal"
+  
+  # Task weights
+  severity_weight: 1.0
+  action_weight: 1.0
+  
+  # Label smoothing (auto-disabled with oversampling)
+  label_smoothing: 0.1
+  
+  # Focal loss parameters
+  focal_gamma: 2.0
+  focal_alpha: null
+  
+  # Class weights (computed automatically)
+  use_class_weights: true
+  class_weight_method: "effective_num"
+  effective_num_beta: 0.99 

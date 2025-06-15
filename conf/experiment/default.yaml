@@ -1,0 +1,29 @@
+# @package _global_
+# Default experiment configuration
+
+experiment:
+  # Experiment info
+  name: "vars_training"
+  tags: []
+  notes: null
+  
+  # Checkpointing
+  save_top_k: 3
+  monitor: "val/sev_acc"
+  mode: "max"
+  save_last: true
+  
+  # Logging
+  log_every_n_steps: 50
+  val_check_interval: 1.0
+  
+  # Weights & Biases
+  use_wandb: false
+  wandb_project: "vars-training"
+  wandb_entity: null
+  
+  # Debug mode
+  debug: false
+  fast_dev_run: false
+  limit_train_batches: null
+  limit_val_batches: null 

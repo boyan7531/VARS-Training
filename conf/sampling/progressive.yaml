@@ -1,0 +1,20 @@
+# @package _global_
+# Progressive sampling configuration (OPTIMIZED)
+
+sampling:
+  # Sampling strategy
+  use_class_balanced_sampler: false
+  use_action_balanced_sampler_only: false
+  
+  # Oversampling parameters (REDUCED from 4.0 to prevent overfitting)
+  oversample_factor: 2.0
+  action_oversample_factor: 2.0
+  
+  # Progressive sampling (NOW DEFAULT - softer than fixed oversampling)
+  progressive_class_balancing: true
+  progressive_start_epoch: 5
+  progressive_end_epoch: 20
+  
+  # Advanced sampling
+  alternating_sampler: false
+  alternating_switch_epoch: 10 

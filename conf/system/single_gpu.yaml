@@ -1,0 +1,19 @@
+# @package _global_
+# Single GPU system configuration
+
+system:
+  # Hardware
+  gpus: 1
+  precision: "16-mixed"
+  
+  # Distributed training
+  strategy: "auto"
+  sync_batchnorm: true
+  
+  # Memory optimization
+  gradient_checkpointing: false
+  compile_model: false
+  
+  # Reproducibility
+  seed: 42
+  deterministic: false 

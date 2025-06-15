@@ -1,0 +1,22 @@
+# @package _global_
+# MViT model configuration
+
+model:
+  # Backbone
+  backbone: "mvit_base_16x4"
+  pretrained: true
+  
+  # Architecture
+  num_severity_classes: 6
+  num_action_classes: 10
+  dropout_rate: 0.1
+  
+  # Multi-task heads
+  severity_head_hidden_dim: 512
+  action_head_hidden_dim: 512
+  shared_features: false
+  
+  # Advanced features
+  use_attention_pooling: false
+  use_temporal_attention: false
+  feature_fusion_method: "concat" 

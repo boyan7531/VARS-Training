@@ -1,0 +1,27 @@
+# @package _global_
+# Baseline training configuration
+
+training:
+  # Basic training
+  max_epochs: 50
+  learning_rate: 1e-3
+  head_lr: 1e-3
+  backbone_lr: 1e-4
+  
+  # Optimizer
+  optimizer: "adamw"
+  weight_decay: 1e-4
+  momentum: 0.9
+  
+  # Scheduler
+  scheduler: "cosine"
+  warmup_epochs: 5
+  min_lr: 1e-6
+  
+  # Regularization
+  gradient_clip_val: 1.0
+  dropout_rate: 0.1
+  
+  # Advanced optimizers
+  lookahead: false
+  use_sam: false 

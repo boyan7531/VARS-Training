@@ -1,0 +1,27 @@
+# @package _global_
+# Quick test preset for debugging and smoke tests
+
+defaults:
+  - /dataset: mvfouls
+  - /model: mvit
+  - /training: baseline
+  - /loss: focal
+  - /sampling: progressive
+  - /freezing: progressive
+  - /system: single_gpu
+  - /experiment: default
+
+# Override for quick testing
+training:
+  max_epochs: 2
+  
+dataset:
+  batch_size: 4
+  num_workers: 2
+  
+experiment:
+  fast_dev_run: true
+  limit_train_batches: 10
+  limit_val_batches: 5
+  name: "quick_test"
+  tags: ["debug", "smoke_test"] 

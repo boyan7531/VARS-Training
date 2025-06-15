@@ -1,0 +1,19 @@
+# @package _global_
+# Progressive freezing configuration with LR boost optimization
+
+freezing:
+  # Strategy
+  gradual_finetuning: true
+  freezing_strategy: "progressive"
+  
+  # Progressive unfreezing
+  unfreeze_blocks: 3
+  unfreeze_schedule: [5, 10, 15]
+  
+  # Adaptive unfreezing
+  patience_epochs: 3
+  min_improvement: 0.01
+  
+  # Backbone LR boost (NEW OPTIMIZATION)
+  enable_backbone_lr_boost: true
+  backbone_lr_ratio_after_half: 0.6 

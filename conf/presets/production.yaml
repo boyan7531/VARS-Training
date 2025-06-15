@@ -1,0 +1,33 @@
+# @package _global_
+# Production preset with all optimizations enabled
+
+defaults:
+  - /dataset: mvfouls
+  - /model: mvit
+  - /training: baseline
+  - /loss: focal
+  - /sampling: progressive
+  - /freezing: progressive
+  - /system: single_gpu
+  - /experiment: default
+
+# Production optimizations
+training:
+  max_epochs: 100
+  learning_rate: 8e-4  # Slightly lower for stability
+  
+dataset:
+  batch_size: 16
+  enable_augmentations: true
+  
+sampling:
+  progressive_class_balancing: true  # Use progressive instead of fixed oversampling
+  
+freezing:
+  enable_backbone_lr_boost: true  # Enable LR boost optimization
+  
+experiment:
+  use_wandb: true
+  name: "production_run"
+  tags: ["production", "optimized"]
+  save_top_k: 5 
