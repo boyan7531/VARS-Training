@@ -10,6 +10,9 @@ import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 from typing import Optional, Dict, Any
 import logging
+import torch
+import numpy as np
+from collections import Counter
 
 # Import existing data components
 from .data import create_datasets, create_dataloaders
@@ -54,6 +57,10 @@ class VideoDataModule(pl.LightningDataModule):
         self.val_dataloader_obj = None
         self.test_dataloader_obj = None
         
+        # Initialize class weights as None - will be computed during setup
+        self.severity_class_weights = None
+        self.action_class_weights = None
+        
         logger.info("Initialized VideoDataModule")
     
     def prepare_data(self):
@@ -82,6 +89,9 @@ class VideoDataModule(pl.LightningDataModule):
                 logger.info("Creating train and validation datasets...")
                 self.train_dataset, self.val_dataset = create_datasets(self.args)
                 logger.info(f"Datasets created: Train={len(self.train_dataset)}, Val={len(self.val_dataset)}")
+                
+                # Compute class weights from training dataset
+                self._compute_class_weights()
             
             # Create dataloaders using existing logic
             if self.train_dataloader_obj is None or self.val_dataloader_obj is None:
@@ -125,6 +135,130 @@ class VideoDataModule(pl.LightningDataModule):
                 logger.info("Creating prediction dataset (using validation dataset)...")
                 _, self.val_dataset = create_datasets(self.args)
                 logger.info(f"Prediction dataset created: {len(self.val_dataset)}")
+    
+    def _compute_class_weights(self):
+        """
+        Compute class weights using the effective-number-of-samples formula.
+        
+        The effective number of samples formula helps handle class imbalance by
+        computing weights that account for the diminishing returns of additional
+        samples from the same class.
+        
+        Formula: E_n = (1 - β^n) / (1 - β)
+        where β is typically 0.9999 for large datasets or 0.99 for smaller ones.
+        """
+        if self.train_dataset is None:
+            logger.warning("Training dataset not available for class weight computation")
+            return
+        
+        logger.info("Computing automatic class weights using effective-number-of-samples formula...")
+        
+        # Extract labels from training dataset
+        severity_labels = []
+        action_labels = []
+        
+        for action in self.train_dataset.actions:
+            severity_labels.append(action['label_severity'])
+            action_labels.append(action['label_type'])
+        
+        # Count samples per class
+        severity_counts = Counter(severity_labels)
+        action_counts = Counter(action_labels)
+        
+        # Log class distributions
+        logger.info("Class distributions in training set:")
+        logger.info(f"Severity classes: {dict(severity_counts)}")
+        logger.info(f"Action classes: {dict(action_counts)}")
+        
+        # Compute effective number of samples
+        # Use β=0.99 for smaller datasets (< 10k samples), β=0.9999 for larger ones
+        total_samples = len(self.train_dataset)
+        beta = 0.99 if total_samples < 10000 else 0.9999
+        
+        logger.info(f"Using β={beta} for effective-number-of-samples computation (dataset size: {total_samples})")
+        
+        # Compute severity class weights
+        severity_weights = {}
+        for class_id, count in severity_counts.items():
+            if count > 0:
+                effective_num = (1.0 - beta ** count) / (1.0 - beta)
+                severity_weights[class_id] = 1.0 / effective_num
+            else:
+                severity_weights[class_id] = 0.0
+        
+        # Compute action class weights
+        action_weights = {}
+        for class_id, count in action_counts.items():
+            if count > 0:
+                effective_num = (1.0 - beta ** count) / (1.0 - beta)
+                action_weights[class_id] = 1.0 / effective_num
+            else:
+                action_weights[class_id] = 0.0
+        
+        # Normalize weights so they sum to number of classes
+        def normalize_weights(weights_dict):
+            if not weights_dict:
+                return {}
+            
+            weight_values = list(weights_dict.values())
+            weight_sum = sum(weight_values)
+            num_classes = len(weights_dict)
+            
+            if weight_sum > 0:
+                normalization_factor = num_classes / weight_sum
+                return {k: v * normalization_factor for k, v in weights_dict.items()}
+            else:
+                return {k: 1.0 for k in weights_dict.keys()}
+        
+        severity_weights = normalize_weights(severity_weights)
+        action_weights = normalize_weights(action_weights)
+        
+        # Convert to tensors for easy use in loss functions
+        # Get the maximum class ID to determine tensor size
+        max_severity_class = max(severity_weights.keys()) if severity_weights else 0
+        max_action_class = max(action_weights.keys()) if action_weights else 0
+        
+        # Create weight tensors (index 0 will be for class 0, etc.)
+        self.severity_class_weights = torch.ones(max_severity_class + 1)
+        self.action_class_weights = torch.ones(max_action_class + 1)
+        
+        for class_id, weight in severity_weights.items():
+            self.severity_class_weights[class_id] = weight
+        
+        for class_id, weight in action_weights.items():
+            self.action_class_weights[class_id] = weight
+        
+        # Log computed weights
+        logger.info("Computed class weights:")
+        logger.info(f"Severity weights: {severity_weights}")
+        logger.info(f"Action weights: {action_weights}")
+        
+        # Log weight ratios for analysis
+        if len(severity_weights) > 1:
+            severity_weight_values = list(severity_weights.values())
+            severity_ratio = max(severity_weight_values) / min(severity_weight_values)
+            logger.info(f"Severity weight ratio (max/min): {severity_ratio:.2f}")
+        
+        if len(action_weights) > 1:
+            action_weight_values = list(action_weights.values())
+            action_ratio = max(action_weight_values) / min(action_weight_values)
+            logger.info(f"Action weight ratio (max/min): {action_ratio:.2f}")
+    
+    def get_class_weights(self) -> Dict[str, torch.Tensor]:
+        """
+        Get computed class weights for use in loss functions.
+        
+        Returns:
+            Dictionary containing 'severity' and 'action' class weight tensors
+        """
+        if self.severity_class_weights is None or self.action_class_weights is None:
+            logger.warning("Class weights not computed yet. Call setup() first.")
+            return {}
+        
+        return {
+            'severity': self.severity_class_weights,
+            'action': self.action_class_weights
+        }
     
     def train_dataloader(self) -> DataLoader:
         """Return the training dataloader."""
@@ -238,7 +372,8 @@ class VideoDataModule(pl.LightningDataModule):
             'val_size': len(self.val_dataset) if self.val_dataset is not None else 0,
             'test_size': len(self.test_dataset) if self.test_dataset is not None else 0,
             'vocab_sizes': self.get_vocab_sizes(),
-            'class_distribution': self.get_class_distribution()
+            'class_distribution': self.get_class_distribution(),
+            'class_weights': self.get_class_weights()
         }
         
         return info 

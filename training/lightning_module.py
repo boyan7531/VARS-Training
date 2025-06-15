@@ -141,20 +141,35 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                 self.freezing_manager = setup_freezing_strategy(self.args, self.model)
                 logger.info(f"Freezing strategy initialized: {self.args.freezing_strategy}")
             
-            # Calculate class weights using trainer's datamodule if available
-            if hasattr(self.trainer, 'datamodule') and hasattr(self.trainer.datamodule, 'train_dataset'):
-                train_dataset = self.trainer.datamodule.train_dataset
+            # Get automatic class weights from datamodule if available
+            if hasattr(self.trainer, 'datamodule') and hasattr(self.trainer.datamodule, 'get_class_weights'):
+                class_weights = self.trainer.datamodule.get_class_weights()
                 
-                if self.args.loss_function in ['focal', 'weighted'] and not self.args.disable_class_balancing:
-                    if not self.args.use_class_balanced_sampler:
+                if class_weights and 'severity' in class_weights and 'action' in class_weights:
+                    # Use automatic class weights from datamodule
+                    self.severity_class_weights = class_weights['severity'].to(self.device)
+                    self.action_class_weights = class_weights['action'].to(self.device)
+                    logger.info("Using automatic class weights from datamodule")
+                    logger.info(f"Severity weights: {self.severity_class_weights}")
+                    logger.info(f"Action weights: {self.action_class_weights}")
+                else:
+                    logger.info("No automatic class weights available from datamodule")
+                    
+                    # Fallback to manual class weight calculation if needed
+                    if (self.args.loss_function in ['focal', 'weighted'] and 
+                        not self.args.disable_class_balancing and 
+                        not self.args.use_class_balanced_sampler and
+                        hasattr(self.trainer.datamodule, 'train_dataset')):
+                        
+                        train_dataset = self.trainer.datamodule.train_dataset
                         self.severity_class_weights = calculate_class_weights(
                             train_dataset, 6, self.device, 
                             self.args.class_weighting_strategy, 
                             self.args.max_weight_ratio
                         )
-                        logger.info("Class weights calculated for loss function")
+                        logger.info("Fallback: Manual class weights calculated for loss function")
                     else:
-                        logger.info("Skipping class weight calculation (using ClassBalancedSampler)")
+                        logger.info("Skipping class weight calculation (using ClassBalancedSampler or disabled)")
                 
                 # Setup class-specific gamma for focal loss
                 if self.args.loss_function == 'focal':
@@ -164,9 +179,10 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                         }
                         logger.info("Class-specific gamma values set for focal loss")
                 
-                # Update loss config
+                # Update loss config with both severity and action weights
                 self.loss_config.update({
                     'severity_class_weights': self.severity_class_weights,
+                    'action_class_weights': getattr(self, 'action_class_weights', None),
                     'class_gamma_map': self.class_gamma_map
                 })
     

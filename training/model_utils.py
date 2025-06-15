@@ -105,7 +105,7 @@ def get_optimizer(model, args):
             momentum=momentum,
             nesterov=nesterov,
             dampening=getattr(args, 'dampening', 0),
-            weight_decay=args.weight_decay,
+            # Note: weight_decay is handled by parameter groups, not passed here
         )
         if 'fused' in optim.SGD.__init__.__code__.co_varnames:
             sgd_kwargs['fused'] = fused_flag
@@ -269,6 +269,9 @@ def separate_weight_decay_params(model, weight_decay=0.01):
     Separate model parameters for weight decay application.
     Apply weight decay to all parameters except bias and normalization layers.
     
+    This follows best practices from modern vision transformers and CNNs where
+    bias terms and normalization layer parameters should not be regularized.
+    
     Args:
         model: PyTorch model
         weight_decay: Weight decay value (default 0.01)
@@ -281,17 +284,54 @@ def separate_weight_decay_params(model, weight_decay=0.01):
     # Parameters that should NOT have weight decay (bias and norm layers)
     no_decay_params = []
     
+    # Normalization layer types to exclude from weight decay
+    norm_layer_keywords = {
+        'bias',           # All bias terms
+        'norm',           # Generic norm layers
+        'bn',             # BatchNorm
+        'batchnorm',      # BatchNorm variants
+        'layernorm',      # LayerNorm
+        'groupnorm',      # GroupNorm
+        'instancenorm',   # InstanceNorm
+        'ln',             # LayerNorm abbreviation
+        'gn',             # GroupNorm abbreviation
+        'in',             # InstanceNorm abbreviation (be careful with this one)
+        'rmsnorm',        # RMSNorm (used in some transformers)
+        'scale',          # Scale parameters in some norm layers
+        'gamma',          # Gamma parameters in norm layers
+        'beta',           # Beta parameters in norm layers
+    }
+    
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
             
-        # Check if parameter is bias or from normalization layer
-        if (name.endswith('.bias') or 
-            'norm' in name.lower() or 
-            'bn' in name.lower() or 
-            'layernorm' in name.lower() or
-            'batchnorm' in name.lower() or
-            'groupnorm' in name.lower()):
+        # Convert name to lowercase for case-insensitive matching
+        name_lower = name.lower()
+        
+        # Check if parameter should be excluded from weight decay
+        should_exclude = False
+        
+        # Check for bias parameters
+        if name.endswith('.bias'):
+            should_exclude = True
+        
+        # Check for normalization layer parameters
+        for keyword in norm_layer_keywords:
+            if keyword in name_lower:
+                # Special handling for 'in' to avoid false positives
+                if keyword == 'in':
+                    # Only match if it's a clear instance norm pattern
+                    if ('instancenorm' in name_lower or 
+                        name_lower.endswith('.in.weight') or 
+                        name_lower.endswith('.in.bias')):
+                        should_exclude = True
+                        break
+                else:
+                    should_exclude = True
+                    break
+        
+        if should_exclude:
             no_decay_params.append(param)
         else:
             decay_params.append(param)
@@ -301,5 +341,5 @@ def separate_weight_decay_params(model, weight_decay=0.01):
         {'params': no_decay_params, 'weight_decay': 0.0}
     ]
     
-    logger.info(f"Weight decay setup: {len(decay_params)} params with decay, {len(no_decay_params)} params without")
+    logger.info(f"Weight decay setup: {len(decay_params)} params with decay, {len(no_decay_params)} params without decay")
     return param_groups

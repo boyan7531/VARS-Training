@@ -268,8 +268,15 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
         )
         loss_sev = adaptive_focal_criterion(sev_logits, batch_data["label_severity"]) * main_weights[0]
         
-        # Action type loss is typically less imbalanced, so standard CE is fine
-        loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
+        # Action type loss - use class weights if available
+        action_class_weights = loss_config.get('action_class_weights')
+        if action_class_weights is not None:
+            loss_act = nn.CrossEntropyLoss(
+                label_smoothing=label_smoothing,
+                weight=action_class_weights
+            )(act_logits, batch_data["label_type"]) * main_weights[1]
+        else:
+            loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
     
     elif loss_function == 'focal':
         focal_gamma = loss_config.get('focal_gamma', 2.0)
@@ -289,17 +296,33 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
         )
         loss_sev = focal_criterion(sev_logits, batch_data["label_severity"]) * main_weights[0]
         
-        # Action type loss is typically less imbalanced, so standard CE is fine.
-        loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
+        # Action type loss - use class weights if available
+        action_class_weights = loss_config.get('action_class_weights')
+        if action_class_weights is not None:
+            loss_act = nn.CrossEntropyLoss(
+                label_smoothing=label_smoothing,
+                weight=action_class_weights
+            )(act_logits, batch_data["label_type"]) * main_weights[1]
+        else:
+            loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
     
     elif loss_function == 'weighted':
         severity_class_weights = loss_config.get('severity_class_weights') # Should be provided for this option
+        action_class_weights = loss_config.get('action_class_weights') # Optional action class weights
+        
         loss_sev = nn.CrossEntropyLoss(
             label_smoothing=label_smoothing, 
             weight=severity_class_weights
         )(sev_logits, batch_data["label_severity"]) * main_weights[0]
         
-        loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
+        # Use action class weights if available, otherwise standard CE loss
+        if action_class_weights is not None:
+            loss_act = nn.CrossEntropyLoss(
+                label_smoothing=label_smoothing,
+                weight=action_class_weights
+            )(act_logits, batch_data["label_type"]) * main_weights[1]
+        else:
+            loss_act = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(act_logits, batch_data["label_type"]) * main_weights[1]
     
     elif loss_function == 'plain':
         loss_sev = nn.CrossEntropyLoss(label_smoothing=label_smoothing)(sev_logits, batch_data["label_severity"]) * main_weights[0]
