@@ -234,12 +234,15 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         # Create base optimizer
         if self.args.optimizer == 'adamw':
             if self.args.discriminative_lr:
-                optimizer = setup_discriminative_optimizer(
+                # Use backbone_lr if provided, otherwise default to lr * 0.1
+                backbone_lr = getattr(self.args, 'backbone_lr', self.args.lr * 0.1)
+                param_groups = setup_discriminative_optimizer(
                     self.model, 
                     head_lr=self.args.lr,
-                    backbone_lr=self.args.lr * 0.1,  # 10x lower for backbone
+                    backbone_lr=backbone_lr,
                     weight_decay=self.args.weight_decay
                 )
+                optimizer = optim.AdamW(param_groups)
             else:
                 optimizer = optim.AdamW(
                     self.model.parameters(), 

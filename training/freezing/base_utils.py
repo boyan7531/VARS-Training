@@ -225,7 +225,7 @@ def unfreeze_backbone_gradually(model, num_blocks_to_unfreeze=2):
             logger.info(f"[UNFREEZE] Unfroze entire MViT backbone ({unfrozen_params:,} parameters)")
 
 
-def setup_discriminative_optimizer(model, head_lr, backbone_lr):
+def setup_discriminative_optimizer(model, head_lr, backbone_lr, weight_decay=0.01):
     """Setup optimizer with discriminative learning rates for different model parts."""
     # Handle DataParallel wrapper
     actual_model = model.module if hasattr(model, 'module') else model
@@ -244,6 +244,7 @@ def setup_discriminative_optimizer(model, head_lr, backbone_lr):
     param_groups.append({
         'params': head_params,
         'lr': head_lr,
+        'weight_decay': weight_decay,
         'name': 'heads'
     })
     
@@ -264,10 +265,11 @@ def setup_discriminative_optimizer(model, head_lr, backbone_lr):
         param_groups.append({
             'params': backbone_params,
             'lr': backbone_lr,
+            'weight_decay': weight_decay,
             'name': 'backbone'
         })
     
-    logger.info(f"[OPTIM] Discriminative LR setup: Heads={head_lr:.1e}, Backbone={backbone_lr:.1e}")
+    logger.info(f"[OPTIM] Discriminative LR setup: Heads={head_lr:.1e}, Backbone={backbone_lr:.1e}, Weight Decay={weight_decay}")
     return param_groups
 
 
