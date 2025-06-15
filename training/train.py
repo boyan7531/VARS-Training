@@ -22,7 +22,7 @@ from pathlib import Path
 from .config import parse_args, log_configuration_summary
 from .data import create_datasets, create_dataloaders, create_gpu_augmentation, log_dataset_recommendations
 from .model_utils import (
-    create_model, setup_freezing_strategy, calculate_class_weights,
+    create_model, setup_freezing_strategy,
     SmartFreezingManager, GradientGuidedFreezingManager, AdvancedFreezingManager, get_phase_info, setup_discriminative_optimizer,
     unfreeze_backbone_gradually, log_trainable_parameters
 )
@@ -566,19 +566,8 @@ def main():
         scheduler_info = f"OneCycle (max_lr={args.lr:.1e}, steps_per_epoch={steps_per_epoch}, warmup={args.scheduler_warmup_epochs}e)"
         logger.info(f"Initialized OneCycleLR scheduler with {steps_per_epoch} steps per epoch")
 
-    # Calculate class weights for severity classification
+    # Class weights are now computed automatically by Lightning DataModule
     severity_class_weights = None
-    if args.loss_function in ['focal', 'weighted'] and not args.disable_class_balancing:
-        # Skip class weight calculation when using ClassBalancedSampler to avoid 
-        # multiplying minority gradients by extreme factors (30-50x)
-        if not args.use_class_balanced_sampler:
-            severity_class_weights = calculate_class_weights(
-                train_dataset, 6, device, args.class_weighting_strategy, args.max_weight_ratio
-            )
-        else:
-            logger.info("🎯 Skipping class weight calculation because ClassBalancedSampler is enabled")
-            logger.info("   Using only oversampling for class imbalance handling")
-            severity_class_weights = None
 
     # Update loss function to adaptive focal loss if enabled
     if args.loss_function == 'focal':
