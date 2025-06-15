@@ -324,12 +324,14 @@ def create_transforms(args, is_training=True):
         
         # Wrapper class so that transform is picklable by DataLoader workers
         class GPUAugTransform(torch.nn.Module):
-            def __init__(self, aug):
+            """Picklable wrapper to apply a pre-created GPU augmentation pipeline."""
+            def __init__(self, aug, device):
                 super().__init__()
                 self.aug = aug
+                self.device = device
 
             def forward(self, clips):
-                # Accept numpy array or tensor
+                # Accept numpy or tensor
                 if not isinstance(clips, torch.Tensor):
                     clips = torch.from_numpy(clips)
 
@@ -337,13 +339,11 @@ def create_transforms(args, is_training=True):
                 if clips.dim() == 4 and clips.shape[-1] == 3:  # (T, H, W, C)
                     clips = clips.permute(0, 3, 1, 2)
 
-                # Add batch dim, move to device of augmentation
-                clips = clips.to(self.aug.device if hasattr(self.aug, 'device') else device)
+                clips = clips.to(self.device)
                 clips = self.aug(clips.unsqueeze(0)).squeeze(0)
-
                 return clips.cpu().numpy()
 
-        return GPUAugTransform(gpu_augmentation)
+        return GPUAugTransform(gpu_augmentation, device)
     
     elif is_training and not args.disable_augmentation:
         logger.info("Using CPU-based augmentation pipeline")
