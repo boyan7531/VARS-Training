@@ -21,6 +21,7 @@ from dataset import (
     TemporalJitter, RandomTemporalReverse, RandomFrameDropout,
     RandomBrightnessContrast, RandomSpatialCrop, RandomHorizontalFlip,
     RandomGaussianNoise, SeverityAwareAugmentation, ClassBalancedSampler,
+    ActionBalancedSampler, AlternatingSampler,
     RandomRotation, RandomMixup, RandomCutout, RandomTimeWarp,
     VariableLengthAugmentation, MultiScaleTemporalAugmentation
 )
@@ -600,8 +601,29 @@ def create_dataloaders(args, train_dataset, val_dataset):
     
     # Setup training loader with optional class balancing
     if args.use_class_balanced_sampler and not args.test_run:
-        # Choose between progressive or standard class balancing
-        if args.progressive_class_balancing:
+        # Choose between different sampling strategies
+        if args.use_alternating_sampler:
+            logger.info("🔄 Using AlternatingSampler to address both severity and action imbalance!")
+            train_sampler = AlternatingSampler(
+                train_dataset,
+                severity_oversample_factor=args.oversample_factor,
+                action_oversample_factor=args.action_oversample_factor
+            )
+            
+            logger.info(f"   - Severity oversample factor: {args.oversample_factor}x")
+            logger.info(f"   - Action oversample factor: {args.action_oversample_factor}x")
+            logger.info(f"   - Alternates between severity and action balancing per epoch")
+            logger.info(f"   - Initial samples per epoch: {len(train_sampler)}")
+        elif args.use_action_balanced_sampler_only:
+            logger.info("⚖️ Using ActionBalancedSampler to address action type imbalance!")
+            train_sampler = ActionBalancedSampler(
+                train_dataset, 
+                oversample_factor=args.action_oversample_factor
+            )
+            
+            logger.info(f"   - Action oversample factor: {args.action_oversample_factor}x for minority action classes")
+            logger.info(f"   - Effective training samples per epoch: {len(train_sampler)}")
+        elif args.progressive_class_balancing:
             logger.info("🚀 Using ProgressiveClassBalancedSampler for dynamic class balancing!")
             train_sampler = ProgressiveClassBalancedSampler(
                 train_dataset,
@@ -615,13 +637,13 @@ def create_dataloaders(args, train_dataset, val_dataset):
             logger.info(f"   - Duration: {args.progressive_epochs} epochs")
             logger.info(f"   - Initial samples per epoch: {len(train_sampler)}")
         else:
-            logger.info("🎯 Using ClassBalancedSampler to address class imbalance!")
+            logger.info("🎯 Using ClassBalancedSampler to address severity class imbalance!")
             train_sampler = ClassBalancedSampler(
                 train_dataset, 
                 oversample_factor=args.oversample_factor
             )
             
-            logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority classes")
+            logger.info(f"   - Oversample factor: {args.oversample_factor}x for minority severity classes")
             logger.info(f"   - Effective training samples per epoch: {len(train_sampler)}")
         
         # Use optimized dataloader if available

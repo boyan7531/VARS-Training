@@ -187,10 +187,31 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                         }
                         logger.info("Class-specific gamma values set for focal loss")
                 
+                # Handle strong action weights if enabled
+                action_weights_for_loss = None
+                if self.args.use_strong_action_weights and hasattr(self.trainer.datamodule, 'train_dataset'):
+                    from training.training_utils import calculate_strong_action_class_weights
+                    train_dataset = self.trainer.datamodule.train_dataset
+                    action_weights_for_loss = calculate_strong_action_class_weights(
+                        train_dataset, 
+                        self.device,
+                        self.args.action_weight_strategy,
+                        self.args.action_weight_power
+                    )
+                    if is_main_process():
+                        logger.info("💪 Using strong action class weights to combat severe action imbalance")
+                elif hasattr(self, 'action_class_weights'):
+                    action_weights_for_loss = self.action_class_weights
+                
                 # Update loss config with both severity and action weights
+                # Fix: When using ClassBalancedSampler, don't apply severity class weights to avoid double-balancing
+                severity_weights_for_loss = None if self.args.use_class_balanced_sampler else self.severity_class_weights
+                if self.args.use_class_balanced_sampler and is_main_process():
+                    logger.info("🎯 ClassBalancedSampler detected: Setting severity_class_weights=None to prevent double-balancing")
+                
                 self.loss_config.update({
-                    'severity_class_weights': self.severity_class_weights,
-                    'action_class_weights': getattr(self, 'action_class_weights', None),
+                    'severity_class_weights': severity_weights_for_loss,
+                    'action_class_weights': action_weights_for_loss,
                     'class_gamma_map': self.class_gamma_map
                 })
     

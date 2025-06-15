@@ -567,7 +567,23 @@ def main():
         logger.info(f"Initialized OneCycleLR scheduler with {steps_per_epoch} steps per epoch")
 
     # Class weights are now computed automatically by Lightning DataModule
+    # But we should set them to None when using ClassBalancedSampler to avoid double-balancing
     severity_class_weights = None
+    action_class_weights = None
+    
+    if args.use_class_balanced_sampler:
+        logger.info("🎯 ClassBalancedSampler detected: Setting severity_class_weights=None to prevent double-balancing")
+    
+    # Handle strong action weights if enabled
+    if args.use_strong_action_weights:
+        from training.training_utils import calculate_strong_action_class_weights
+        action_class_weights = calculate_strong_action_class_weights(
+            train_dataset, 
+            device,
+            args.action_weight_strategy,
+            args.action_weight_power
+        )
+        logger.info("💪 Using strong action class weights to combat severe action imbalance")
 
     # Update loss function to adaptive focal loss if enabled
     if args.loss_function == 'focal':
@@ -639,13 +655,17 @@ def main():
             logger.info("🚀 Mixed precision training active with explicit float16")
         epoch_start_time = time.time()
         
-        # Update progressive sampler epoch if enabled
-        if args.progressive_class_balancing:
+        # Update sampler epoch if needed
+        if args.progressive_class_balancing or args.use_alternating_sampler:
             # For OptimizedDataLoader, access the original dataloader's sampler
             actual_loader = getattr(train_loader, 'dataloader', train_loader)
             if hasattr(actual_loader, 'sampler') and hasattr(actual_loader.sampler, 'set_epoch'):
                 actual_loader.sampler.set_epoch(epoch)
-                logger.debug(f"Updated progressive sampler for epoch {epoch}")
+                if args.progressive_class_balancing:
+                    logger.debug(f"Updated progressive sampler for epoch {epoch}")
+                elif args.use_alternating_sampler:
+                    sampler_type = "Severity" if epoch % 2 == 0 else "Action"
+                    logger.debug(f"Updated alternating sampler for epoch {epoch} ({sampler_type} balancing)")
         
         # Training with OOM protection
         if robust_wrapper and oom_manager:
@@ -668,7 +688,8 @@ def main():
                         'weights': args.main_task_weights,
                         'label_smoothing': args.label_smoothing,
                         'focal_gamma': args.focal_gamma,
-                        'severity_class_weights': severity_class_weights,
+                        'severity_class_weights': None if args.use_class_balanced_sampler else severity_class_weights,
+                        'action_class_weights': action_class_weights,
                         'class_gamma_map': class_gamma_map
                     },
                     scaler=scaler, 
@@ -713,7 +734,8 @@ def main():
                     'weights': args.main_task_weights,
                     'label_smoothing': args.label_smoothing,
                     'focal_gamma': args.focal_gamma,
-                    'severity_class_weights': severity_class_weights,
+                    'severity_class_weights': None if args.use_class_balanced_sampler else severity_class_weights,
+                    'action_class_weights': action_class_weights,
                     'class_gamma_map': class_gamma_map
                 },
                 scaler=scaler, 
@@ -743,7 +765,8 @@ def main():
                 'weights': args.main_task_weights,
                 'label_smoothing': args.label_smoothing,
                 'focal_gamma': args.focal_gamma,
-                'severity_class_weights': severity_class_weights,
+                'severity_class_weights': None if args.use_class_balanced_sampler else severity_class_weights,
+                'action_class_weights': action_class_weights,
                 'class_gamma_map': class_gamma_map
             },
             confusion_matrix_dict=val_confusion_matrices

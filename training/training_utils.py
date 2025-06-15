@@ -330,11 +330,12 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
         severity_class_weights = loss_config.get('severity_class_weights', None)
         
         # Guard: When using focal loss with ClassBalancedSampler, alpha should be None
-        # to avoid multiplying minority gradients by extreme factors
+        # to avoid double-balancing (oversampling + class weights = excessive minority class focus)
+        # Note: severity_class_weights is already set to None when use_class_balanced_sampler=True
         if loss_function == 'focal' and severity_class_weights is None:
-            alpha = None
+            alpha = None  # No class weights - using oversampling only
         else:
-            alpha = severity_class_weights
+            alpha = severity_class_weights  # Use class weights - no oversampling
         
         focal_criterion = FocalLoss(
             alpha=alpha,
@@ -860,3 +861,83 @@ def debug_class_weights_impact(sev_logits, severity_labels, class_weights=None):
         expected_weighted_loss = avg_loss_no_weight * weight
         if abs(avg_loss_with_weight - expected_weighted_loss) > 0.001:
             logger.warning(f"    ⚠️  Weight application mismatch! Expected: {expected_weighted_loss:.4f}") 
+
+
+def calculate_strong_action_class_weights(dataset, device, weighting_strategy='strong_inverse', power_factor=2.0):
+    """
+    Calculate stronger action class weights to combat severe imbalance.
+    
+    Unlike regular class weights that are normalized, these weights are much stronger
+    and do not normalize to sum = #classes to provide more aggressive rebalancing.
+    
+    Args:
+        dataset: Training dataset
+        device: Device to put weights on
+        weighting_strategy: Strategy for calculating weights
+            - 'strong_inverse': Strong inverse frequency (power factor applied)
+            - 'focal_style': Weights designed for focal loss (higher power)
+            - 'exponential': Exponential scaling based on class rarity
+        power_factor: Power to raise the inverse frequency to (higher = more aggressive)
+    
+    Returns:
+        action_class_weights tensor
+    """
+    import torch
+    
+    # Count action type samples
+    action_counts = torch.zeros(10)  # 10 action classes
+    
+    for action in dataset.actions:
+        action_label = action['label_type']
+        if 0 <= action_label < 10:
+            action_counts[action_label] += 1
+    
+    # Avoid division by zero
+    action_counts[action_counts == 0] = 1
+    
+    if weighting_strategy == 'strong_inverse':
+        # Strong inverse frequency with power factor (not normalized)
+        total_samples = action_counts.sum()
+        raw_weights = total_samples / action_counts
+        # Apply power factor to make minority class weights even stronger
+        action_weights = torch.pow(raw_weights, power_factor)
+        
+        logger.info(f"Strong inverse action weighting (power factor: {power_factor})")
+        
+    elif weighting_strategy == 'focal_style':
+        # Weights optimized for focal loss - emphasize hard examples more
+        total_samples = action_counts.sum()
+        frequencies = action_counts / total_samples
+        # Use focal-loss style alpha: (1 - frequency)^power
+        action_weights = torch.pow(1.0 - frequencies, power_factor) / frequencies
+        
+        logger.info(f"Focal-style action weighting (power factor: {power_factor})")
+        
+    elif weighting_strategy == 'exponential':
+        # Exponential scaling - very aggressive for minority classes
+        total_samples = action_counts.sum()
+        max_count = action_counts.max()
+        ratios = max_count / action_counts
+        action_weights = torch.exp(ratios * power_factor / 10.0)  # Scale to prevent overflow
+        
+        logger.info(f"Exponential action weighting (power factor: {power_factor})")
+        
+    else:
+        raise ValueError(f"Unknown weighting strategy: {weighting_strategy}")
+    
+    # Log class distribution and weights
+    logger.info("Action class distribution and strong weights:")
+    for i in range(10):
+        if action_counts[i] > 0:
+            count = int(action_counts[i])
+            weight = action_weights[i].item()
+            logger.info(f"  Action {i}: {count} samples → Weight: {weight:.2f}")
+    
+    weight_ratio = (action_weights.max() / action_weights.min()).item()
+    logger.info(f"Action weight ratio (max/min): {weight_ratio:.1f}")
+    
+    if weight_ratio > 100:
+        logger.warning(f"⚠️ Very large action weight ratio ({weight_ratio:.1f}) - this is intentional for severe imbalance")
+        logger.warning("   Monitor training carefully for stability")
+    
+    return action_weights.to(device) 

@@ -376,6 +376,107 @@ class ClassBalancedSampler(torch.utils.data.Sampler):
     def __len__(self):
         return self.samples_per_epoch
 
+class ActionBalancedSampler(torch.utils.data.Sampler):
+    """Custom sampler that balances action type classes by oversampling minority classes"""
+    def __init__(self, dataset, oversample_factor=3.0):
+        self.dataset = dataset
+        self.oversample_factor = oversample_factor
+        
+        # Count samples per action type class
+        self.class_counts = defaultdict(int)
+        self.class_indices = defaultdict(list)
+        
+        for idx, action in enumerate(dataset.actions):
+            action_label = action['label_type']
+            self.class_counts[action_label] += 1
+            self.class_indices[action_label].append(idx)
+        
+        # Calculate sampling weights
+        max_count = 1
+        if self.class_counts: # Ensure class_counts is not empty
+            max_count = max(self.class_counts.values())
+        
+        self.sampling_weights = {}
+        
+        for class_id, count in self.class_counts.items():
+            if count == 0: # Avoid division by zero if a class has no samples (should not happen with defaultdict)
+                self.sampling_weights[class_id] = 0
+                continue
+
+            # Standing tackling (Act_8) is the majority class
+            if class_id == ACTION_TYPE_LABELS.get("Standing tackling", 8):  # Majority class
+                self.sampling_weights[class_id] = 1.0
+            else:  # Minority classes
+                self.sampling_weights[class_id] = min(oversample_factor, max_count / count)
+        
+        print(f"Action class distribution: {dict(self.class_counts)}")
+        print(f"Action sampling weights: {self.sampling_weights}")
+        
+        # Calculate total samples per epoch
+        self.samples_per_epoch = 0
+        for class_id, count in self.class_counts.items():
+            if class_id in self.sampling_weights: # Ensure class_id has a weight
+                self.samples_per_epoch += int(count * self.sampling_weights[class_id])
+    
+    def __iter__(self):
+        indices = []
+        
+        for class_id, class_indices in self.class_indices.items():
+            weight = self.sampling_weights[class_id]
+            num_samples = int(len(class_indices) * weight)
+            
+            # Oversample by randomly selecting with replacement
+            if weight > 1.0:
+                sampled_indices = random.choices(class_indices, k=num_samples)
+            else:
+                sampled_indices = class_indices[:num_samples]
+            
+            indices.extend(sampled_indices)
+        
+        # Shuffle all indices
+        random.shuffle(indices)
+        return iter(indices)
+    
+    def __len__(self):
+        return self.samples_per_epoch
+
+class AlternatingSampler(torch.utils.data.Sampler):
+    """Alternates between severity and action balanced sampling per epoch"""
+    def __init__(self, dataset, severity_oversample_factor=3.0, action_oversample_factor=3.0):
+        self.dataset = dataset
+        self.current_epoch = 0
+        
+        # Create both samplers
+        self.severity_sampler = ClassBalancedSampler(dataset, severity_oversample_factor)
+        self.action_sampler = ActionBalancedSampler(dataset, action_oversample_factor)
+        
+        print(f"AlternatingSampler initialized:")
+        print(f"  - Severity sampler: {len(self.severity_sampler)} samples per epoch")
+        print(f"  - Action sampler: {len(self.action_sampler)} samples per epoch")
+    
+    def set_epoch(self, epoch):
+        """Update the current epoch to determine which sampler to use."""
+        self.current_epoch = epoch
+        if epoch % 10 == 0:  # Log every 10 epochs to avoid spam
+            sampler_type = "Severity" if epoch % 2 == 0 else "Action"
+            print(f"Epoch {epoch}: Using {sampler_type} balanced sampling")
+    
+    def __iter__(self):
+        # Alternate between severity and action balancing per epoch
+        if self.current_epoch % 2 == 0:
+            # Even epochs: balance by severity
+            return iter(self.severity_sampler)
+        else:
+            # Odd epochs: balance by action type
+            return iter(self.action_sampler)
+    
+    def __len__(self):
+        # Return the current sampler's length
+        if self.current_epoch % 2 == 0:
+            return len(self.severity_sampler)
+        else:
+            return len(self.action_sampler)
+
 class SoccerNetMVFoulDataset(Dataset):
     def __init__(self,
                  dataset_path: str, 

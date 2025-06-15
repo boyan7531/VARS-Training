@@ -97,6 +97,19 @@ def parse_args():
                        help='Use class-balanced sampler to oversample minority classes')
     parser.add_argument('--oversample_factor', type=float, default=4.0,
                        help='Factor by which to oversample minority classes (higher = more aggressive)')
+    parser.add_argument('--use_alternating_sampler', action='store_true', default=False,
+                       help='Use alternating sampler that switches between severity and action balancing per epoch')
+    parser.add_argument('--action_oversample_factor', type=float, default=4.0,
+                       help='Factor by which to oversample minority action classes (higher = more aggressive)')
+    parser.add_argument('--use_action_balanced_sampler_only', action='store_true', default=False,
+                       help='Use only action-balanced sampler (ignore severity balancing)')
+    parser.add_argument('--use_strong_action_weights', action='store_true', default=False,
+                       help='Use strong action class weights (not normalized) to combat severe action imbalance')
+    parser.add_argument('--action_weight_strategy', type=str, default='strong_inverse',
+                       choices=['strong_inverse', 'focal_style', 'exponential'],
+                       help='Strategy for calculating strong action weights')
+    parser.add_argument('--action_weight_power', type=float, default=2.0,
+                       help='Power factor for strong action weights (higher = more aggressive)')
     parser.add_argument('--disable_class_balancing', action='store_true', default=False,
                        help='Disable all class balancing techniques (use with caution)')
     
