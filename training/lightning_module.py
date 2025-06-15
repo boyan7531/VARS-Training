@@ -128,18 +128,24 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
     
     def setup(self, stage: str):
         """Setup hook called before training/validation/testing."""
-        logger.info(f"Setting up Lightning module for stage: {stage}")
+        # Import the rank checking function
+        from .training_utils import is_main_process
+        
+        if is_main_process():
+            logger.info(f"Setting up Lightning module for stage: {stage}")
         
         if stage in ['fit', 'validate']:
             # Initialize GPU augmentation if enabled
             if hasattr(self.args, 'gpu_augmentation') and self.args.gpu_augmentation:
                 self.gpu_augmentation = create_gpu_augmentation(self.args, self.device)
-                logger.info("GPU augmentation initialized")
+                if is_main_process():
+                    logger.info("GPU augmentation initialized")
             
             # Initialize freezing strategy
             if self.freezing_manager is None:
                 self.freezing_manager = setup_freezing_strategy(self.args, self.model)
-                logger.info(f"Freezing strategy initialized: {self.args.freezing_strategy}")
+                if is_main_process():
+                    logger.info(f"Freezing strategy initialized: {self.args.freezing_strategy}")
             
             # Get automatic class weights from datamodule if available
             if hasattr(self.trainer, 'datamodule') and hasattr(self.trainer.datamodule, 'get_class_weights'):
@@ -149,11 +155,13 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                     # Use automatic class weights from datamodule
                     self.severity_class_weights = class_weights['severity'].to(self.device)
                     self.action_class_weights = class_weights['action'].to(self.device)
-                    logger.info("Using automatic class weights from datamodule")
-                    logger.info(f"Severity weights: {self.severity_class_weights}")
-                    logger.info(f"Action weights: {self.action_class_weights}")
+                    if is_main_process():
+                        logger.info("Using automatic class weights from datamodule")
+                        logger.info(f"Severity weights: {self.severity_class_weights}")
+                        logger.info(f"Action weights: {self.action_class_weights}")
                 else:
-                    logger.info("No automatic class weights available from datamodule")
+                    if is_main_process():
+                        logger.info("No automatic class weights available from datamodule")
                     
                     # Fallback to manual class weight calculation if needed
                     if (self.args.loss_function in ['focal', 'weighted'] and 
@@ -449,6 +457,9 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
     
     def on_validation_epoch_end(self):
         """Called at the end of validation epoch."""
+        # Import the rank checking function
+        from .training_utils import is_main_process
+        
         # Log confusion matrices every 5 epochs
         if (self.current_epoch + 1) % 5 == 0:
             self._log_confusion_matrices()
@@ -463,7 +474,8 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         if val_combined_acc > self.best_val_acc:
             self.best_val_acc = val_combined_acc
             self.best_epoch = self.current_epoch + 1
-            logger.info(f"New best validation accuracy: {self.best_val_acc:.4f} at epoch {self.best_epoch}")
+            if is_main_process():
+                logger.info(f"New best validation accuracy: {self.best_val_acc:.4f} at epoch {self.best_epoch}")
     
     def _handle_phase_transition(self):
         """Handle gradual fine-tuning phase transitions."""

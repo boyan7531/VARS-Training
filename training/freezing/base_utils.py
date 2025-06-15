@@ -282,7 +282,32 @@ def get_phase_info(epoch, phase1_epochs, total_epochs):
 
 
 def log_trainable_parameters(model, epoch=None):
-    """Log detailed information about trainable parameters."""
+    """Log detailed information about trainable parameters (only from main process)."""
+    # Check if we should log (only from main process in distributed training)
+    try:
+        # Try PyTorch Lightning's distributed backend first
+        import pytorch_lightning as pl
+        if hasattr(pl.utilities, 'rank_zero_only'):
+            # This is a more reliable way in newer versions
+            from pytorch_lightning.utilities.distributed import rank_zero_only
+            # We can't directly use the decorator, so check the rank manually
+            if hasattr(pl.utilities.distributed, 'get_rank'):
+                is_main_process = pl.utilities.distributed.get_rank() == 0
+            elif hasattr(pl.utilities.rank_zero, 'rank_zero_only'):
+                # Fallback for older versions
+                is_main_process = pl.utilities.rank_zero.rank_zero_only.rank == 0
+            else:
+                is_main_process = True
+        # Fallback to PyTorch's distributed backend
+        elif hasattr(torch, 'distributed') and torch.distributed.is_available() and torch.distributed.is_initialized():
+            is_main_process = torch.distributed.get_rank() == 0
+        else:
+            # Single process case
+            is_main_process = True
+    except (ImportError, AttributeError):
+        # If no distributed backend available, assume single process
+        is_main_process = True
+    
     # Handle DataParallel wrapper
     actual_model = model.module if hasattr(model, 'module') else model
     
@@ -315,27 +340,30 @@ def log_trainable_parameters(model, epoch=None):
             backbone_trainable = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
             backbone_total = sum(p.numel() for p in backbone.parameters())
     except Exception as e:
-        logger.warning(f"Could not analyze backbone parameters: {e}")
+        if is_main_process:
+            logger.warning(f"Could not analyze backbone parameters: {e}")
         backbone = None
     
     # Calculate head parameters (non-backbone)
     head_params = trainable_params - backbone_trainable
     
-    # Create epoch prefix for logging
-    epoch_prefix = f"Epoch {epoch} " if epoch is not None else ""
-    
-    # Log comprehensive parameter information
-    logger.info(f"[PARAMS] {epoch_prefix}Parameter Status:")
-    logger.info(f"  📊 Total model: {trainable_params:,}/{total_params:,} trainable ({trainable_params/total_params*100:.1f}%)")
-    
-    if backbone is not None:
-        backbone_ratio = backbone_trainable / backbone_total * 100 if backbone_total > 0 else 0
-        logger.info(f"  🧠 Backbone: {backbone_trainable:,}/{backbone_total:,} trainable ({backbone_ratio:.1f}%)")
-        logger.info(f"  🎯 Classification heads: {head_params:,} trainable")
-    else:
-        logger.info(f"  🎯 Non-backbone parameters: {head_params:,} trainable")
-    
-    logger.info(f"  ❄️  Frozen parameters: {frozen_params:,}")
+    # Only log from main process to avoid duplicates in distributed training
+    if is_main_process:
+        # Create epoch prefix for logging
+        epoch_prefix = f"Epoch {epoch} " if epoch is not None else ""
+        
+        # Log comprehensive parameter information
+        logger.info(f"[PARAMS] {epoch_prefix}Parameter Status:")
+        logger.info(f"  📊 Total model: {trainable_params:,}/{total_params:,} trainable ({trainable_params/total_params*100:.1f}%)")
+        
+        if backbone is not None:
+            backbone_ratio = backbone_trainable / backbone_total * 100 if backbone_total > 0 else 0
+            logger.info(f"  🧠 Backbone: {backbone_trainable:,}/{backbone_total:,} trainable ({backbone_ratio:.1f}%)")
+            logger.info(f"  🎯 Classification heads: {head_params:,} trainable")
+        else:
+            logger.info(f"  🎯 Non-backbone parameters: {head_params:,} trainable")
+        
+        logger.info(f"  ❄️  Frozen parameters: {frozen_params:,}")
     
     return trainable_params, total_params
 

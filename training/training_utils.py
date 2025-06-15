@@ -15,8 +15,39 @@ import numpy as np
 import os
 from sklearn.metrics import f1_score, confusion_matrix
 from torch.profiler import profile, record_function, ProfilerActivity
+import gc
 
 logger = logging.getLogger(__name__)
+
+
+def is_main_process():
+    """
+    Check if current process is the main process (rank 0) in distributed training.
+    Returns True for single-GPU training or rank 0 in multi-GPU training.
+    """
+    try:
+        # Try PyTorch Lightning's distributed backend first
+        import pytorch_lightning as pl
+        if hasattr(pl.utilities, 'rank_zero_only'):
+            # This is a more reliable way in newer versions
+            from pytorch_lightning.utilities.distributed import rank_zero_only
+            # We can't directly use the decorator, so check the rank manually
+            if hasattr(pl.utilities.distributed, 'get_rank'):
+                return pl.utilities.distributed.get_rank() == 0
+            elif hasattr(pl.utilities.rank_zero, 'rank_zero_only'):
+                # Fallback for older versions
+                return pl.utilities.rank_zero.rank_zero_only.rank == 0
+        
+        # Fallback to PyTorch's distributed backend
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            return torch.distributed.get_rank() == 0
+        
+        # Single process case
+        return True
+        
+    except (ImportError, AttributeError):
+        # If no distributed backend available, assume single process
+        return True
 
 
 def cleanup_memory():
@@ -69,7 +100,11 @@ def compute_confusion_matrices(confusion_matrix_dict):
 
 
 def log_confusion_matrix(cm, task_name, class_names=None):
-    """Log confusion matrix with per-class recall."""
+    """Log confusion matrix with per-class recall (only from main process)."""
+    # Only log from main process to avoid duplicates in distributed training
+    if not is_main_process():
+        return
+        
     logger.info(f"\n[CONFUSION_MATRIX] {task_name.upper()}")
     
     if class_names is None:
@@ -93,7 +128,11 @@ def log_confusion_matrix(cm, task_name, class_names=None):
 
 
 def save_confusion_matrix(cm, task_name, epoch, save_dir):
-    """Save confusion matrix to file."""
+    """Save confusion matrix to file (only from main process)."""
+    # Only save from main process to avoid file conflicts
+    if not is_main_process():
+        return
+        
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     
@@ -104,7 +143,11 @@ def save_confusion_matrix(cm, task_name, epoch, save_dir):
 
 
 def check_overfitting_alert(train_loss, val_loss, epoch):
-    """Check for potential overfitting and alert if detected."""
+    """Check for potential overfitting and alert if detected (only from main process)."""
+    # Only log from main process to avoid duplicate warnings
+    if not is_main_process():
+        return False
+        
     if val_loss > 0 and train_loss < 0.2 * val_loss:
         logger.warning(f"🚨 [OVERFITTING ALERT] Epoch {epoch+1}: Train loss ({train_loss:.4f}) < 0.2 × Val loss ({val_loss:.4f})")
         logger.warning(f"    This suggests overfitting to the oversampled training distribution!")

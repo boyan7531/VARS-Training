@@ -40,8 +40,11 @@ class EarlyGradualFreezingManager:
         self.backbone_blocks = _get_backbone_blocks(self.model)
         self._calculate_parameter_targets()
         
-        logger.info(f"[EARLY_GRADUAL] Initialized with {len(self.backbone_blocks)} backbone blocks")
-        logger.info(f"[EARLY_GRADUAL] Target: {self.target_ratio*100:.0f}% of backbone ({self.target_unfrozen_params:,}/{self.total_backbone_params:,} parameters)")
+        # Only log from main process to avoid duplicates in distributed training
+        from ..training_utils import is_main_process
+        if is_main_process():
+            logger.info(f"[EARLY_GRADUAL] Initialized with {len(self.backbone_blocks)} backbone blocks")
+            logger.info(f"[EARLY_GRADUAL] Target: {self.target_ratio*100:.0f}% of backbone ({self.target_unfrozen_params:,}/{self.total_backbone_params:,} parameters)")
     
 
     
@@ -80,7 +83,10 @@ class EarlyGradualFreezingManager:
             frozen_params += param.numel()
         
         self.current_unfrozen_params = 0
-        logger.info(f"[EARLY_GRADUAL] Froze entire backbone ({frozen_params:,} parameters)")
+        # Only log from main process to avoid duplicates in distributed training
+        from ..training_utils import is_main_process
+        if is_main_process():
+            logger.info(f"[EARLY_GRADUAL] Froze entire backbone ({frozen_params:,} parameters)")
         return frozen_params
     
     def should_unfreeze_blocks(self, epoch):
@@ -124,11 +130,16 @@ class EarlyGradualFreezingManager:
                     self.current_unfrozen_params += block_params
                     newly_unfrozen.append(block_name)
                     
-                    logger.info(f"[EARLY_GRADUAL] Epoch {epoch}: Unfroze {block_name} ({block_params:,} parameters)")
+                    # Only log from main process to avoid duplicates in distributed training
+                    from ..training_utils import is_main_process
+                    if is_main_process():
+                        logger.info(f"[EARLY_GRADUAL] Epoch {epoch}: Unfroze {block_name} ({block_params:,} parameters)")
         
         if newly_unfrozen:
             progress = self.current_unfrozen_params / self.target_unfrozen_params * 100
-            logger.info(f"[EARLY_GRADUAL] Progress: {self.current_unfrozen_params:,}/{self.target_unfrozen_params:,} parameters ({progress:.1f}% of target)")
+            from ..training_utils import is_main_process
+            if is_main_process():
+                logger.info(f"[EARLY_GRADUAL] Progress: {self.current_unfrozen_params:,}/{self.target_unfrozen_params:,} parameters ({progress:.1f}% of target)")
         
         return newly_unfrozen
     

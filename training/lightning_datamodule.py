@@ -165,17 +165,24 @@ class VideoDataModule(pl.LightningDataModule):
         severity_counts = Counter(severity_labels)
         action_counts = Counter(action_labels)
         
+        # Import the rank checking function
+        from .training_utils import is_main_process
+        
         # Log class distributions
-        logger.info("Class distributions in training set:")
-        logger.info(f"Severity classes: {dict(severity_counts)}")
-        logger.info(f"Action classes: {dict(action_counts)}")
+        if is_main_process():
+            logger.info("Class distributions in training set:")
+        
+        if is_main_process():
+            logger.info(f"Severity classes: {dict(severity_counts)}")
+            logger.info(f"Action classes: {dict(action_counts)}")
         
         # Compute effective number of samples
         # Use β=0.99 for smaller datasets (< 10k samples), β=0.9999 for larger ones
         total_samples = len(self.train_dataset)
         beta = 0.99 if total_samples < 10000 else 0.9999
         
-        logger.info(f"Using β={beta} for effective-number-of-samples computation (dataset size: {total_samples})")
+        if is_main_process():
+            logger.info(f"Using β={beta} for effective-number-of-samples computation (dataset size: {total_samples})")
         
         # Compute severity class weights
         severity_weights = {}
@@ -228,21 +235,25 @@ class VideoDataModule(pl.LightningDataModule):
         for class_id, weight in action_weights.items():
             self.action_class_weights[class_id] = weight
         
-        # Log computed weights
-        logger.info("Computed class weights:")
-        logger.info(f"Severity weights: {severity_weights}")
-        logger.info(f"Action weights: {action_weights}")
+        # Import the rank checking function
+        from .training_utils import is_main_process
         
-        # Log weight ratios for analysis
-        if len(severity_weights) > 1:
-            severity_weight_values = list(severity_weights.values())
-            severity_ratio = max(severity_weight_values) / min(severity_weight_values)
-            logger.info(f"Severity weight ratio (max/min): {severity_ratio:.2f}")
-        
-        if len(action_weights) > 1:
-            action_weight_values = list(action_weights.values())
-            action_ratio = max(action_weight_values) / min(action_weight_values)
-            logger.info(f"Action weight ratio (max/min): {action_ratio:.2f}")
+        # Log computed weights (only from main process)
+        if is_main_process():
+            logger.info("Computed class weights:")
+            logger.info(f"Severity weights: {severity_weights}")
+            logger.info(f"Action weights: {action_weights}")
+            
+            # Log weight ratios for analysis
+            if len(severity_weights) > 1:
+                severity_weight_values = list(severity_weights.values())
+                severity_ratio = max(severity_weight_values) / min(severity_weight_values)
+                logger.info(f"Severity weight ratio (max/min): {severity_ratio:.2f}")
+            
+            if len(action_weights) > 1:
+                action_weight_values = list(action_weights.values())
+                action_ratio = max(action_weight_values) / min(action_weight_values)
+                logger.info(f"Action weight ratio (max/min): {action_ratio:.2f}")
     
     def get_class_weights(self) -> Dict[str, torch.Tensor]:
         """
