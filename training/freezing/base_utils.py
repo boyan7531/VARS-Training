@@ -285,27 +285,14 @@ def log_trainable_parameters(model, epoch=None):
     """Log detailed information about trainable parameters (only from main process)."""
     # Check if we should log (only from main process in distributed training)
     try:
-        # Try PyTorch Lightning's distributed backend first
-        import pytorch_lightning as pl
-        if hasattr(pl.utilities, 'rank_zero_only'):
-            # This is a more reliable way in newer versions
-            from pytorch_lightning.utilities.distributed import rank_zero_only
-            # We can't directly use the decorator, so check the rank manually
-            if hasattr(pl.utilities.distributed, 'get_rank'):
-                is_main_process = pl.utilities.distributed.get_rank() == 0
-            elif hasattr(pl.utilities.rank_zero, 'rank_zero_only'):
-                # Fallback for older versions
-                is_main_process = pl.utilities.rank_zero.rank_zero_only.rank == 0
-            else:
-                is_main_process = True
-        # Fallback to PyTorch's distributed backend
-        elif hasattr(torch, 'distributed') and torch.distributed.is_available() and torch.distributed.is_initialized():
+        # Try PyTorch's distributed backend first (most reliable)
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
             is_main_process = torch.distributed.get_rank() == 0
         else:
             # Single process case
             is_main_process = True
-    except (ImportError, AttributeError):
-        # If no distributed backend available, assume single process
+    except Exception:
+        # If anything fails, assume single process
         is_main_process = True
     
     # Handle DataParallel wrapper

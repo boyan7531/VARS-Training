@@ -26,27 +26,31 @@ def is_main_process():
     Returns True for single-GPU training or rank 0 in multi-GPU training.
     """
     try:
-        # Try PyTorch Lightning's distributed backend first
-        import pytorch_lightning as pl
-        if hasattr(pl.utilities, 'rank_zero_only'):
-            # This is a more reliable way in newer versions
-            from pytorch_lightning.utilities.distributed import rank_zero_only
-            # We can't directly use the decorator, so check the rank manually
-            if hasattr(pl.utilities.distributed, 'get_rank'):
-                return pl.utilities.distributed.get_rank() == 0
-            elif hasattr(pl.utilities.rank_zero, 'rank_zero_only'):
-                # Fallback for older versions
-                return pl.utilities.rank_zero.rank_zero_only.rank == 0
-        
-        # Fallback to PyTorch's distributed backend
+        # Try PyTorch's distributed backend first (most reliable)
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             return torch.distributed.get_rank() == 0
+        
+        # Try PyTorch Lightning's distributed utilities (version-agnostic)
+        try:
+            import pytorch_lightning as pl
+            # Try different import paths for different PL versions
+            try:
+                from lightning.fabric.utilities.distributed import _get_rank
+                return _get_rank() == 0
+            except ImportError:
+                try:
+                    from pytorch_lightning.utilities.rank_zero import rank_zero_only
+                    return getattr(rank_zero_only, 'rank', 0) == 0
+                except ImportError:
+                    pass
+        except ImportError:
+            pass
         
         # Single process case
         return True
         
-    except (ImportError, AttributeError):
-        # If no distributed backend available, assume single process
+    except Exception:
+        # If anything fails, assume single process
         return True
 
 
