@@ -262,47 +262,43 @@ class MultiTaskMultiViewResNet3D(nn.Module):
         backbone_name: str = 'r2plus1d_18',
         config: ModelConfig = None,
         use_augmentation: bool = True,
-        severity_weights: Dict[float, float] = None
+        severity_weights: Dict[float, float] = None,
+        dropout_rate: float = 0.1
     ):
         """
         Initialize the multi-task multi-view ResNet3D model.
         
         Args:
-            num_severity: Number of classes for severity prediction
-            num_action_type: Number of classes for action type prediction
+            num_severity: Number of severity classes
+            num_action_type: Number of action type classes
             vocab_sizes: Dictionary mapping feature names to vocabulary sizes
             backbone_name: ResNet3D variant ('resnet3d_18', 'mc3_18', 'r2plus1d_18')
-            config: Model configuration object
+            config: Model configuration
             use_augmentation: Whether to apply adaptive augmentation for class imbalance
-            severity_weights: Augmentation intensity weights for each severity class
+            severity_weights: Custom augmentation weights for severity classes
+            dropout_rate: Dropout rate for classification heads (default: 0.1)
         """
         super().__init__()
         
-        # Use default config if none provided
-        self.config = config if config is not None else ModelConfig()
+        # Store configuration
         self.num_severity = num_severity
         self.num_action_type = num_action_type
-        self.backbone_name = backbone_name
-        self.use_augmentation = use_augmentation
-        
-        # Validate vocabulary sizes
-        self._validate_vocab_sizes(vocab_sizes)
         self.vocab_sizes = vocab_sizes
+        self.config = config or ModelConfig()
+        self.use_augmentation = use_augmentation
+        self.severity_weights = severity_weights
+        self.dropout_rate = dropout_rate
         
-        # Initialize augmentation for addressing class imbalance
-        if self.use_augmentation:
-            self.video_augmentation = VideoAugmentation(
-                severity_weights=severity_weights,
-                training=True,
-                enabled=True  # Will be controlled by disable_in_model_augmentation
-            )
+        # Validate inputs
+        self._validate_vocab_sizes(vocab_sizes)
         
-        # Initialize components
-        self._initialize_components()
+        # Initialize all components
+        self._initialize_components(backbone_name)
         
         logger.info(f"Initialized MultiTaskMultiViewResNet3D with {backbone_name}, "
                    f"{num_severity} severity classes and {num_action_type} action type classes. "
-                   f"Augmentation: {'enabled' if use_augmentation else 'disabled'}")
+                   f"Augmentation: {'enabled' if use_augmentation else 'disabled'}, "
+                   f"dropout_rate: {dropout_rate}")
     
     def _validate_vocab_sizes(self, vocab_sizes: Dict[str, int]) -> None:
         """Validate that all required vocabulary sizes are provided."""
@@ -320,12 +316,30 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             if not isinstance(size, int) or size <= 0:
                 raise ValueError(f"Vocabulary size for '{key}' must be a positive integer, got {size}")
     
-    def _initialize_components(self) -> None:
+    def _initialize_components(self, backbone_name: str) -> None:
         """Initialize all model components."""
         try:
-            # Load ResNet3D backbone
-            self.backbone = ResNet3DBackbone(self.backbone_name, pretrained=True)
+            # Initialize video backbone
+            self.backbone = ResNet3DBackbone(backbone_name)
             self.video_feature_dim = self.backbone.feature_dim
+            
+            # Initialize augmentation for addressing class imbalance
+            if self.use_augmentation:
+                # Use provided severity weights or defaults
+                if self.severity_weights is None:
+                    self.severity_weights = {
+                        1.0: 1.0,   # Majority class - normal augmentation
+                        2.0: 2.5,   # 2.5x more aggressive augmentation
+                        3.0: 4.0,   # 4x more aggressive augmentation  
+                        4.0: 6.0,   # 6x more aggressive augmentation
+                        5.0: 8.0    # 8x more aggressive augmentation (if exists)
+                    }
+                
+                self.video_augmentation = VideoAugmentation(
+                    severity_weights=self.severity_weights,
+                    training=True,
+                    enabled=True
+                )
             
             # Initialize embedding manager (reuse existing)
             self.embedding_manager = EmbeddingManager(self.config, self.vocab_sizes)
@@ -339,18 +353,18 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             # Calculate combined feature dimension
             combined_feature_dim = self.video_feature_dim + self.config.get_total_embedding_dim()
             
-            # Create classification heads with stronger regularization for small dataset
+            # Create classification heads with configurable dropout
             self.severity_head = nn.Sequential(
                 nn.Linear(combined_feature_dim, 256),
                 nn.ReLU(),
-                nn.Dropout(0.6),  # Increased from 0.5 for small dataset
+                nn.Dropout(self.dropout_rate),  # Use configurable dropout rate
                 nn.Linear(256, self.num_severity)
             )
             
             self.action_type_head = nn.Sequential(
                 nn.Linear(combined_feature_dim, 256), 
                 nn.ReLU(),
-                nn.Dropout(0.6),  # Increased from 0.5 for small dataset
+                nn.Dropout(self.dropout_rate),  # Use configurable dropout rate
                 nn.Linear(256, self.num_action_type)
             )
             
@@ -452,6 +466,7 @@ class MultiTaskMultiViewResNet3D(nn.Module):
         use_augmentation: bool = True,
         disable_in_model_augmentation: bool = False,
         severity_weights: Dict[float, float] = None,
+        dropout_rate: float = 0.1,
         **config_kwargs
     ) -> 'MultiTaskMultiViewResNet3D':
         """
@@ -466,6 +481,7 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             use_augmentation: Whether to apply adaptive augmentation for class imbalance
             disable_in_model_augmentation: Whether to disable in-model augmentation
             severity_weights: Custom augmentation weights for severity classes
+            dropout_rate: Dropout rate for classification heads (default: 0.1)
             **config_kwargs: Additional configuration parameters
             
         Returns:
@@ -527,7 +543,8 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             backbone_name=backbone_name,
             config=final_model_config, # Use the resolved config
             use_augmentation=use_augmentation,
-            severity_weights=severity_weights
+            severity_weights=severity_weights,
+            dropout_rate=dropout_rate
         )
         
         # If we have augmentation but it should be disabled, disable it

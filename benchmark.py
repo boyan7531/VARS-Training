@@ -587,6 +587,7 @@ def main():
             use_attention_aggregation=args.attention_aggregation,
             use_augmentation=False,  # Disable augmentation for inference
             disable_in_model_augmentation=True,
+            dropout_rate=getattr(args, 'dropout_rate', 0.1),
             **config_kwargs
         )
         logger.info("Model initialized successfully")

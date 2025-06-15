@@ -222,7 +222,8 @@ def create_model(args, vocab_sizes, device, num_gpus):
             use_augmentation=not args.disable_in_model_augmentation,
             disable_in_model_augmentation=args.disable_in_model_augmentation,
             enable_gradient_checkpointing=getattr(args, 'enable_gradient_checkpointing', False),
-            enable_memory_optimization=getattr(args, 'enable_memory_optimization', True)
+            enable_memory_optimization=getattr(args, 'enable_memory_optimization', True),
+            dropout_rate=getattr(args, 'dropout_rate', 0.1)
         )
         
         # Get model info for logging

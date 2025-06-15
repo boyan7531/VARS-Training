@@ -184,38 +184,43 @@ class MultiTaskMultiViewMViT(nn.Module):
         use_augmentation: bool = True,
         severity_weights: Dict[float, float] = None,
         use_gradient_checkpointing: bool = False,
-        enable_memory_optimization: bool = True
+        enable_memory_optimization: bool = True,
+        dropout_rate: float = 0.1
     ):
+        """
+        Initialize the optimized MViT model with video-only capabilities.
+        
+        Args:
+            num_severity: Number of severity classes
+            num_action_type: Number of action type classes
+            vocab_sizes: Dictionary mapping feature names to vocabulary sizes (now optional)
+            config: Model configuration
+            use_augmentation: Whether to apply adaptive augmentation for class imbalance
+            severity_weights: Custom augmentation weights for severity classes
+            use_gradient_checkpointing: Whether to enable gradient checkpointing for memory efficiency
+            enable_memory_optimization: Whether to enable memory optimization features
+            dropout_rate: Dropout rate for classification heads (default: 0.1)
+        """
         super().__init__()
         
-        # Use default config if none provided
-        self.config = config if config is not None else ModelConfig()
+        # Store configuration
         self.num_severity = num_severity
         self.num_action_type = num_action_type
-        self.use_augmentation = use_augmentation
+        self.vocab_sizes = vocab_sizes or {}
+        self.config = config or ModelConfig()
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.enable_memory_optimization = enable_memory_optimization
+        self.use_augmentation = use_augmentation
+        self.severity_weights = severity_weights
+        self.dropout_rate = dropout_rate
         
-        # Validate vocabulary sizes (now optional)
+        # Validate inputs
         self._validate_vocab_sizes(vocab_sizes)
-        self.vocab_sizes = vocab_sizes or {}
         
-        # Initialize augmentation for addressing class imbalance
-        if self.use_augmentation:
-            from .resnet3d_model import VideoAugmentation
-            self.video_augmentation = VideoAugmentation(
-                severity_weights=severity_weights,
-                training=True,
-                enabled=True
-            )
-        
-        # Initialize components
+        # Initialize all components
         self._initialize_components()
         
-        logger.info(f"Initialized optimized MultiTaskMultiViewMViT with {self.config.pretrained_model_name}, "
-                   f"{num_severity} severity classes and {num_action_type} action type classes. "
-                   f"Augmentation: {'enabled' if use_augmentation else 'disabled'}, "
-                   f"Gradient checkpointing: {'enabled' if use_gradient_checkpointing else 'disabled'}")
+        logger.info(f"Optimized MViT model initialized with dropout_rate={dropout_rate}")
     
     def _validate_vocab_sizes(self, vocab_sizes: Dict[str, int]) -> None:
         """Validate vocabulary sizes - now optional since we only use video features."""
@@ -234,6 +239,26 @@ class MultiTaskMultiViewMViT(nn.Module):
                 backbone, 
                 use_gradient_checkpointing=self.use_gradient_checkpointing
             )
+            
+            # Initialize augmentation for addressing class imbalance
+            if self.use_augmentation:
+                from .resnet3d_model import VideoAugmentation
+                # Use default severity weights if none provided
+                severity_weights = getattr(self, 'severity_weights', None)
+                if severity_weights is None:
+                    severity_weights = {
+                        1.0: 1.0,   # Majority class - normal augmentation
+                        2.0: 2.5,   # 2.5x more aggressive augmentation
+                        3.0: 4.0,   # 4x more aggressive augmentation  
+                        4.0: 6.0,   # 6x more aggressive augmentation
+                        5.0: 8.0    # 8x more aggressive augmentation (if exists)
+                    }
+                
+                self.video_augmentation = VideoAugmentation(
+                    severity_weights=severity_weights,
+                    training=True,
+                    enabled=True
+                )
             
             # Initialize embedding manager (simplified for video-only)
             self.embedding_manager = EmbeddingManager(self.config, self.vocab_sizes)
@@ -264,7 +289,7 @@ class MultiTaskMultiViewMViT(nn.Module):
             nn.Linear(input_dim, 256),
             nn.LayerNorm(256),
             nn.GELU(),  # More efficient than ReLU for transformers
-            nn.Dropout(0.3),  # Reduced from 0.6 to be less aggressive
+            nn.Dropout(self.dropout_rate),  # Use configurable dropout rate
             nn.Linear(256, num_classes)
         )
         
@@ -416,6 +441,7 @@ def create_unified_model(
     severity_weights: Dict[float, float] = None,
     enable_gradient_checkpointing: bool = False,
     enable_memory_optimization: bool = True,
+    dropout_rate: float = 0.1,
     **config_kwargs
 ) -> nn.Module:
     """
@@ -433,6 +459,7 @@ def create_unified_model(
         severity_weights: Custom augmentation weights for severity classes
         enable_gradient_checkpointing: Whether to enable gradient checkpointing for memory efficiency
         enable_memory_optimization: Whether to enable memory optimization features
+        dropout_rate: Dropout rate for classification heads (default: 0.1)
         **config_kwargs: Additional configuration parameters
         
     Returns:
@@ -455,6 +482,7 @@ def create_unified_model(
             use_augmentation=use_augmentation,
             disable_in_model_augmentation=disable_in_model_augmentation,
             severity_weights=severity_weights,
+            dropout_rate=dropout_rate,
             **config_kwargs
         )
     
@@ -496,7 +524,8 @@ def create_unified_model(
             use_augmentation=use_augmentation,
             severity_weights=severity_weights,
             use_gradient_checkpointing=enable_gradient_checkpointing,
-            enable_memory_optimization=enable_memory_optimization
+            enable_memory_optimization=enable_memory_optimization,
+            dropout_rate=dropout_rate
         )
         
         # If we have augmentation but it should be disabled, disable it
@@ -505,7 +534,7 @@ def create_unified_model(
             logger.info("🚫 VideoAugmentation disabled for debugging")
         
         logger.info(f"✅ Optimized MViT model created with gradient checkpointing: {enable_gradient_checkpointing}, "
-                   f"memory optimization: {enable_memory_optimization}")
+                   f"memory optimization: {enable_memory_optimization}, dropout_rate: {dropout_rate}")
         
         return model
     
