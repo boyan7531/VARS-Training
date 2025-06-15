@@ -316,6 +316,9 @@ def create_transforms(args, is_training=True):
     if args.gpu_augmentation and is_training:
         logger.info("Using GPU-based augmentation pipeline for maximum throughput!")
         
+        # Determine device for GPU augmentation
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
         # Create GPU augmentation
         gpu_augmentation = create_gpu_augmentation(args, device)
         
