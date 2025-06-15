@@ -410,12 +410,12 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         }
         
         # Log metrics
-        self.log('val_loss', total_loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val_loss_sev', loss_sev, on_step=False, on_epoch=True)
-        self.log('val_loss_act', loss_act, on_step=False, on_epoch=True)
-        self.log('val_sev_acc', sev_acc, on_step=False, on_epoch=True)
-        self.log('val_act_acc', act_acc, on_step=False, on_epoch=True)
-        self.log('val_combined_acc', (sev_acc + act_acc) / 2, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val_loss', total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('val_loss_sev', loss_sev, on_step=False, on_epoch=True, sync_dist=True)
+        self.log('val_loss_act', loss_act, on_step=False, on_epoch=True, sync_dist=True)
+        self.log('val_sev_acc', sev_acc, on_step=False, on_epoch=True, sync_dist=True)
+        self.log('val_act_acc', act_acc, on_step=False, on_epoch=True, sync_dist=True)
+        self.log('val_combined_acc', (sev_acc + act_acc) / 2, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
         return output
     
