@@ -568,10 +568,11 @@ def main():
 
     # Class weights are now computed automatically by Lightning DataModule
     # But we should set them to None when using ClassBalancedSampler to avoid double-balancing
+    # Only when we're actually balancing severity (not when using action-only balancing)
     severity_class_weights = None
     action_class_weights = None
     
-    if args.use_class_balanced_sampler:
+    if args.use_class_balanced_sampler and not args.use_action_balanced_sampler_only:
         logger.info("🎯 ClassBalancedSampler detected: Setting severity_class_weights=None to prevent double-balancing")
     
     # Handle strong action weights if enabled
@@ -688,7 +689,7 @@ def main():
                         'weights': args.main_task_weights,
                         'label_smoothing': args.label_smoothing,
                         'focal_gamma': args.focal_gamma,
-                        'severity_class_weights': None if args.use_class_balanced_sampler else severity_class_weights,
+                        'severity_class_weights': None if (args.use_class_balanced_sampler and not args.use_action_balanced_sampler_only) else severity_class_weights,
                         'action_class_weights': action_class_weights,
                         'class_gamma_map': class_gamma_map
                     },
@@ -734,7 +735,7 @@ def main():
                     'weights': args.main_task_weights,
                     'label_smoothing': args.label_smoothing,
                     'focal_gamma': args.focal_gamma,
-                    'severity_class_weights': None if args.use_class_balanced_sampler else severity_class_weights,
+                    'severity_class_weights': None if (args.use_class_balanced_sampler and not args.use_action_balanced_sampler_only) else severity_class_weights,
                     'action_class_weights': action_class_weights,
                     'class_gamma_map': class_gamma_map
                 },
@@ -765,7 +766,7 @@ def main():
                 'weights': args.main_task_weights,
                 'label_smoothing': args.label_smoothing,
                 'focal_gamma': args.focal_gamma,
-                'severity_class_weights': None if args.use_class_balanced_sampler else severity_class_weights,
+                'severity_class_weights': None if (args.use_class_balanced_sampler and not args.use_action_balanced_sampler_only) else severity_class_weights,
                 'action_class_weights': action_class_weights,
                 'class_gamma_map': class_gamma_map
             },

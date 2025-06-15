@@ -205,8 +205,12 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                 
                 # Update loss config with both severity and action weights
                 # Fix: When using ClassBalancedSampler, don't apply severity class weights to avoid double-balancing
-                severity_weights_for_loss = None if self.args.use_class_balanced_sampler else self.severity_class_weights
-                if self.args.use_class_balanced_sampler and is_main_process():
+                # But only when we're actually balancing severity (not when using action-only balancing)
+                severity_weights_for_loss = (
+                    None if (self.args.use_class_balanced_sampler and not self.args.use_action_balanced_sampler_only) 
+                    else self.severity_class_weights
+                )
+                if self.args.use_class_balanced_sampler and not self.args.use_action_balanced_sampler_only and is_main_process():
                     logger.info("🎯 ClassBalancedSampler detected: Setting severity_class_weights=None to prevent double-balancing")
                 
                 self.loss_config.update({
