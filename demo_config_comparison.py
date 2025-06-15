@@ -16,7 +16,7 @@ def show_old_system():
     
     # Count arguments in old config
     try:
-        with open("training/config.py", "r") as f:
+        with open("training/config.py", "r", encoding="utf-8") as f:
             content = f.read()
             arg_count = content.count("add_argument")
         print(f"📊 Total arguments: {arg_count}")
