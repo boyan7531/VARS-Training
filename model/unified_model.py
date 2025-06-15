@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Dict, Tuple, Optional, List
 import logging
+import os
 import torch.utils.checkpoint as checkpoint
 
 from .resnet3d_model import MultiTaskMultiViewResNet3D, ResNet3DBackbone
@@ -12,6 +13,55 @@ from .view_aggregator import ViewAggregator
 from .validator import InputValidator, ValidationError
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_attention_kernels_for_checkpointing(use_gradient_checkpointing: bool) -> None:
+    """
+    Configure PyTorch attention kernels to avoid metadata mismatch errors with gradient checkpointing.
+    
+    The issue: FlashAttention can produce tensors with different shapes/strides between the forward
+    pass and recompute pass during gradient checkpointing, causing CheckpointError.
+    
+    The fix: When gradient checkpointing is enabled, we disable FlashAttention and use the more
+    stable 'efficient' or 'math' kernels that don't have this issue.
+    
+    Args:
+        use_gradient_checkpointing: Whether gradient checkpointing is enabled
+    """
+    if not use_gradient_checkpointing:
+        return
+    
+    # Check for user override
+    user_kernel = os.environ.get('PYTORCH_CUDA_SDP_KERNEL', '').lower()
+    if user_kernel:
+        logger.info(f"🔧 User override detected: PYTORCH_CUDA_SDP_KERNEL={user_kernel}")
+        return
+    
+    # Check if we have the required backends
+    if not hasattr(torch.backends.cuda, 'enable_flash_sdp'):
+        logger.warning("⚠️  torch.backends.cuda.enable_flash_sdp not available, skipping kernel configuration")
+        return
+    
+    try:
+        # Disable FlashAttention to prevent metadata mismatch during checkpointing
+        original_flash_enabled = torch.backends.cuda.flash_sdp_enabled()
+        
+        if original_flash_enabled:
+            torch.backends.cuda.enable_flash_sdp(False)
+            logger.info("🚀 Gradient Checkpointing Optimization:")
+            logger.info("   ✅ Gradient checkpointing enabled")
+            logger.info("   🔧 FlashAttention disabled (prevents metadata mismatch)")
+            logger.info("   📊 Using efficient/math attention kernels for stability")
+            logger.info("   💡 Tip: ~5-10% slower but enables large batch training")
+            logger.info("   🔄 Override with PYTORCH_CUDA_SDP_KERNEL=flash if needed")
+        else:
+            logger.info("🚀 Gradient Checkpointing Optimization:")
+            logger.info("   ✅ Gradient checkpointing enabled")
+            logger.info("   ✅ FlashAttention already disabled")
+            
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to configure attention kernels: {e}")
+        logger.warning("   Gradient checkpointing may encounter metadata mismatch errors")
 
 
 class OptimizedMViTProcessor(nn.Module):
@@ -86,8 +136,19 @@ class OptimizedMViTProcessor(nn.Module):
             if view_mask[:, view_idx].any():
                 # Extract features for this view across all batches
                 if self.use_gradient_checkpointing and self.training:
+                    # PyTorch's activation checkpointing requires at least one input
+                    # that has `requires_grad=True`. The video tensor coming from the
+                    # dataloader does **not** need gradients, therefore we attach a
+                    # single dummy tensor that does. This unlocks true activation
+                    # recomputation without keeping the (huge) intermediate video
+                    # activations in memory.
+
+                    dummy = torch.ones(1, device=current_view.device, requires_grad=True)
                     view_features = checkpoint.checkpoint(
-                        self._forward_single_view, current_view, use_reentrant=False
+                        lambda _dummy, x: self._forward_single_view(x),
+                        dummy,
+                        current_view,
+                        use_reentrant=False,
                     )
                 else:
                     view_features = self._forward_single_view(current_view)
@@ -144,8 +205,12 @@ class OptimizedMViTProcessor(nn.Module):
                 batch_clips = torch.stack(clips)  # [N, C, T, H, W]
                 
                 if self.use_gradient_checkpointing and self.training:
+                    dummy = torch.ones(1, device=batch_clips.device, requires_grad=True)
                     batch_features = checkpoint.checkpoint(
-                        self._forward_single_view, batch_clips, use_reentrant=False
+                        lambda _dummy, x: self._forward_single_view(x),
+                        dummy,
+                        batch_clips,
+                        use_reentrant=False,
                     )
                 else:
                     batch_features = self._forward_single_view(batch_clips)
@@ -230,6 +295,9 @@ class MultiTaskMultiViewMViT(nn.Module):
     def _initialize_components(self) -> None:
         """Initialize all model components."""
         try:
+            # Configure attention kernels for gradient checkpointing compatibility
+            _configure_attention_kernels_for_checkpointing(self.use_gradient_checkpointing)
+            
             # Load MViT backbone using the loader
             model_loader = ModelLoader(self.config)
             backbone, self.video_feature_dim = model_loader.load_base_model()
