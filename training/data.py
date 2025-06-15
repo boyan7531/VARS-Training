@@ -322,24 +322,28 @@ def create_transforms(args, is_training=True):
         # Create GPU augmentation
         gpu_augmentation = create_gpu_augmentation(args, device)
         
-        # Create transform that applies GPU augmentation
-        def gpu_transform(clips):
-            # clips shape: (T, H, W, C) or (T, C, H, W)
-            # Convert to tensor if needed
-            if not isinstance(clips, torch.Tensor):
-                clips = torch.from_numpy(clips)
-            
-            # Ensure correct format for GPU augmentation
-            if clips.dim() == 4 and clips.shape[-1] == 3:  # (T, H, W, C)
-                clips = clips.permute(0, 3, 1, 2)  # (T, C, H, W)
-            
-            # Apply GPU augmentation
-            clips = gpu_augmentation(clips.unsqueeze(0)).squeeze(0)  # Add/remove batch dim
-            
-            # Convert back to numpy if needed
-            return clips.cpu().numpy()
-        
-        return gpu_transform
+        # Wrapper class so that transform is picklable by DataLoader workers
+        class GPUAugTransform(torch.nn.Module):
+            def __init__(self, aug):
+                super().__init__()
+                self.aug = aug
+
+            def forward(self, clips):
+                # Accept numpy array or tensor
+                if not isinstance(clips, torch.Tensor):
+                    clips = torch.from_numpy(clips)
+
+                # Ensure format (T, C, H, W)
+                if clips.dim() == 4 and clips.shape[-1] == 3:  # (T, H, W, C)
+                    clips = clips.permute(0, 3, 1, 2)
+
+                # Add batch dim, move to device of augmentation
+                clips = clips.to(self.aug.device if hasattr(self.aug, 'device') else device)
+                clips = self.aug(clips.unsqueeze(0)).squeeze(0)
+
+                return clips.cpu().numpy()
+
+        return GPUAugTransform(gpu_augmentation)
     
     elif is_training and not args.disable_augmentation:
         logger.info("Using CPU-based augmentation pipeline")
