@@ -511,7 +511,7 @@ def create_unified_model(
     enable_memory_optimization: bool = True,
     dropout_rate: float = 0.1,
     # New aggregator configuration
-    aggregator_type: str = 'mlp',
+    aggregator_type: str = 'transformer',
     max_views: int = 8,
     agg_heads: int = 2,
     agg_layers: int = 1,

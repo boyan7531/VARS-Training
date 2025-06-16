@@ -42,7 +42,7 @@ class ModelConfig:
     default_mvit_feature_dim: int = 768  # Fallback if detection fails
     
     # View Aggregator Configuration
-    aggregator_type: str = 'mlp'  # choices: 'mlp', 'transformer', 'moe'
+    aggregator_type: str = 'transformer'  # choices: 'mlp', 'transformer', 'moe'
     max_views: int = 8  # Maximum number of views to handle
     agg_heads: int = 2  # Number of attention heads for transformer aggregator
     agg_layers: int = 1  # Number of transformer encoder layers

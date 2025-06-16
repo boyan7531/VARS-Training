@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument('--attention_aggregation', action='store_true', default=True, help='Use attention for view aggregation')
     
     # === VIEW AGGREGATOR CONFIGURATION ===
-    parser.add_argument('--aggregator_type', type=str, default='mlp', choices=['mlp', 'transformer', 'moe'],
+    parser.add_argument('--aggregator_type', type=str, default='transformer', choices=['mlp', 'transformer', 'moe'],
                        help='Type of view aggregator: mlp (current MLP attention), transformer (Transformer-based), moe (Mixture of Experts)')
     parser.add_argument('--agg_heads', type=int, default=2, help='Number of attention heads for transformer aggregator')
     parser.add_argument('--agg_layers', type=int, default=1, help='Number of transformer encoder layers for aggregator')

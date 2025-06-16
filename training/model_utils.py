@@ -225,7 +225,7 @@ def create_model(args, vocab_sizes, device, num_gpus):
             enable_memory_optimization=getattr(args, 'enable_memory_optimization', True),
             dropout_rate=getattr(args, 'dropout_rate', 0.1),
             # New aggregator configuration
-            aggregator_type=getattr(args, 'aggregator_type', 'mlp'),
+            aggregator_type=getattr(args, 'aggregator_type', 'transformer'),
             max_views=args.max_views or 8,
             agg_heads=getattr(args, 'agg_heads', 2),
             agg_layers=getattr(args, 'agg_layers', 1)
