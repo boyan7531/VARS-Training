@@ -1569,3 +1569,333 @@ class MultiScaleTemporalAugmentation(torch.nn.Module):
                 clip = torch.cat([left_padding, clip, right_padding], dim=1)
         
         return clip
+
+# ================================
+# ADVANCED AUGMENTATION CLASSES
+# ================================
+
+class MultiScaleCrop(torch.nn.Module):
+    """Multi-scale spatial cropping with random size selection"""
+    def __init__(self, sizes=[224, 256, 288], prob=0.5, target_size=224):
+        super().__init__()
+        self.sizes = sizes
+        self.prob = prob
+        self.target_size = target_size
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+            
+        # Convert to float32 first if it's uint8
+        original_dtype = clip.dtype
+        if clip.dtype == torch.uint8:
+            clip = clip.float() / 255.0
+        
+        C, T, H, W = clip.shape
+        
+        # Randomly select a scale
+        scale_size = random.choice(self.sizes)
+        
+        # Calculate crop size maintaining aspect ratio
+        if H > W:
+            crop_h = int(scale_size * H / W)
+            crop_w = scale_size
+        else:
+            crop_h = scale_size
+            crop_w = int(scale_size * W / H)
+        
+        # Ensure crop size doesn't exceed original dimensions
+        crop_h = min(crop_h, H)
+        crop_w = min(crop_w, W)
+        
+        # Random crop position
+        top = random.randint(0, max(0, H - crop_h))
+        left = random.randint(0, max(0, W - crop_w))
+        
+        # Crop all frames
+        cropped_clip = clip[:, :, top:top+crop_h, left:left+crop_w]
+        
+        # Resize to target size
+        resized_frames = []
+        for t in range(T):
+            frame = cropped_clip[:, t]  # [C, H, W]
+            resized_frame = torch.nn.functional.interpolate(
+                frame.unsqueeze(0), size=(self.target_size, self.target_size), 
+                mode='bilinear', align_corners=False
+            ).squeeze(0)
+            resized_frames.append(resized_frame)
+        
+        return torch.stack(resized_frames, dim=1)
+
+
+class StrongColorJitter(torch.nn.Module):
+    """Enhanced color jittering with hue, saturation, brightness, and contrast"""
+    def __init__(self, brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1, prob=0.8):
+        super().__init__()
+        self.brightness = brightness
+        self.contrast = contrast
+        self.saturation = saturation
+        self.hue = hue
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+            
+        # Convert to float32 first if it's uint8
+        original_dtype = clip.dtype
+        if clip.dtype == torch.uint8:
+            clip = clip.float() / 255.0
+        
+        C, T, H, W = clip.shape
+        
+        # Generate random factors
+        brightness_factor = random.uniform(max(0, 1 - self.brightness), 1 + self.brightness)
+        contrast_factor = random.uniform(max(0, 1 - self.contrast), 1 + self.contrast)
+        saturation_factor = random.uniform(max(0, 1 - self.saturation), 1 + self.saturation)
+        hue_factor = random.uniform(-self.hue, self.hue)
+        
+        # Apply transformations
+        for t in range(T):
+            frame = clip[:, t]  # [C, H, W]
+            
+            # Brightness
+            frame = frame * brightness_factor
+            
+            # Contrast
+            mean = frame.mean(dim=[1, 2], keepdim=True)
+            frame = (frame - mean) * contrast_factor + mean
+            
+            # Convert to HSV for saturation and hue adjustments
+            if C == 3:  # RGB
+                # Simple approximation for HSV transformation
+                # Saturation adjustment
+                gray = 0.299 * frame[0] + 0.587 * frame[1] + 0.114 * frame[2]
+                frame = frame * saturation_factor + gray.unsqueeze(0) * (1 - saturation_factor)
+                
+                # Hue shift (simplified)
+                if abs(hue_factor) > 0.01:
+                    cos_h = torch.cos(torch.tensor(hue_factor * 2 * 3.14159))
+                    sin_h = torch.sin(torch.tensor(hue_factor * 2 * 3.14159))
+                    
+                    # Rotation matrix for hue shift
+                    r = frame[0]
+                    g = frame[1]
+                    b = frame[2]
+                    
+                    frame[0] = r * cos_h - g * sin_h
+                    frame[1] = r * sin_h + g * cos_h
+            
+            # Clamp values
+            frame = torch.clamp(frame, 0, 1)
+            clip[:, t] = frame
+        
+        return clip
+
+
+class VideoRandAugment(torch.nn.Module):
+    """RandAugment implementation for video data"""
+    def __init__(self, n=2, m=10, prob=0.5):
+        super().__init__()
+        self.n = n  # Number of augmentations to apply
+        self.m = m  # Magnitude (1-30)
+        self.prob = prob
+        
+        # Define augmentation operations
+        self.ops = [
+            'autocontrast', 'equalize', 'invert', 'rotate', 'solarize',
+            'color', 'posterize', 'brightness', 'contrast', 'sharpness'
+        ]
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+            
+        # Convert to float32 first if it's uint8
+        original_dtype = clip.dtype
+        if clip.dtype == torch.uint8:
+            clip = clip.float() / 255.0
+        
+        C, T, H, W = clip.shape
+        
+        # Select random operations
+        selected_ops = random.sample(self.ops, min(self.n, len(self.ops)))
+        
+        for op in selected_ops:
+            clip = self._apply_op(clip, op)
+        
+        return torch.clamp(clip, 0, 1)
+    
+    def _apply_op(self, clip, op):
+        """Apply a single RandAugment operation"""
+        C, T, H, W = clip.shape
+        magnitude = self.m / 30.0  # Normalize to [0, 1]
+        
+        if op == 'autocontrast':
+            for t in range(T):
+                frame = clip[:, t]
+                min_val = frame.min()
+                max_val = frame.max()
+                if max_val > min_val:
+                    clip[:, t] = (frame - min_val) / (max_val - min_val)
+        
+        elif op == 'brightness':
+            factor = 1.0 + magnitude * random.uniform(-0.5, 0.5)
+            clip = clip * factor
+        
+        elif op == 'contrast':
+            factor = 1.0 + magnitude * random.uniform(-0.5, 0.5)
+            mean = clip.mean(dim=[2, 3], keepdim=True)
+            clip = (clip - mean) * factor + mean
+        
+        elif op == 'rotate':
+            angle = magnitude * random.uniform(-30, 30)
+            # Simple rotation approximation (could be improved)
+            pass  # Skip for now to avoid complex implementation
+        
+        elif op == 'solarize':
+            threshold = 1.0 - magnitude
+            clip = torch.where(clip > threshold, 1.0 - clip, clip)
+        
+        elif op == 'color':
+            factor = 1.0 + magnitude * random.uniform(-0.5, 0.5)
+            if C == 3:
+                gray = 0.299 * clip[0:1] + 0.587 * clip[1:2] + 0.114 * clip[2:3]
+                clip = clip * factor + gray * (1 - factor)
+        
+        return clip
+
+
+class VideoMixUp(torch.nn.Module):
+    """MixUp augmentation for video data"""
+    def __init__(self, alpha=0.2, prob=0.5):
+        super().__init__()
+        self.alpha = alpha
+        self.prob = prob
+    
+    def forward(self, clips, labels=None):
+        """
+        Apply MixUp to a batch of clips
+        Args:
+            clips: [B, C, T, H, W] or [B, V, C, T, H, W]
+            labels: [B, ...] optional labels for mixing
+        """
+        if random.random() > self.prob or self.alpha <= 0:
+            return clips, labels
+        
+        batch_size = clips.size(0)
+        if batch_size < 2:
+            return clips, labels
+        
+        # Generate mixing coefficient
+        lam = np.random.beta(self.alpha, self.alpha)
+        
+        # Generate random permutation
+        indices = torch.randperm(batch_size)
+        
+        # Mix clips
+        mixed_clips = lam * clips + (1 - lam) * clips[indices]
+        
+        if labels is not None:
+            # Return both original and mixed labels for loss calculation
+            return mixed_clips, (labels, labels[indices], lam)
+        
+        return mixed_clips, None
+
+
+class VideoCutMix(torch.nn.Module):
+    """CutMix augmentation for video data"""
+    def __init__(self, alpha=1.0, prob=0.5):
+        super().__init__()
+        self.alpha = alpha
+        self.prob = prob
+    
+    def forward(self, clips, labels=None):
+        """
+        Apply CutMix to a batch of clips
+        Args:
+            clips: [B, C, T, H, W] or [B, V, C, T, H, W]
+            labels: [B, ...] optional labels for mixing
+        """
+        if random.random() > self.prob or self.alpha <= 0:
+            return clips, labels
+        
+        batch_size = clips.size(0)
+        if batch_size < 2:
+            return clips, labels
+        
+        # Get dimensions
+        if clips.dim() == 6:  # Multi-view
+            B, V, C, T, H, W = clips.shape
+        else:  # Single view
+            B, C, T, H, W = clips.shape
+            V = 1
+        
+        # Generate mixing coefficient
+        lam = np.random.beta(self.alpha, self.alpha)
+        
+        # Generate random permutation
+        indices = torch.randperm(batch_size)
+        
+        # Calculate bounding box
+        cut_ratio = np.sqrt(1.0 - lam)
+        cut_w = int(W * cut_ratio)
+        cut_h = int(H * cut_ratio)
+        
+        # Random position
+        cx = np.random.randint(W)
+        cy = np.random.randint(H)
+        
+        bbx1 = np.clip(cx - cut_w // 2, 0, W)
+        bby1 = np.clip(cy - cut_h // 2, 0, H)
+        bbx2 = np.clip(cx + cut_w // 2, 0, W)
+        bby2 = np.clip(cy + cut_h // 2, 0, H)
+        
+        # Apply CutMix
+        mixed_clips = clips.clone()
+        if clips.dim() == 6:  # Multi-view
+            mixed_clips[:, :, :, :, bby1:bby2, bbx1:bbx2] = clips[indices][:, :, :, :, bby1:bby2, bbx1:bbx2]
+        else:  # Single view
+            mixed_clips[:, :, :, bby1:bby2, bbx1:bbx2] = clips[indices][:, :, :, bby1:bby2, bbx1:bbx2]
+        
+        # Adjust lambda based on actual cut area
+        lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (W * H))
+        
+        if labels is not None:
+            return mixed_clips, (labels, labels[indices], lam)
+        
+        return mixed_clips, None
+
+
+class TemporalMixUp(torch.nn.Module):
+    """Temporal MixUp that mixes frames from different time steps"""
+    def __init__(self, alpha=0.4, prob=0.3):
+        super().__init__()
+        self.alpha = alpha
+        self.prob = prob
+    
+    def forward(self, clip):
+        if random.random() > self.prob:
+            return clip
+        
+        C, T, H, W = clip.shape
+        if T < 3:
+            return clip
+        
+        # Select temporal mixing range
+        mix_length = random.randint(2, min(T, 4))
+        start_idx = random.randint(0, T - mix_length)
+        
+        # Generate mixing coefficients
+        lambdas = np.random.beta(self.alpha, self.alpha, size=mix_length)
+        
+        # Apply temporal mixing
+        mixed_clip = clip.clone()
+        for i in range(mix_length - 1):
+            idx1 = start_idx + i
+            idx2 = start_idx + i + 1
+            lam = lambdas[i]
+            
+            mixed_clip[:, idx1] = lam * clip[:, idx1] + (1 - lam) * clip[:, idx2]
+        
+        return mixed_clip

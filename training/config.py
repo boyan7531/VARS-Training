@@ -232,6 +232,20 @@ def parse_args():
                        help='Use GPU-based augmentation instead of CPU augmentation (recommended for dual GPU setups)')
     parser.add_argument('--severity_aware_augmentation', action='store_true', default=False,
                        help='Use severity-aware augmentation with class-specific strengths')
+    parser.add_argument('--use_randaugment', action='store_true', default=False,
+                       help='Enable RandAugment for stronger augmentation')
+    parser.add_argument('--randaugment_n', type=int, default=2,
+                       help='Number of augmentation transformations to apply in RandAugment')
+    parser.add_argument('--randaugment_m', type=int, default=10,
+                       help='Magnitude of augmentation transformations in RandAugment (1-30)')
+    parser.add_argument('--strong_color_jitter', action='store_true', default=False,
+                       help='Enable stronger color jittering (hue, saturation) in addition to brightness/contrast')
+    parser.add_argument('--mixup_alpha', type=float, default=0.2,
+                       help='Alpha parameter for mixup augmentation (0 = disabled)')
+    parser.add_argument('--cutmix_alpha', type=float, default=1.0,
+                       help='Alpha parameter for cutmix augmentation (0 = disabled)')
+    parser.add_argument('--cutmix_prob', type=float, default=0.5,
+                       help='Probability of applying cutmix when mixup/cutmix is enabled')
     
     # === DEBUGGING & FLEXIBILITY OPTIONS ===
     parser.add_argument('--simple_training', action='store_true', default=False,
@@ -289,6 +303,10 @@ def parse_args():
     
     # === ADVANCED OPTIONS ===
     parser.add_argument('--multi_scale', action='store_true', help='Enable multi-scale training for better accuracy')
+    parser.add_argument('--multi_scale_sizes', type=int, nargs='+', default=[224, 256, 288], 
+                       help='List of image sizes for multi-scale training (default: [224, 256, 288])')
+    parser.add_argument('--multi_scale_prob', type=float, default=0.5,
+                       help='Probability of applying multi-scale cropping (default: 0.5)')
     parser.add_argument('--dropout_rate', type=float, default=0.1, help='Dropout rate for regularization')
     parser.add_argument('--lr_warmup', action='store_true', help='Enable learning rate warmup')
     

@@ -17,20 +17,21 @@ logger = logging.getLogger(__name__)
 
 class VideoAugmentation(nn.Module):
     """
-    Comprehensive video augmentation for addressing class imbalance and small dataset issues.
-    Applies various temporal and spatial augmentations during training.
+    Enhanced video augmentation for addressing class imbalance and small dataset issues.
+    Applies various temporal and spatial augmentations during training with configurable intensity.
     """
     
-    def __init__(self, severity_weights: Dict[float, float] = None, training: bool = True, enabled: bool = True):
+    def __init__(self, severity_weights: Dict[float, float] = None, training: bool = True, enabled: bool = True, conservative: bool = False):
         super().__init__()
         self.training = training
         self.enabled = enabled  # Global enable/disable flag for debugging
+        self.conservative = conservative  # Conservative mode for safety
         self.severity_weights = severity_weights or {1.0: 1.0, 2.0: 3.0, 3.0: 5.0, 4.0: 7.0}
         
-        # Spatial augmentation parameters
-        self.spatial_prob = 0.7
-        self.temporal_prob = 0.6
-        self.intensity_prob = 0.5
+        # Augmentation parameters - more aggressive by default
+        self.spatial_prob = 0.6 if conservative else 0.8
+        self.temporal_prob = 0.5 if conservative else 0.7
+        self.intensity_prob = 0.4 if conservative else 0.6
         
     def forward(self, clips: torch.Tensor, severity: torch.Tensor = None) -> torch.Tensor:
         """
@@ -95,21 +96,22 @@ class VideoAugmentation(nn.Module):
         original_shape = clip.shape
         
         # Adjust probabilities based on intensity
-        spatial_prob = min(0.9, self.spatial_prob * intensity)
-        temporal_prob = min(0.8, self.temporal_prob * intensity)
-        intensity_prob = min(0.7, self.intensity_prob * intensity)
+        spatial_prob = min(0.95, self.spatial_prob * intensity)
+        temporal_prob = min(0.85, self.temporal_prob * intensity)
+        intensity_prob = min(0.8, self.intensity_prob * intensity)
         
-        # Apply lighter augmentations to avoid dimension issues
+        # Apply augmentations - less conservative unless in conservative mode
+        prob_reduction = 0.5 if self.conservative else 0.8
         
-        # Temporal augmentations (safer ones)
-        if random.random() < temporal_prob * 0.5:  # Reduced probability
-            clip = self._safe_temporal_augment(clip, intensity)
+        # Temporal augmentations
+        if random.random() < temporal_prob * prob_reduction:
+            clip = self._temporal_augment(clip, intensity)
             
-        # Spatial augmentations (safer ones)
-        if random.random() < spatial_prob * 0.5:  # Reduced probability
-            clip = self._safe_spatial_augment(clip, intensity)
+        # Spatial augmentations
+        if random.random() < spatial_prob * prob_reduction:
+            clip = self._spatial_augment(clip, intensity)
             
-        # Intensity/color augmentations (these are safe)
+        # Intensity/color augmentations (these are always safe)
         if random.random() < intensity_prob:
             clip = self._intensity_augment(clip, intensity)
         
@@ -123,39 +125,56 @@ class VideoAugmentation(nn.Module):
             
         return clip
     
-    def _safe_temporal_augment(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
-        """Apply safe temporal augmentations that preserve dimensions."""
+    def _temporal_augment(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
+        """Apply temporal augmentations with improved variety."""
         C, T, H, W = clip.shape
         
-        # Temporal reversal (safe)
-        if random.random() < 0.3 * intensity:
+        # Temporal reversal
+        if random.random() < 0.4 * intensity:
             clip = torch.flip(clip, [1])  # Flip temporal dimension
         
-        # Frame shuffling (safe - maintains frame count)
-        if random.random() < 0.2 * intensity:
-            # Shuffle middle frames only, keep first and last
+        # Frame shuffling (more aggressive)
+        if random.random() < 0.3 * intensity and not self.conservative:
             if T > 4:
-                middle_indices = list(range(1, T-1))
-                random.shuffle(middle_indices)
-                new_indices = [0] + middle_indices + [T-1]
+                # Shuffle middle frames, optionally keep boundaries
+                if random.random() < 0.7:  # Keep first and last
+                    middle_indices = list(range(1, T-1))
+                    random.shuffle(middle_indices)
+                    new_indices = [0] + middle_indices + [T-1]
+                else:  # Shuffle all frames
+                    new_indices = list(range(T))
+                    random.shuffle(new_indices)
                 clip = clip[:, new_indices]
+        
+        # Temporal dropout (drop random frames and repeat others)
+        if random.random() < 0.25 * intensity and not self.conservative:
+            if T > 6:
+                num_drops = random.randint(1, min(3, T//4))
+                drop_indices = random.sample(range(T), num_drops)
+                keep_indices = [i for i in range(T) if i not in drop_indices]
+                
+                # Repeat some kept frames to maintain temporal dimension
+                while len(keep_indices) < T:
+                    keep_indices.append(random.choice(keep_indices))
+                
+                clip = clip[:, keep_indices[:T]]
         
         return clip
     
-    def _safe_spatial_augment(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
-        """Apply safe spatial augmentations that preserve dimensions."""
+    def _spatial_augment(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
+        """Apply spatial augmentations with improved variety."""
         C, T, H, W = clip.shape
         
-        # Random horizontal flip (safe)
-        if random.random() < 0.5:
+        # Random horizontal flip
+        if random.random() < 0.6:
             clip = torch.flip(clip, [3])  # Flip width dimension
         
-        # Small random cropping (safe - maintains output size)
-        if random.random() < 0.4 * intensity:
-            # Crop a slightly larger region and resize back
-            crop_ratio = random.uniform(0.9, 1.0)  # Very conservative cropping
-            crop_h = max(int(H * crop_ratio), H - 4)  # At most 4 pixels off
-            crop_w = max(int(W * crop_ratio), W - 4)
+        # More aggressive random cropping
+        if random.random() < 0.5 * intensity:
+            # More varied crop ratios
+            crop_ratio = random.uniform(0.75 if self.conservative else 0.7, 1.0)
+            crop_h = max(int(H * crop_ratio), H - 20)
+            crop_w = max(int(W * crop_ratio), W - 20)
             
             if crop_h < H or crop_w < W:
                 top = random.randint(0, max(0, H - crop_h))
@@ -173,28 +192,64 @@ class VideoAugmentation(nn.Module):
                     resized_frames.append(resized_frame)
                 clip = torch.stack(resized_frames, dim=1)
         
+        # Random rotation (small angles)
+        if random.random() < 0.2 * intensity and not self.conservative:
+            angle = random.uniform(-5, 5) * intensity  # Small rotation
+            # Simple rotation approximation using affine transform
+            cos_angle = torch.cos(torch.tensor(angle * 3.14159 / 180))
+            sin_angle = torch.sin(torch.tensor(angle * 3.14159 / 180))
+            
+            # Apply rotation to random subset of frames
+            num_frames_to_rotate = random.randint(1, max(1, T//2))
+            frames_to_rotate = random.sample(range(T), num_frames_to_rotate)
+            
+            for t in frames_to_rotate:
+                # Simple shear approximation for rotation
+                if random.random() < 0.5:
+                    clip[:, t] = torch.roll(clip[:, t], shifts=int(sin_angle * 2), dims=1)
+        
         return clip
     
     def _intensity_augment(self, clip: torch.Tensor, intensity: float) -> torch.Tensor:
-        """Apply intensity and color augmentations (these are always safe)."""
-        # Brightness adjustment
-        if random.random() < 0.5:
-            brightness_factor = random.uniform(0.8, 1.2)  # More conservative
+        """Apply intensity and color augmentations with enhanced variety."""
+        # Brightness adjustment (more varied)
+        if random.random() < 0.6:
+            brightness_factor = random.uniform(0.7, 1.3) if not self.conservative else random.uniform(0.8, 1.2)
             clip = torch.clamp(clip * brightness_factor, 0, 1)
         
-        # Contrast adjustment  
-        if random.random() < 0.5:
-            contrast_factor = random.uniform(0.9, 1.1)  # More conservative
+        # Contrast adjustment (more varied)
+        if random.random() < 0.6:
+            contrast_factor = random.uniform(0.8, 1.2) if not self.conservative else random.uniform(0.9, 1.1)
             mean = clip.mean(dim=[2, 3], keepdim=True)
             clip = torch.clamp((clip - mean) * contrast_factor + mean, 0, 1)
         
-        # Gaussian noise (subtle)
-        if random.random() < 0.3 * intensity:
-            noise_std = 0.005 * intensity  # Reduced noise
+        # Saturation-like adjustment
+        if random.random() < 0.4 * intensity:
+            saturation_factor = random.uniform(0.8, 1.2)
+            if clip.size(0) == 3:  # RGB
+                gray = 0.299 * clip[0:1] + 0.587 * clip[1:2] + 0.114 * clip[2:3]
+                clip = clip * saturation_factor + gray * (1 - saturation_factor)
+        
+        # Gaussian noise (adaptive)
+        if random.random() < 0.4 * intensity:
+            noise_std = (0.01 if self.conservative else 0.015) * intensity
             noise = torch.randn_like(clip) * noise_std
             clip = torch.clamp(clip + noise, 0, 1)
+        
+        # Gamma correction
+        if random.random() < 0.3 * intensity:
+            gamma = random.uniform(0.8, 1.2)
+            clip = torch.clamp(torch.pow(clip, gamma), 0, 1)
             
         return clip
+    
+    def enable_conservative_mode(self):
+        """Enable conservative augmentation mode."""
+        self.conservative = True
+        
+    def disable_conservative_mode(self):
+        """Disable conservative augmentation mode."""
+        self.conservative = False
     
     def disable(self):
         """Disable augmentation for debugging."""

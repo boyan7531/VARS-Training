@@ -34,13 +34,26 @@ from dataset import (
     RandomGaussianNoise, SeverityAwareAugmentation, ClassBalancedSampler,
     ActionBalancedSampler, AlternatingSampler,
     RandomRotation, RandomMixup, RandomCutout, RandomTimeWarp,
-    VariableLengthAugmentation, MultiScaleTemporalAugmentation
+    VariableLengthAugmentation, MultiScaleTemporalAugmentation,
+    # New advanced augmentations
+    MultiScaleCrop, StrongColorJitter, VideoRandAugment, 
+    VideoMixUp, VideoCutMix, TemporalMixUp
 )
 
 logger = logging.getLogger(__name__)
 
+# Try to import Kornia for advanced GPU augmentation
+try:
+    import kornia
+    import kornia.augmentation as K
+    KORNIA_AVAILABLE = True
+except ImportError:
+    KORNIA_AVAILABLE = False
+    print("Kornia not available. Using basic GPU augmentation only.")
 
 # GPU-based augmentation classes using native PyTorch operations
+import torch.nn.functional as F
+
 class GPUTemporalJitter(nn.Module):
     """GPU-based temporal jittering"""
     def __init__(self, max_jitter=3):
@@ -408,23 +421,47 @@ def create_transforms(args, is_training=True):
             augmentation_stages.extend([
                 RandomTimeWarp(warp_factor=0.3, prob=0.4),  # More aggressive time warping
                 RandomMixup(alpha=0.3, prob=0.4),  # Inter-frame mixing
+                TemporalMixUp(alpha=0.4, prob=0.3),  # New temporal mixup
             ])
         
         # STAGE 2: Spatial augmentations (scaled by mode)
         if args.aggressive_augmentation or args.extreme_augmentation:
             # Aggressive spatial augmentations for small datasets
-            augmentation_stages.extend([
+            spatial_augs = [
                 RandomSpatialCrop(
                     crop_scale_range=(args.spatial_crop_strength * (0.9 if args.extreme_augmentation else 1.0), 1.0),
                     prob=0.9 if args.extreme_augmentation else 0.8
                 ),
-                RandomHorizontalFlip(prob=0.7 if args.extreme_augmentation else 0.6),
-            ])
+            ]
+            
+            # Add multi-scale cropping if enabled
+            if getattr(args, 'multi_scale', False):
+                spatial_augs.append(
+                    MultiScaleCrop(
+                        sizes=getattr(args, 'multi_scale_sizes', [224, 256, 288]),
+                        prob=getattr(args, 'multi_scale_prob', 0.5),
+                        target_size=args.img_height
+                    )
+                )
+            
+            spatial_augs.append(RandomHorizontalFlip(prob=0.7 if args.extreme_augmentation else 0.6))
+            augmentation_stages.extend(spatial_augs)
         else:
-            # Moderate spatial augmentations for medium datasets - basic only
-            augmentation_stages.extend([
-                RandomHorizontalFlip(prob=0.5),  # Basic horizontal flip only
-            ])
+            # Moderate spatial augmentations for medium datasets
+            spatial_augs = []
+            
+            # Add multi-scale cropping if enabled (even in moderate mode)
+            if getattr(args, 'multi_scale', False):
+                spatial_augs.append(
+                    MultiScaleCrop(
+                        sizes=getattr(args, 'multi_scale_sizes', [224, 256]),  # Less aggressive in moderate mode
+                        prob=getattr(args, 'multi_scale_prob', 0.3),  # Lower probability
+                        target_size=args.img_height
+                    )
+                )
+            
+            spatial_augs.append(RandomHorizontalFlip(prob=0.5))  # Basic horizontal flip only
+            augmentation_stages.extend(spatial_augs)
         
         # STAGE 2.5: EXTREME spatial augmentations (only in extreme mode)
         if args.extreme_augmentation:
@@ -435,32 +472,80 @@ def create_transforms(args, is_training=True):
         
         # STAGE 3: Color/intensity augmentations (before normalization)
         if args.aggressive_augmentation or args.extreme_augmentation:
-            # Aggressive color augmentations for small datasets
-            augmentation_stages.extend([
-                RandomBrightnessContrast(
-                    brightness_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                    contrast_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                    prob=0.9 if args.extreme_augmentation else 0.8
-                ),
+            # Choose between strong and basic color jitter
+            if getattr(args, 'strong_color_jitter', False):
+                augmentation_stages.append(
+                    StrongColorJitter(
+                        brightness=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+                        contrast=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+                        saturation=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+                        hue=0.1 * (1.2 if args.extreme_augmentation else 1.0),
+                        prob=0.9 if args.extreme_augmentation else 0.8
+                    )
+                )
+            else:
+                augmentation_stages.append(
+                    RandomBrightnessContrast(
+                        brightness_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+                        contrast_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
+                        prob=0.9 if args.extreme_augmentation else 0.8
+                    )
+                )
+            
+            # Add RandAugment if enabled
+            if getattr(args, 'use_randaugment', False):
+                augmentation_stages.append(
+                    VideoRandAugment(
+                        n=getattr(args, 'randaugment_n', 2),
+                        m=getattr(args, 'randaugment_m', 10),
+                        prob=0.7 if args.extreme_augmentation else 0.5
+                    )
+                )
+            
+            augmentation_stages.append(
                 RandomGaussianNoise(
                     std_range=(0.01, args.noise_strength * (1.3 if args.extreme_augmentation else 1.0)),
                     prob=0.6 if args.extreme_augmentation else 0.5
-                ),
-            ])
+                )
+            )
         else:
-            # Moderate color augmentations for medium datasets - basic color jitter only
-            augmentation_stages.extend([
-                RandomBrightnessContrast(
-                    brightness_range=args.color_aug_strength * 0.5,  # Reduced strength
-                    contrast_range=args.color_aug_strength * 0.5,    # Reduced strength
-                    prob=0.5  # Moderate probability
-                ),
-                # Minimal noise for moderate mode
+            # Moderate color augmentations for medium datasets
+            if getattr(args, 'strong_color_jitter', False):
+                augmentation_stages.append(
+                    StrongColorJitter(
+                        brightness=args.color_aug_strength * 0.5,
+                        contrast=args.color_aug_strength * 0.5,
+                        saturation=args.color_aug_strength * 0.5,
+                        hue=0.05,
+                        prob=0.5
+                    )
+                )
+            else:
+                augmentation_stages.append(
+                    RandomBrightnessContrast(
+                        brightness_range=args.color_aug_strength * 0.5,  # Reduced strength
+                        contrast_range=args.color_aug_strength * 0.5,    # Reduced strength
+                        prob=0.5  # Moderate probability
+                    )
+                )
+            
+            # Add RandAugment if enabled (with reduced strength)
+            if getattr(args, 'use_randaugment', False):
+                augmentation_stages.append(
+                    VideoRandAugment(
+                        n=max(1, getattr(args, 'randaugment_n', 2) - 1),  # Reduce n by 1
+                        m=max(5, getattr(args, 'randaugment_m', 10) - 3),  # Reduce m by 3
+                        prob=0.3
+                    )
+                )
+            
+            # Minimal noise for moderate mode
+            augmentation_stages.append(
                 RandomGaussianNoise(
                     std_range=(0.005, args.noise_strength * 0.5),
                     prob=0.3
-                ),
-            ])
+                )
+            )
         
         # STAGE 4: Standard preprocessing
         augmentation_stages.extend([
@@ -520,6 +605,23 @@ def create_gpu_augmentation(args, device):
     """Create GPU-based augmentation pipeline if enabled."""
     if not args.gpu_augmentation:
         return None
+    
+    # Check if Kornia is available for advanced augmentation
+    use_kornia = KORNIA_AVAILABLE and (getattr(args, 'use_randaugment', False) or 
+                                       getattr(args, 'strong_color_jitter', False) or 
+                                       getattr(args, 'multi_scale', False))
+    
+    if use_kornia:
+        logger.info("🚀 Using advanced Kornia-based GPU augmentation pipeline!")
+        gpu_augmentation = KorniaGPUAugmentationPipeline(
+            use_randaugment=getattr(args, 'use_randaugment', False),
+            use_strong_color=getattr(args, 'strong_color_jitter', False),
+            use_multi_scale=getattr(args, 'multi_scale', False),
+            randaugment_n=getattr(args, 'randaugment_n', 2),
+            randaugment_m=getattr(args, 'randaugment_m', 10),
+            aggressive=args.aggressive_augmentation or args.extreme_augmentation
+        ).to(device)
+        return gpu_augmentation
         
     # Check if we should use severity-aware augmentation
     if args.severity_aware_augmentation:
@@ -546,6 +648,7 @@ def create_gpu_augmentation(args, device):
         aggressive=args.aggressive_augmentation or args.extreme_augmentation
     ).to(device)
     
+    logger.info("Using basic GPU augmentation pipeline")
     return gpu_augmentation
 
 
@@ -1247,3 +1350,216 @@ class DistributedActionBalancedSampler(torch.utils.data.Sampler):
     
     def set_epoch(self, epoch):
         self.epoch = epoch 
+
+
+# ================================
+# ADVANCED KORNIA-BASED GPU AUGMENTATION
+# ================================
+
+class KorniaGPUAugmentationPipeline(nn.Module):
+    """Advanced GPU augmentation using Kornia library"""
+    def __init__(self, 
+                 use_randaugment=False,
+                 use_strong_color=False,
+                 use_multi_scale=False,
+                 randaugment_n=2,
+                 randaugment_m=10,
+                 aggressive=False):
+        super().__init__()
+        
+        if not KORNIA_AVAILABLE:
+            logger.warning("Kornia not available. Falling back to basic GPU augmentation.")
+            self.use_kornia = False
+            return
+        
+        self.use_kornia = True
+        self.aggressive = aggressive
+        
+        # Create Kornia augmentation container
+        aug_list = []
+        
+        # Basic spatial augmentations
+        if aggressive:
+            aug_list.extend([
+                K.RandomHorizontalFlip(p=0.6),
+                K.RandomRotation(degrees=8, p=0.4),
+                K.RandomCrop(size=(224, 224), p=0.5, cropping_mode='resample'),
+                K.RandomResizedCrop(size=(224, 224), scale=(0.8, 1.0), p=0.7),
+            ])
+        else:
+            aug_list.extend([
+                K.RandomHorizontalFlip(p=0.5),
+                K.RandomResizedCrop(size=(224, 224), scale=(0.9, 1.0), p=0.3),
+            ])
+        
+        # Multi-scale cropping
+        if use_multi_scale:
+            aug_list.append(
+                K.RandomResizedCrop(
+                    size=(224, 224), 
+                    scale=(0.7, 1.0) if aggressive else (0.85, 1.0),
+                    p=0.5 if aggressive else 0.3
+                )
+            )
+        
+        # Color augmentations
+        if use_strong_color:
+            aug_list.extend([
+                K.ColorJitter(
+                    brightness=0.4 if aggressive else 0.2,
+                    contrast=0.4 if aggressive else 0.2,
+                    saturation=0.4 if aggressive else 0.2,
+                    hue=0.1 if aggressive else 0.05,
+                    p=0.8 if aggressive else 0.5
+                ),
+                K.RandomGamma(gamma=(0.8, 1.2), p=0.3),
+                K.RandomSolarize(thresholds=0.5, p=0.2 if aggressive else 0.1),
+            ])
+        else:
+            aug_list.extend([
+                K.ColorJitter(
+                    brightness=0.2,
+                    contrast=0.2,
+                    p=0.5
+                ),
+            ])
+        
+        # Advanced augmentations for aggressive mode
+        if aggressive:
+            aug_list.extend([
+                K.RandomChannelShuffle(p=0.1),
+                K.RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0), p=0.2),
+                K.RandomMotionBlur(kernel_size=3, angle=35, direction=0.5, p=0.15),
+                K.RandomGaussianNoise(mean=0., std=0.02, p=0.3),
+            ])
+        
+        # RandAugment
+        if use_randaugment:
+            aug_list.append(
+                K.auto.RandAugment(n=randaugment_n, magnitude=randaugment_m, p=0.6 if aggressive else 0.4)
+            )
+        
+        # Create the sequential container
+        self.kornia_aug = K.AugmentationSequential(*aug_list, data_keys=["input"])
+    
+    def forward(self, video):
+        if not self.use_kornia:
+            return video
+        
+        if not self.training:
+            return video
+        
+        # Handle different video tensor formats
+        original_shape = video.shape
+        
+        if video.dim() == 5:  # (B, C, T, H, W)
+            B, C, T, H, W = video.shape
+            # Reshape to (B*T, C, H, W) for frame-wise augmentation
+            video_2d = video.permute(0, 2, 1, 3, 4).contiguous().view(B*T, C, H, W)
+            
+            # Apply Kornia augmentations
+            video_2d_aug = self.kornia_aug(video_2d)
+            
+            # Reshape back to (B, C, T, H, W)
+            video = video_2d_aug.view(B, T, C, H, W).permute(0, 2, 1, 3, 4).contiguous()
+            
+        elif video.dim() == 6:  # (B, V, C, T, H, W) - Multi-view
+            B, V, C, T, H, W = video.shape
+            # Reshape to (B*V*T, C, H, W)
+            video_2d = video.permute(0, 1, 3, 2, 4, 5).contiguous().view(B*V*T, C, H, W)
+            
+            # Apply Kornia augmentations
+            video_2d_aug = self.kornia_aug(video_2d)
+            
+            # Reshape back to (B, V, C, T, H, W)
+            video = video_2d_aug.view(B, V, T, C, H, W).permute(0, 1, 3, 2, 4, 5).contiguous()
+        
+        return video
+
+
+class GPUVideoMixUp(nn.Module):
+    """GPU-accelerated MixUp for video data"""
+    def __init__(self, alpha=0.2, prob=0.5):
+        super().__init__()
+        self.alpha = alpha
+        self.prob = prob
+    
+    def forward(self, video, labels=None):
+        if not self.training or torch.rand(1).item() > self.prob:
+            return video, labels
+        
+        batch_size = video.size(0)
+        if batch_size < 2:
+            return video, labels
+        
+        # Generate mixing parameter
+        lam = torch.from_numpy(np.random.beta(self.alpha, self.alpha, (batch_size, 1, 1, 1, 1))).to(video.device)
+        if video.dim() == 6:  # Multi-view
+            lam = lam.unsqueeze(1)  # Add view dimension
+        
+        # Create random permutation
+        indices = torch.randperm(batch_size, device=video.device)
+        
+        # Mix videos
+        mixed_video = lam * video + (1 - lam) * video[indices]
+        
+        if labels is not None:
+            lam_1d = lam.squeeze()
+            return mixed_video, (labels, labels[indices], lam_1d)
+        
+        return mixed_video, None
+
+
+class GPUVideoCutMix(nn.Module):
+    """GPU-accelerated CutMix for video data"""
+    def __init__(self, alpha=1.0, prob=0.5):
+        super().__init__()
+        self.alpha = alpha
+        self.prob = prob
+    
+    def forward(self, video, labels=None):
+        if not self.training or torch.rand(1).item() > self.prob:
+            return video, labels
+        
+        batch_size = video.size(0)
+        if batch_size < 2:
+            return video, labels
+        
+        # Get dimensions
+        if video.dim() == 6:  # Multi-view
+            B, V, C, T, H, W = video.shape
+        else:  # Single view
+            B, C, T, H, W = video.shape
+        
+        # Generate cut parameters
+        lam_original = np.random.beta(self.alpha, self.alpha)
+        cut_ratio = np.sqrt(1.0 - lam_original)
+        cut_w = int(W * cut_ratio)
+        cut_h = int(H * cut_ratio)
+        
+        # Random position
+        cx = torch.randint(0, W, (1,)).item()
+        cy = torch.randint(0, H, (1,)).item()
+        
+        bbx1 = max(0, cx - cut_w // 2)
+        bby1 = max(0, cy - cut_h // 2)
+        bbx2 = min(W, cx + cut_w // 2)
+        bby2 = min(H, cy + cut_h // 2)
+        
+        # Create random permutation
+        indices = torch.randperm(batch_size, device=video.device)
+        
+        # Apply CutMix
+        mixed_video = video.clone()
+        if video.dim() == 6:  # Multi-view
+            mixed_video[:, :, :, :, bby1:bby2, bbx1:bbx2] = video[indices][:, :, :, :, bby1:bby2, bbx1:bbx2]
+        else:  # Single view
+            mixed_video[:, :, :, bby1:bby2, bbx1:bbx2] = video[indices][:, :, :, bby1:bby2, bbx1:bbx2]
+        
+        # Adjust lambda
+        lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (W * H))
+        
+        if labels is not None:
+            return mixed_video, (labels, labels[indices], torch.tensor(lam))
+        
+        return mixed_video, None 
