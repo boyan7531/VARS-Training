@@ -550,6 +550,8 @@ def main():
         ema_model = create_ema_model(model, decay=args.ema_decay)
         if ema_model:
             logger.info(f"🚀 EMA model created with decay: {args.ema_decay}")
+            if args.ema_eval:
+                logger.info("✅ EMA weights will be used for validation/testing")
         else:
             logger.warning("⚠️ EMA model creation failed, continuing without EMA")
     
@@ -632,7 +634,7 @@ def main():
     best_epoch = -1
     
     if args.resume:
-        start_epoch, loaded_metrics = load_checkpoint(args.resume, model, optimizer, scheduler, scaler)
+        start_epoch, loaded_metrics = load_checkpoint(args.resume, model, optimizer, scheduler, scaler, ema_model)
         best_val_acc, best_epoch = restore_best_metrics(loaded_metrics, args.resume_best_acc)
         logger.info(f"🔄 Resuming training from epoch {start_epoch}")
         if best_val_acc > 0:
@@ -807,6 +809,14 @@ def main():
         # Reset validation confusion matrices for this epoch
         val_confusion_matrices.clear()
         
+        # Apply EMA weights for validation if enabled
+        from .model_utils import should_use_ema_for_validation, apply_ema_weights, restore_online_weights
+        use_ema_for_val = should_use_ema_for_validation(args, ema_model, epoch)
+        
+        if use_ema_for_val:
+            logger.debug(f"🔄 Using EMA weights for validation (epoch {epoch+1})")
+            apply_ema_weights(model, ema_model)
+        
         # Validation
         val_metrics = validate_one_epoch(
             model, val_loader, device,
@@ -824,6 +834,11 @@ def main():
             },
             confusion_matrix_dict=val_confusion_matrices
         )
+        
+        # Restore online weights after validation
+        if use_ema_for_val:
+            restore_online_weights(model, ema_model)
+            logger.debug(f"🔄 Restored online weights after validation")
         
         # Log trainable parameter count every epoch (requirement #10)
         log_trainable_parameters(model, epoch)
@@ -950,7 +965,7 @@ def main():
                 }
                 
                 save_path = os.path.join(args.save_dir, f'best_model_epoch_{best_epoch}.pth')
-                save_checkpoint(model, optimizer, scheduler, scaler, best_epoch, metrics, save_path)
+                save_checkpoint(model, optimizer, scheduler, scaler, best_epoch, metrics, save_path, ema_model)
                 logger.info(f"[SAVE] Best model updated! Accuracy: {best_val_acc:.4f} (+{improvement:.4f}) - Saved to {save_path}")
 
             # Early stopping check
@@ -972,7 +987,7 @@ def main():
                     'current_val_sev_acc': val_metrics['sev_acc'],
                     'current_val_act_acc': val_metrics['act_acc']
                 }
-                save_checkpoint(model, optimizer, scheduler, scaler, epoch + 1, metrics, checkpoint_path)
+                save_checkpoint(model, optimizer, scheduler, scaler, epoch + 1, metrics, checkpoint_path, ema_model)
                 logger.info(f"[CHECKPOINT] Checkpoint saved at epoch {epoch + 1} (best so far: {best_val_acc:.4f})")
 
     # Save training history

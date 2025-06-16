@@ -113,13 +113,19 @@ def load_model_checkpoint(checkpoint_path, device):
     # Extract metadata
     metrics = checkpoint.get('metrics', {})
     epoch = checkpoint.get('epoch', 'unknown')
+    has_ema = checkpoint.get('has_ema', False)
     
     logger.info(f"Checkpoint from epoch: {epoch}")
     if 'best_val_acc' in metrics:
         logger.info(f"Best validation accuracy: {metrics['best_val_acc']:.4f}")
     
-    # Extract vocab sizes from checkpoint state dict
-    state_dict = checkpoint['model_state_dict']
+    # Use EMA weights if available (they typically perform better)
+    if has_ema and 'ema_state_dict' in checkpoint:
+        logger.info("✅ Using EMA weights for benchmark (better performance)")
+        state_dict = checkpoint['ema_state_dict']
+    else:
+        logger.info("Using online model weights for benchmark")
+        state_dict = checkpoint['model_state_dict']
     
     vocab_sizes = {}
     

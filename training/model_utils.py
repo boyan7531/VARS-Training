@@ -43,7 +43,10 @@ __all__ = [
     'separate_weight_decay_params',
     'apply_gradient_clipping',
     'create_ema_model',
-    'update_ema_model'
+    'update_ema_model',
+    'apply_ema_weights',
+    'restore_online_weights',
+    'should_use_ema_for_validation'
 ]
 
 def get_model_config():
@@ -168,11 +171,68 @@ class SimpleEMA:
         for name, param in model.named_parameters():
             if param.requires_grad and name in self.shadow:
                 self.shadow[name] = self.decay * self.shadow[name] + (1 - self.decay) * param.data
+    
+    def update_for_newly_unfrozen(self, model):
+        """Handle newly unfrozen parameters by adding them to shadow weights."""
+        for name, param in model.named_parameters():
+            if param.requires_grad and name not in self.shadow:
+                self.shadow[name] = param.data.clone()
+                logger.info(f"Added newly unfrozen parameter to EMA: {name}")
+    
+    def copy_to(self, model):
+        """Copy EMA weights to model (for validation)."""
+        for name, param in model.named_parameters():
+            if name in self.shadow:
+                param.data.copy_(self.shadow[name])
+    
+    def copy_from(self, model):
+        """Copy current model weights to EMA (initialization only)."""
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+
+
+def apply_ema_weights(model, ema_model):
+    """Apply EMA weights to model for validation."""
+    if ema_model is None:
+        return
+    
+    if hasattr(ema_model, 'copy_to'):  # timm ModelEmaV2 or enhanced SimpleEMA
+        ema_model.copy_to(model)
+    else:
+        # Fallback for older EMA implementations
+        logger.warning("EMA model doesn't have copy_to method, skipping EMA validation")
+
+
+def restore_online_weights(model, ema_model):
+    """Restore online weights after validation."""
+    if ema_model is None:
+        return
+    
+    if hasattr(ema_model, 'copy_from'):  # timm ModelEmaV2 or enhanced SimpleEMA
+        ema_model.copy_from(model)
+    # Note: For copy-based approach, no restoration needed
+
+
+def should_use_ema_for_validation(args, ema_model, epoch=0):
+    """Determine if EMA should be used for validation."""
+    if not args.ema_eval:
+        return False
+    if ema_model is None:
+        return False
+    # Skip EMA for first few epochs when it might not be well-initialized
+    if epoch < 2:
+        return False
+    return True
 
 
 def update_ema_model(ema_model, model, update_fn=None):
-    """Update EMA model weights."""
+    """Update EMA model weights, handling newly unfrozen parameters."""
     if ema_model is not None:
+        # Handle newly unfrozen parameters for freezing strategies
+        if hasattr(ema_model, 'update_for_newly_unfrozen'):
+            ema_model.update_for_newly_unfrozen(model)
+        
         if update_fn is not None:
             update_fn(ema_model, model)
         else:

@@ -13,8 +13,8 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 
-def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, filepath):
-    """Save training checkpoint."""
+def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, filepath, ema_model=None):
+    """Save training checkpoint with optional EMA weights."""
     # Handle DataParallel models
     model_state_dict = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
     
@@ -24,6 +24,17 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, filepat
         'optimizer_state_dict': optimizer.state_dict(),
         'metrics': metrics
     }
+    
+    # Save EMA weights if available
+    if ema_model is not None:
+        if hasattr(ema_model, 'shadow'):  # SimpleEMA
+            checkpoint['ema_state_dict'] = ema_model.shadow
+        elif hasattr(ema_model, 'state_dict'):  # timm ModelEmaV2
+            checkpoint['ema_state_dict'] = ema_model.state_dict()
+        checkpoint['has_ema'] = True
+        logger.info("💾 Saving checkpoint with EMA weights")
+    else:
+        checkpoint['has_ema'] = False
     
     if scheduler is not None:
         checkpoint['scheduler_state_dict'] = scheduler.state_dict()
@@ -54,8 +65,8 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, filepat
         logger.debug(f"Saved warmup scheduler: {scheduler.warmup_steps} warmup steps")
 
 
-def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None):
-    """Load training checkpoint with DataParallel compatibility."""
+def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None, ema_model=None):
+    """Load training checkpoint with DataParallel compatibility and EMA support."""
     checkpoint = torch.load(filepath, map_location='cpu')
     
     # Handle DataParallel state dict key mismatch
@@ -80,6 +91,18 @@ def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None
             logger.info("Removed 'module.' prefix from checkpoint keys for DataParallel compatibility")
     
     model.load_state_dict(state_dict)
+    
+    # Load EMA weights if available and EMA model is provided
+    if ema_model is not None and checkpoint.get('has_ema', False) and 'ema_state_dict' in checkpoint:
+        ema_state_dict = checkpoint['ema_state_dict']
+        if hasattr(ema_model, 'shadow'):  # SimpleEMA
+            ema_model.shadow = ema_state_dict
+            logger.info("📈 Restored EMA weights from checkpoint")
+        elif hasattr(ema_model, 'load_state_dict'):  # timm ModelEmaV2
+            ema_model.load_state_dict(ema_state_dict)
+            logger.info("📈 Restored EMA weights from checkpoint")
+    elif checkpoint.get('has_ema', False):
+        logger.warning("⚠️ Checkpoint contains EMA weights but no EMA model provided")
     
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
         try:

@@ -64,6 +64,8 @@ def parse_args():
     parser.add_argument('--grad_clip_norm', type=float, default=0.0, help='Gradient clipping max norm (0 to disable)')
     parser.add_argument('--use_ema', action='store_true', help='Use Exponential Moving Average of model weights')
     parser.add_argument('--ema_decay', type=float, default=0.9999, help='EMA decay rate')
+    parser.add_argument('--ema_eval', action='store_true', default=True,
+                       help='Use EMA weights for validation/test inference (default: True, no downside)')
     parser.add_argument('--mixed_precision', action='store_true', help='Use mixed precision training')
     parser.add_argument('--gradient_clip_norm', type=float, default=1.0, help='Gradient clipping norm')
     parser.add_argument('--early_stopping_patience', type=int, default=None,

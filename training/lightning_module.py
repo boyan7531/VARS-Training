@@ -71,6 +71,7 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         self._init_loss_config()
         self._init_freezing_strategy()
         self._init_tracking_variables()
+        self._init_ema_model()
         
         # GPU augmentation
         self.gpu_augmentation = None
@@ -128,6 +129,11 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         self.training_step_outputs = []
         self.validation_step_outputs = []
     
+    def _init_ema_model(self):
+        """Initialize EMA model."""
+        self.ema_model = None
+        # Will be initialized in setup() when model is on device
+    
     def setup(self, stage: str):
         """Setup hook called before training/validation/testing."""
         # Import the rank checking function
@@ -142,6 +148,15 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                 self.gpu_augmentation = create_gpu_augmentation(self.args, self.device)
                 if is_main_process():
                     logger.info("GPU augmentation initialized")
+            
+            # Initialize EMA model if enabled
+            if self.args.use_ema and self.ema_model is None:
+                from .model_utils import create_ema_model
+                self.ema_model = create_ema_model(self.model, decay=self.args.ema_decay)
+                if self.ema_model and is_main_process():
+                    logger.info(f"🚀 EMA model initialized with decay: {self.args.ema_decay}")
+                    if self.args.ema_eval:
+                        logger.info("✅ EMA weights will be used for validation in Lightning")
             
             # Initialize freezing strategy
             if self.freezing_manager is None:
@@ -422,6 +437,11 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
             'act_f1': act_f1,
         }
         
+        # Update EMA if enabled
+        if self.ema_model is not None:
+            from .model_utils import update_ema_model
+            update_ema_model(self.ema_model, self.model)
+        
         # Log metrics
         self.log('train_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('train_loss_sev', loss_sev, on_step=False, on_epoch=True, sync_dist=True)
@@ -504,6 +524,27 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         
         # Memory cleanup
         cleanup_memory()
+    
+    def on_validation_start(self):
+        """Called at the start of validation."""
+        # Apply EMA weights for validation if enabled
+        from .model_utils import should_use_ema_for_validation, apply_ema_weights
+        use_ema_for_val = should_use_ema_for_validation(self.args, self.ema_model, self.current_epoch)
+        
+        if use_ema_for_val:
+            logger.debug(f"🔄 Using EMA weights for validation (epoch {self.current_epoch+1})")
+            apply_ema_weights(self.model, self.ema_model)
+        
+        # Store flag for restoration in on_validation_end
+        self._used_ema_for_validation = use_ema_for_val
+    
+    def on_validation_end(self):
+        """Called at the end of validation."""
+        # Restore online weights after validation
+        if getattr(self, '_used_ema_for_validation', False):
+            from .model_utils import restore_online_weights
+            restore_online_weights(self.model, self.ema_model)
+            logger.debug(f"🔄 Restored online weights after validation")
     
     def on_validation_epoch_end(self):
         """Called at the end of validation epoch."""
