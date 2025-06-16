@@ -223,7 +223,12 @@ def create_model(args, vocab_sizes, device, num_gpus):
             disable_in_model_augmentation=args.disable_in_model_augmentation,
             enable_gradient_checkpointing=getattr(args, 'enable_gradient_checkpointing', False),
             enable_memory_optimization=getattr(args, 'enable_memory_optimization', True),
-            dropout_rate=getattr(args, 'dropout_rate', 0.1)
+            dropout_rate=getattr(args, 'dropout_rate', 0.1),
+            # New aggregator configuration
+            aggregator_type=getattr(args, 'aggregator_type', 'mlp'),
+            max_views=args.max_views or 8,
+            agg_heads=getattr(args, 'agg_heads', 2),
+            agg_layers=getattr(args, 'agg_layers', 1)
         )
         
         # Get model info for logging

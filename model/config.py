@@ -41,6 +41,12 @@ class ModelConfig:
     attention_hidden_dim: int = 128
     default_mvit_feature_dim: int = 768  # Fallback if detection fails
     
+    # View Aggregator Configuration
+    aggregator_type: str = 'mlp'  # choices: 'mlp', 'transformer', 'moe'
+    max_views: int = 8  # Maximum number of views to handle
+    agg_heads: int = 2  # Number of attention heads for transformer aggregator
+    agg_layers: int = 1  # Number of transformer encoder layers
+    
     def get_total_embedding_dim(self) -> int:
         """Calculate total embedding dimension for all features - now returns 0 for video-only model."""
         # Return 0 since we no longer use categorical features

@@ -510,6 +510,11 @@ def create_unified_model(
     enable_gradient_checkpointing: bool = False,
     enable_memory_optimization: bool = True,
     dropout_rate: float = 0.1,
+    # New aggregator configuration
+    aggregator_type: str = 'mlp',
+    max_views: int = 8,
+    agg_heads: int = 2,
+    agg_layers: int = 1,
     **config_kwargs
 ) -> nn.Module:
     """
@@ -565,6 +570,10 @@ def create_unified_model(
         mvit_config = ModelConfig(
             use_attention_aggregation=use_attention_aggregation,
             pretrained_model_name=backbone_name,
+            aggregator_type=aggregator_type,
+            max_views=max_views,
+            agg_heads=agg_heads,
+            agg_layers=agg_layers,
             **config_kwargs
         )
         
