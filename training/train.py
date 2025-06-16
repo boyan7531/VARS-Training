@@ -553,6 +553,17 @@ def main():
         else:
             logger.warning("⚠️ EMA model creation failed, continuing without EMA")
     
+    # Refine warmup steps calculation with actual dataset size
+    if args.lr_warmup and hasattr(train_loader, '__len__'):
+        steps_per_epoch = len(train_loader)
+        total_steps = args.epochs * steps_per_epoch
+        new_warmup_steps = int(args.lr_warmup_pct * total_steps)
+        
+        if new_warmup_steps != args.lr_warmup_steps:
+            args.lr_warmup_steps = new_warmup_steps
+            logger.info(f"🔄 Refined LR warmup steps: {args.lr_warmup_steps} steps "
+                       f"({args.lr_warmup_pct*100:.1f}% of {total_steps} total steps)")
+    
     # Initialize OneCycleLR after dataloader creation to get steps_per_epoch
     if args.scheduler == 'onecycle' and scheduler is None:
         steps_per_epoch = len(train_loader)
@@ -626,6 +637,34 @@ def main():
         logger.info(f"🔄 Resuming training from epoch {start_epoch}")
         if best_val_acc > 0:
             logger.info(f"🎯 Current best to beat: {best_val_acc:.4f}")
+        
+        # Verify scheduler warmup configuration after loading checkpoint
+        if args.lr_warmup:
+            if hasattr(scheduler, 'warmup_steps'):
+                # Check if warmup steps are consistent
+                if hasattr(train_loader, '__len__'):
+                    steps_per_epoch = len(train_loader)
+                    total_steps = args.epochs * steps_per_epoch
+                    expected_warmup_steps = int(args.lr_warmup_pct * total_steps)
+                    
+                    if scheduler.warmup_steps != expected_warmup_steps:
+                        logger.warning(f"⚠️ Warmup steps mismatch after resume:")
+                        logger.warning(f"   Loaded scheduler: {scheduler.warmup_steps} steps")
+                        logger.warning(f"   Expected based on config: {expected_warmup_steps} steps")
+                        logger.warning(f"   Using loaded scheduler configuration")
+                        args.lr_warmup_steps = scheduler.warmup_steps  # Use loaded value
+                    else:
+                        logger.info(f"✅ Warmup scheduler configuration verified: {scheduler.warmup_steps} steps")
+            else:
+                # Warmup is enabled but loaded scheduler is not a WarmupWrapper
+                logger.warning(f"⚠️ Warmup enabled in config but loaded scheduler is not a WarmupWrapper")
+                logger.warning(f"   This may happen when resuming from checkpoints saved before warmup was enabled")
+                logger.warning(f"   Recreating scheduler with warmup...")
+                
+                # Recreate scheduler with warmup
+                from .model_utils import get_scheduler
+                scheduler = get_scheduler(optimizer, args)
+                logger.info(f"✅ Scheduler recreated with warmup: {type(scheduler).__name__}")
 
     # Training history
     history = create_training_history()
@@ -655,6 +694,12 @@ def main():
         if scaler is not None and epoch == 0:
             logger.info("🚀 Mixed precision training active with explicit float16")
         epoch_start_time = time.time()
+        
+        # Log current learning rate at start of epoch
+        current_lr = optimizer.param_groups[0]['lr']
+        if hasattr(scheduler, 'warmup_steps') and epoch == 0:
+            # This is a WarmupWrapper
+            logger.info(f"📈 Starting epoch {epoch+1}/{args.epochs} with LR: {current_lr:.2e} (warmup phase)")
         
         # Update sampler epoch if needed
         if args.progressive_class_balancing or args.use_alternating_sampler:

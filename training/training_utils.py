@@ -527,9 +527,12 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                     from .model_utils import update_ema_model
                     update_ema_model(ema_model, model)
             
-            # Stepping the OneCycleLR scheduler after optimizer.step()
-            if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-                scheduler.step()
+            # Step scheduler per batch for OneCycleLR and WarmupWrapper
+            if scheduler is not None:
+                from .lr_schedulers import WarmupWrapper
+                if (isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) or 
+                    isinstance(scheduler, WarmupWrapper)):
+                    scheduler.step()
         else:
             # Apply GPU augmentation if provided
             if gpu_augmentation is not None:
@@ -560,9 +563,12 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                 from .model_utils import update_ema_model
                 update_ema_model(ema_model, model)
             
-            # Stepping the OneCycleLR scheduler after optimizer.step()
-            if scheduler is not None and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-                scheduler.step()
+            # Step scheduler per batch for OneCycleLR and WarmupWrapper
+            if scheduler is not None:
+                from .lr_schedulers import WarmupWrapper
+                if (isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR) or 
+                    isinstance(scheduler, WarmupWrapper)):
+                    scheduler.step()
 
         # Stop profiling after 10 batches and print results
         if prof is not None and i >= 9:  # Profile first 10 batches (0-9)

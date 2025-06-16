@@ -181,16 +181,19 @@ def update_ema_model(ema_model, model, update_fn=None):
 
 def get_scheduler(optimizer, args):
     """Create learning rate scheduler based on arguments."""
+    # Create the main scheduler first
+    main_sched = None
+    
     if args.scheduler == 'cosine':
-        return CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=getattr(args, 'min_lr', 1e-6))
+        main_sched = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=getattr(args, 'min_lr', 1e-6))
     elif args.scheduler == 'onecycle':
-        return OneCycleLR(optimizer, max_lr=args.lr, total_steps=args.epochs)
+        main_sched = OneCycleLR(optimizer, max_lr=args.lr, total_steps=args.epochs)
     elif args.scheduler == 'step':
-        return StepLR(optimizer, step_size=getattr(args, 'step_size', 10), gamma=getattr(args, 'gamma', 0.1))
+        main_sched = StepLR(optimizer, step_size=getattr(args, 'step_size', 10), gamma=getattr(args, 'gamma', 0.1))
     elif args.scheduler == 'exponential':
-        return ExponentialLR(optimizer, gamma=getattr(args, 'gamma', 0.95))
+        main_sched = ExponentialLR(optimizer, gamma=getattr(args, 'gamma', 0.95))
     elif args.scheduler == 'reduce_on_plateau':
-        return ReduceLROnPlateau(
+        main_sched = ReduceLROnPlateau(
             optimizer, 
             mode='max', 
             factor=getattr(args, 'gamma', 0.5),
@@ -201,6 +204,20 @@ def get_scheduler(optimizer, args):
         return None
     else:
         raise ValueError(f"Unsupported scheduler: {args.scheduler}")
+    
+    # Wrap with warmup if enabled
+    if args.lr_warmup and args.lr_warmup_steps > 0 and main_sched is not None:
+        from .lr_schedulers import WarmupWrapper
+        start_lr = getattr(args, 'lr_warmup_start_lr', args.lr / 100)
+        main_sched = WarmupWrapper(
+            optimizer,
+            warmup_steps=args.lr_warmup_steps,
+            after_scheduler=main_sched,
+            start_lr=start_lr
+        )
+        logger.info(f"Scheduler wrapped with warmup: {args.lr_warmup_steps} steps from {start_lr:.2e} to {args.lr:.2e}")
+    
+    return main_sched
 
 
 def create_model(args, vocab_sizes, device, num_gpus):

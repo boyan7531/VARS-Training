@@ -27,12 +27,31 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, filepat
     
     if scheduler is not None:
         checkpoint['scheduler_state_dict'] = scheduler.state_dict()
+        
+        # Add scheduler metadata for debugging
+        scheduler_info = {
+            'scheduler_type': type(scheduler).__name__,
+            'has_warmup': hasattr(scheduler, 'warmup_steps')
+        }
+        
+        if hasattr(scheduler, 'warmup_steps'):
+            scheduler_info.update({
+                'warmup_steps': scheduler.warmup_steps,
+                'start_lr': scheduler.start_lr,
+                'after_scheduler_type': type(scheduler.after_scheduler).__name__
+            })
+        
+        checkpoint['scheduler_info'] = scheduler_info
     
     if scaler is not None:
         checkpoint['scaler_state_dict'] = scaler.state_dict()
     
     torch.save(checkpoint, filepath)
     logger.info(f"Checkpoint saved to {filepath}")
+    
+    # Log scheduler info for debugging
+    if scheduler is not None and hasattr(scheduler, 'warmup_steps'):
+        logger.debug(f"Saved warmup scheduler: {scheduler.warmup_steps} warmup steps")
 
 
 def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None):
@@ -71,6 +90,14 @@ def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None
     
     if scheduler is not None and 'scheduler_state_dict' in checkpoint:
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Log scheduler info if available
+        if 'scheduler_info' in checkpoint:
+            sched_info = checkpoint['scheduler_info']
+            logger.debug(f"Loaded scheduler: {sched_info['scheduler_type']}")
+            if sched_info.get('has_warmup', False):
+                logger.debug(f"  Warmup steps: {sched_info.get('warmup_steps', 'unknown')}")
+                logger.debug(f"  After scheduler: {sched_info.get('after_scheduler_type', 'unknown')}")
     
     if scaler is not None and 'scaler_state_dict' in checkpoint:
         scaler.load_state_dict(checkpoint['scaler_state_dict'])

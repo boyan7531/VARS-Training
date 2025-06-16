@@ -309,6 +309,9 @@ def parse_args():
                        help='Probability of applying multi-scale cropping (default: 0.5)')
     parser.add_argument('--dropout_rate', type=float, default=0.1, help='Dropout rate for regularization')
     parser.add_argument('--lr_warmup', action='store_true', help='Enable learning rate warmup')
+    parser.add_argument('--lr_warmup_steps', type=int, default=0, help='Number of warm-up steps (computed automatically if 0)')
+    parser.add_argument('--lr_warmup_pct', type=float, default=0.05, help='Percentage of total training steps for warm-up (default: 5%)')
+    parser.add_argument('--lr_warmup_start_lr', type=float, default=None, help='Starting learning rate for warm-up (default: lr/100)')
     
     parser.add_argument('--discriminative_lr', action='store_true', default=False,
                        help='Enable discriminative learning rates for different layers (e.g., backbone vs. head)')
@@ -407,6 +410,20 @@ def process_config(args):
         logger.info("   - Gradual fine-tuning: disabled")
         logger.info("   - Label smoothing: disabled")
     
+    # Process LR warmup configuration
+    if args.lr_warmup and args.lr_warmup_steps == 0:
+        # Calculate total training steps approximately
+        # Note: This is an estimate - actual steps may vary with dataset size
+        steps_per_epoch = max(1, 1000 // args.batch_size)  # Rough estimate, will be refined later
+        total_steps = args.epochs * steps_per_epoch
+        args.lr_warmup_steps = int(args.lr_warmup_pct * total_steps)
+        logger.info(f"LR Warmup enabled: {args.lr_warmup_steps} steps ({args.lr_warmup_pct*100:.1f}% of estimated {total_steps} total steps)")
+    
+    # Set default warmup start LR if not specified
+    if args.lr_warmup and args.lr_warmup_start_lr is None:
+        args.lr_warmup_start_lr = args.lr / 100
+        logger.info(f"LR Warmup start LR set to {args.lr_warmup_start_lr:.2e} (lr/100)")
+
     # Process scheduler configuration and provide recommendations
     args = process_scheduler_config(args)
     
