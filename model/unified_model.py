@@ -372,7 +372,7 @@ class MultiTaskMultiViewMViT(nn.Module):
         
         return head
     
-    def forward(self, batch_data: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, batch_data: Dict[str, torch.Tensor], return_view_logits: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Optimized forward pass through the model - now video-only.
         
@@ -381,9 +381,11 @@ class MultiTaskMultiViewMViT(nn.Module):
                 - clips: Video tensor(s) [B, N, C, T, H, W] or List[[N_i, C, T, H, W]]
                 - view_mask: Optional boolean mask [B, N] for valid views
                 - severity: Optional severity labels [B] for adaptive augmentation
+            return_view_logits: Whether to return per-view logits for view consistency loss
         
         Returns:
-            Tuple of (severity_logits, action_type_logits)
+            Tuple of (severity_logits, action_type_logits) or 
+            Dict with aggregated and per-view logits if return_view_logits=True
         """
         try:
             # Get batch size from clips
@@ -401,8 +403,13 @@ class MultiTaskMultiViewMViT(nn.Module):
                 batch_data = {**batch_data, "clips": clips}
             
             # Process video features with optimized pipeline
-            video_features = self._process_video_features_optimized(batch_data)
-            logger.debug(f"Video features shape: {video_features.shape}")
+            if return_view_logits:
+                video_features, view_mask, per_view_features = self._process_video_features_optimized(batch_data, preserve_per_view=True)
+                logger.debug(f"Video features shape: {video_features.shape}")
+                logger.debug(f"Per-view features shape: {per_view_features.shape}")
+            else:
+                video_features = self._process_video_features_optimized(batch_data)
+                logger.debug(f"Video features shape: {video_features.shape}")
             
             # Use video features directly (no categorical features anymore)
             combined_features = video_features
@@ -420,13 +427,33 @@ class MultiTaskMultiViewMViT(nn.Module):
                 severity_logits = self.severity_head(combined_features)
                 action_type_logits = self.action_type_head(combined_features)
             
-            # Clean up intermediate tensors if memory optimization is enabled
-            if self.enable_memory_optimization:
-                del video_features, combined_features
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            
-            return severity_logits, action_type_logits
+            # Generate per-view logits if requested
+            if return_view_logits:
+                sev_logits_v, act_logits_v = self._logits_per_view(per_view_features)
+                logger.debug(f"Per-view severity logits shape: {sev_logits_v.shape}")
+                logger.debug(f"Per-view action logits shape: {act_logits_v.shape}")
+                
+                # Clean up intermediate tensors if memory optimization is enabled
+                if self.enable_memory_optimization:
+                    del video_features, combined_features, per_view_features
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                
+                return {
+                    'severity_logits': severity_logits,
+                    'action_logits': action_type_logits,
+                    'sev_logits_v': sev_logits_v,
+                    'act_logits_v': act_logits_v,
+                    'view_mask': view_mask
+                }
+            else:
+                # Clean up intermediate tensors if memory optimization is enabled
+                if self.enable_memory_optimization:
+                    del video_features, combined_features
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                
+                return severity_logits, action_type_logits
             
         except RuntimeError as e:
             # Re-raise known errors
@@ -438,7 +465,7 @@ class MultiTaskMultiViewMViT(nn.Module):
                 logger.error(f"Video features shape: {video_features.shape if 'video_features' in locals() else 'Not computed'}")
             raise RuntimeError(f"Video-only forward pass failed: {str(e)}") from e
     
-    def _process_video_features_optimized(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def _process_video_features_optimized(self, batch_data: Dict[str, torch.Tensor], preserve_per_view: bool = False):
         """Process video clips with optimized memory usage and sequential processing."""
         clips = batch_data["clips"]
         view_mask = batch_data.get("view_mask", None)
@@ -454,7 +481,44 @@ class MultiTaskMultiViewMViT(nn.Module):
         aggregated_features = self.view_aggregator.aggregate_views(features, updated_view_mask)
         logger.debug(f"Aggregated features shape: {aggregated_features.shape}")
         
-        return aggregated_features
+        if preserve_per_view:
+            return aggregated_features, updated_view_mask, features
+        else:
+            return aggregated_features
+    
+    def _logits_per_view(self, features):
+        """
+        Apply classification heads to per-view features.
+        
+        Args:
+            features: [B, V, d] per-view features
+            
+        Returns:
+            sev_logits_v: [B, V, 6] severity logits per view
+            act_logits_v: [B, V, 10] action logits per view
+        """
+        batch_size, num_views, feature_dim = features.shape
+        
+        # Reshape to [B*V, d] for batch processing
+        features_flat = features.view(-1, feature_dim)
+        
+        # Apply heads
+        if self.use_gradient_checkpointing and self.training:
+            sev_logits_flat = checkpoint.checkpoint(
+                self.severity_head, features_flat, use_reentrant=False
+            )
+            act_logits_flat = checkpoint.checkpoint(
+                self.action_type_head, features_flat, use_reentrant=False
+            )
+        else:
+            sev_logits_flat = self.severity_head(features_flat)
+            act_logits_flat = self.action_type_head(features_flat)
+        
+        # Reshape back to [B, V, num_classes]
+        sev_logits_v = sev_logits_flat.view(batch_size, num_views, -1)
+        act_logits_v = act_logits_flat.view(batch_size, num_views, -1)
+        
+        return sev_logits_v, act_logits_v
     
     def _process_categorical_features(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Process categorical features through embeddings - now returns empty tensor."""

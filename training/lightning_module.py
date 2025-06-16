@@ -103,7 +103,9 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
             'label_smoothing': self.args.label_smoothing,
             'focal_gamma': self.args.focal_gamma,
             'severity_class_weights': None,  # Will be set in setup()
-            'class_gamma_map': None  # Will be set in setup()
+            'class_gamma_map': None,  # Will be set in setup()
+            'view_consistency': self.args.view_consistency,
+            'vc_weight': self.args.vc_weight
         }
     
     def _init_freezing_strategy(self):
@@ -217,7 +219,9 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                     'severity_class_weights': severity_weights_for_loss,
                     'action_class_weights': action_weights_for_loss,
                     'class_gamma_map': self.class_gamma_map,
-                    'using_oversampling': self.args.use_class_balanced_sampler or self.args.use_action_balanced_sampler_only
+                    'using_oversampling': self.args.use_class_balanced_sampler or self.args.use_action_balanced_sampler_only,
+                    'view_consistency': self.args.view_consistency,
+                    'vc_weight': self.args.vc_weight
                 })
     
     def configure_optimizers(self):
@@ -376,12 +380,25 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                 batch["clips"] = self.gpu_augmentation(batch["clips"])
         
         # Forward pass
-        sev_logits, act_logits = self.model(batch)
+        view_consistency_enabled = self.loss_config.get('view_consistency', False)
         
-        # Calculate loss
-        total_loss, loss_sev, loss_act = calculate_multitask_loss(
-            sev_logits, act_logits, batch, self.loss_config
-        )
+        if view_consistency_enabled:
+            model_output = self.model(batch, return_view_logits=True)
+            sev_logits = model_output['severity_logits']
+            act_logits = model_output['action_logits']
+            view_logits = {
+                'sev_logits_v': model_output['sev_logits_v'],
+                'act_logits_v': model_output['act_logits_v'],
+                'view_mask': model_output['view_mask']
+            }
+            total_loss, loss_sev, loss_act, loss_components = calculate_multitask_loss(
+                sev_logits, act_logits, batch, self.loss_config, view_logits
+            )
+        else:
+            sev_logits, act_logits = self.model(batch)
+            total_loss, loss_sev, loss_act, loss_components = calculate_multitask_loss(
+                sev_logits, act_logits, batch, self.loss_config
+            )
         
         # Calculate metrics
         sev_acc = calculate_accuracy(sev_logits, batch["label_severity"])
@@ -418,10 +435,12 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx) -> STEP_OUTPUT:
         """Validation step for one batch."""
         # Forward pass (no augmentation in validation)
+        # Note: For validation, we typically don't compute view consistency loss
+        # to save computation, but we could enable it if needed for debugging
         sev_logits, act_logits = self.model(batch)
         
         # Calculate loss
-        total_loss, loss_sev, loss_act = calculate_multitask_loss(
+        total_loss, loss_sev, loss_act, loss_components = calculate_multitask_loss(
             sev_logits, act_logits, batch, self.loss_config
         )
         

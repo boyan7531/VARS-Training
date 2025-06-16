@@ -784,7 +784,9 @@ def main():
                     'severity_class_weights': None if (args.use_class_balanced_sampler and not args.use_action_balanced_sampler_only) else severity_class_weights,
                     'action_class_weights': action_class_weights,
                     'class_gamma_map': class_gamma_map,
-                    'using_oversampling': args.use_class_balanced_sampler or args.use_action_balanced_sampler_only
+                    'using_oversampling': args.use_class_balanced_sampler or args.use_action_balanced_sampler_only,
+                    'view_consistency': args.view_consistency,
+                    'vc_weight': args.vc_weight
                 },
                 scaler=scaler, 
                 max_batches=num_batches_to_run, 
@@ -816,7 +818,9 @@ def main():
                 'severity_class_weights': None if (args.use_class_balanced_sampler and not args.use_action_balanced_sampler_only) else severity_class_weights,
                 'action_class_weights': action_class_weights,
                 'class_gamma_map': class_gamma_map,
-                'using_oversampling': args.use_class_balanced_sampler or args.use_action_balanced_sampler_only
+                'using_oversampling': args.use_class_balanced_sampler or args.use_action_balanced_sampler_only,
+                'view_consistency': args.view_consistency,
+                'vc_weight': args.vc_weight
             },
             confusion_matrix_dict=val_confusion_matrices
         )

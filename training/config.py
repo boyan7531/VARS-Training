@@ -93,6 +93,12 @@ def parse_args():
     parser.add_argument('--focal_gamma', type=float, default=2.0,
                        help='Focal Loss gamma parameter (higher = more focus on hard examples)')
     
+    # === VIEW CONSISTENCY LOSS ===
+    parser.add_argument('--view_consistency', action='store_true', default=False,
+                       help='Enable view consistency loss (KL agreement across camera views)')
+    parser.add_argument('--vc_weight', type=float, default=0.3,
+                       help='Weight for view consistency loss (default: 0.3)')
+    
     # === CLASS IMBALANCE HANDLING ===
     parser.add_argument('--class_weighting_strategy', type=str, default='sqrt',
                        choices=['none', 'balanced_capped', 'sqrt', 'log', 'effective_number'],

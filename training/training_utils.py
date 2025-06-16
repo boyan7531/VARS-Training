@@ -198,6 +198,63 @@ class FocalLoss(nn.Module):
             return focal_loss
 
 
+def view_consistency_loss(logits, mask, temperature=1.0):
+    """
+    Compute view consistency loss using symmetric KL divergence.
+    
+    Args:
+        logits: [B, V, C] per-view logits
+        mask: [B, V] view mask (True for valid views)
+        temperature: Temperature for softmax
+        
+    Returns:
+        Consistency loss value
+    """
+    batch_size, max_views, num_classes = logits.shape
+    device = logits.device
+    
+    if mask.sum() < 2:  # Need at least 2 valid views for consistency
+        return torch.tensor(0.0, device=device, requires_grad=True)
+    
+    total_loss = torch.tensor(0.0, device=device, requires_grad=True)
+    num_pairs = 0
+    
+    # For each batch
+    for b in range(batch_size):
+        valid_views = mask[b].nonzero(as_tuple=False).squeeze(-1)
+        if len(valid_views) < 2:
+            continue
+            
+        # Compare all pairs of valid views
+        for i in range(len(valid_views)):
+            for j in range(i + 1, len(valid_views)):
+                view_i, view_j = valid_views[i], valid_views[j]
+                
+                # Get logits for this pair
+                logits_i = logits[b, view_i] / temperature  # [C]
+                logits_j = logits[b, view_j] / temperature  # [C]
+                
+                # Compute log-probabilities and probabilities
+                log_p_i = torch.log_softmax(logits_i, dim=-1)
+                log_p_j = torch.log_softmax(logits_j, dim=-1)
+                p_i = torch.softmax(logits_i, dim=-1)
+                p_j = torch.softmax(logits_j, dim=-1)
+                
+                # Symmetric KL divergence: KL(P_i||P_j) + KL(P_j||P_i)
+                # Use manual calculation to avoid reduction parameter compatibility issues
+                kl_ij = (p_j * (torch.log(p_j + 1e-8) - log_p_i)).sum()
+                kl_ji = (p_i * (torch.log(p_i + 1e-8) - log_p_j)).sum()
+                
+                total_loss = total_loss + kl_ij + kl_ji
+                num_pairs += 1
+    
+    # Average over all valid pairs
+    if num_pairs > 0:
+        return total_loss / num_pairs
+    else:
+        return torch.tensor(0.0, device=device, requires_grad=True)
+
+
 class AdaptiveFocalLoss(nn.Module):
     """
     Enhanced Focal Loss with class-specific gamma values.
@@ -279,7 +336,7 @@ class AdaptiveFocalLoss(nn.Module):
         )
 
 
-def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: dict):
+def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: dict, view_logits=None):
     """
     Calculate weighted multi-task loss based on a configuration dictionary.
     
@@ -295,9 +352,12 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
             - 'severity_class_weights': Optional class weights for severity loss.
                                         If 'focal' is used, these become the 'alpha' parameter.
                                         If using a balanced sampler, this should typically be None.
+            - 'view_consistency': Whether to compute view consistency loss
+            - 'vc_weight': Weight for view consistency loss
+        view_logits (dict, optional): Dict containing per-view logits if view consistency is enabled
     
     Returns:
-        total_loss, loss_sev, loss_act
+        total_loss, loss_sev, loss_act, loss_components (dict with individual losses)
     """
     loss_function = loss_config.get('function', 'weighted')
     main_weights = loss_config.get('weights', [1.0, 1.0])
@@ -389,9 +449,38 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
     else:
         raise ValueError(f"Unknown loss_function: {loss_function}. Must be 'adaptive_focal', 'focal', 'weighted', or 'plain'")
     
+    # Initialize loss components dictionary
+    loss_components = {
+        'loss_sev': loss_sev,
+        'loss_act': loss_act
+    }
+    
     total_loss = loss_sev + loss_act
     
-    return total_loss, loss_sev, loss_act
+    # Add view consistency loss if enabled
+    if loss_config.get('view_consistency', False) and view_logits is not None:
+        vc_weight = loss_config.get('vc_weight', 0.3)
+        
+        # Compute view consistency loss for both tasks
+        vc_sev = view_consistency_loss(view_logits['sev_logits_v'], view_logits['view_mask'])
+        vc_act = view_consistency_loss(view_logits['act_logits_v'], view_logits['view_mask'])
+        
+        # Add to total loss
+        vc_loss_total = vc_weight * (vc_sev + vc_act)
+        total_loss = total_loss + vc_loss_total
+        
+        # Store individual components for logging
+        loss_components.update({
+            'vc_sev': vc_sev,
+            'vc_act': vc_act,
+            'vc_loss_total': vc_loss_total
+        })
+        
+        # Log view consistency loss (only from main process)
+        if is_main_process():
+            logger.debug(f"View consistency loss - Severity: {vc_sev:.4f}, Action: {vc_act:.4f}, Total: {vc_loss_total:.4f}")
+    
+    return total_loss, loss_sev, loss_act, loss_components
 
 
 class EarlyStopping:
@@ -506,10 +595,26 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                             batch_data["clips"] = gpu_augmentation(batch_data["clips"])
                         
                 with record_function("model_forward") if prof else contextlib.suppress():
-                    sev_logits, act_logits = model(batch_data)
-                    total_loss, _, _ = calculate_multitask_loss(
-                        sev_logits, act_logits, batch_data, loss_config
-                    )
+                    # Check if view consistency is enabled
+                    view_consistency_enabled = loss_config.get('view_consistency', False)
+                    
+                    if view_consistency_enabled:
+                        model_output = model(batch_data, return_view_logits=True)
+                        sev_logits = model_output['severity_logits']
+                        act_logits = model_output['action_logits']
+                        view_logits = {
+                            'sev_logits_v': model_output['sev_logits_v'],
+                            'act_logits_v': model_output['act_logits_v'],
+                            'view_mask': model_output['view_mask']
+                        }
+                        total_loss, _, _, _ = calculate_multitask_loss(
+                            sev_logits, act_logits, batch_data, loss_config, view_logits
+                        )
+                    else:
+                        sev_logits, act_logits = model(batch_data)
+                        total_loss, _, _, _ = calculate_multitask_loss(
+                            sev_logits, act_logits, batch_data, loss_config
+                        )
 
             with record_function("loss_backward") if prof else contextlib.suppress():
                 scaler.scale(total_loss).backward()
@@ -545,10 +650,26 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_config: dict, sca
                     # Standard augmentation
                     batch_data["clips"] = gpu_augmentation(batch_data["clips"])
                     
-            sev_logits, act_logits = model(batch_data)
-            total_loss, _, _ = calculate_multitask_loss(
-                sev_logits, act_logits, batch_data, loss_config
-            )
+            # Check if view consistency is enabled
+            view_consistency_enabled = loss_config.get('view_consistency', False)
+            
+            if view_consistency_enabled:
+                model_output = model(batch_data, return_view_logits=True)
+                sev_logits = model_output['severity_logits']
+                act_logits = model_output['action_logits']
+                view_logits = {
+                    'sev_logits_v': model_output['sev_logits_v'],
+                    'act_logits_v': model_output['act_logits_v'],
+                    'view_mask': model_output['view_mask']
+                }
+                total_loss, _, _, _ = calculate_multitask_loss(
+                    sev_logits, act_logits, batch_data, loss_config, view_logits
+                )
+            else:
+                sev_logits, act_logits = model(batch_data)
+                total_loss, _, _, _ = calculate_multitask_loss(
+                    sev_logits, act_logits, batch_data, loss_config
+                )
 
             total_loss.backward()
             
@@ -761,13 +882,15 @@ def validate_one_epoch(model, dataloader, device, loss_config: dict, max_batches
             # Consistently use autocast with explicit dtype for validation when on CUDA
             if device.type == 'cuda':
                 with torch.amp.autocast('cuda', dtype=torch.float16): # Explicitly use float16 for consistency
+                    # Note: For validation, we typically don't need view consistency loss
+                    # so we skip return_view_logits to save computation
                     sev_logits, act_logits = model(batch_data)
-                    total_loss, _, _ = calculate_multitask_loss(
+                    total_loss, _, _, _ = calculate_multitask_loss(
                         sev_logits, act_logits, batch_data, loss_config
                     )
             else: # CPU or other device where mixed precision isn't available
                 sev_logits, act_logits = model(batch_data)
-                total_loss, _, _ = calculate_multitask_loss(
+                total_loss, _, _, _ = calculate_multitask_loss(
                     sev_logits, act_logits, batch_data, loss_config
                 )
 
