@@ -2,13 +2,7 @@
 # Production preset with all optimizations enabled
 
 defaults:
-  - /model: mvit
-  - /training: baseline
-  - /loss: focal
-  - /sampling: progressive
-  - /freezing: progressive
-  - /system: single_gpu
-  - /experiment: default
+  - _self_
 
 # Production optimizations
 training:
