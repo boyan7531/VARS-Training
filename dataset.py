@@ -1059,7 +1059,7 @@ class SoccerNetMVFoulDataset(Dataset):
             
             # Convert to float and normalize if needed
             if video_tensor.dtype == torch.uint8:
-                print(f"🔄 Converting uint8 to float32 for {video_path}")
+                # Removed verbose logging: print(f"🔄 Converting uint8 to float32 for {video_path}")
                 video_tensor = video_tensor.float() / 255.0
                 
                 # DEBUG: Check after conversion
@@ -1075,7 +1075,7 @@ class SoccerNetMVFoulDataset(Dataset):
             C, T, H, W = video_tensor.shape
             
             if H != self.target_height or W != self.target_width:
-                print(f"🔄 Resizing from {H}x{W} to {self.target_height}x{self.target_width}")
+                # Removed verbose logging: print(f"🔄 Resizing from {H}x{W} to {self.target_height}x{self.target_width}")
                 
                 # Resize each frame individually to avoid memory issues
                 resized_frames = []
@@ -1109,10 +1109,7 @@ class SoccerNetMVFoulDataset(Dataset):
             
             # Apply augmentations if present
             if self.transform is not None:
-                print(f"🔄 Applying augmentations...")
-                print(f"   Video tensor shape before transform: {video_tensor.shape}")
-                print(f"   Video tensor dtype: {video_tensor.dtype}")
-                print(f"   Video tensor range: {video_tensor.min():.3f} to {video_tensor.max():.3f}")
+                # Removed verbose logging: print statements for shape, dtype, range
                 
                 # Check if this is the expected 4D format [C, T, H, W]
                 if len(video_tensor.shape) != 4:
@@ -1164,7 +1161,7 @@ class SoccerNetMVFoulDataset(Dataset):
             # Ensure proper range
             video_tensor = torch.clamp(video_tensor, 0.0, 1.0)
             
-            print(f"✅ Successfully loaded clip: {video_path.name} -> {video_tensor.shape}")
+            # Removed verbose logging: print(f"✅ Successfully loaded clip: {video_path.name} -> {video_tensor.shape}")
             return video_tensor
             
         except Exception as e:
