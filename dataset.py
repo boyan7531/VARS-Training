@@ -191,14 +191,26 @@ class RandomBrightnessContrast(torch.nn.Module):
         # Apply different brightness/contrast to each frame for more variation
         for t in range(T):
             if random.random() < 0.8:  # 80% chance per frame
-                # Random brightness adjustment
+                # Random brightness adjustment - clamp factor for safety
                 brightness_factor = 1.0 + random.uniform(-self.brightness_range, self.brightness_range)
+                brightness_factor = max(0.1, min(3.0, brightness_factor))  # Safe range
                 clip[:, t, :, :] = torch.clamp(clip[:, t, :, :] * brightness_factor, 0, 1)
                 
-                # Random contrast adjustment
+                # Random contrast adjustment - clamp factor for safety
                 contrast_factor = 1.0 + random.uniform(-self.contrast_range, self.contrast_range)
+                contrast_factor = max(0.1, min(3.0, contrast_factor))  # Safe range
                 mean = clip[:, t, :, :].mean(dim=(1, 2), keepdim=True)
+                
+                # Ensure mean is not NaN (shouldn't happen, but safety first)
+                if torch.isnan(mean).any():
+                    continue  # Skip this frame if mean is NaN
+                
                 clip[:, t, :, :] = torch.clamp(mean + contrast_factor * (clip[:, t, :, :] - mean), 0, 1)
+        
+        # Final safety check
+        if torch.isnan(clip).any():
+            logger.warning("NaN detected in RandomBrightnessContrast, replacing with zeros")
+            clip = torch.where(torch.isnan(clip), torch.zeros_like(clip), clip)
         
         return clip
 
@@ -222,26 +234,34 @@ class RandomSpatialCrop(torch.nn.Module):
         
         # Random crop scale
         scale = random.uniform(*self.crop_scale_range)
-        crop_h = int(H * scale)
-        crop_w = int(W * scale)
+        crop_h = max(int(H * scale), 1)  # Ensure at least 1 pixel
+        crop_w = max(int(W * scale), 1)  # Ensure at least 1 pixel
         
         # Random crop position
-        top = random.randint(0, H - crop_h)
-        left = random.randint(0, W - crop_w)
+        top = random.randint(0, max(0, H - crop_h))
+        left = random.randint(0, max(0, W - crop_w))
         
         # Crop all frames
         cropped_clip = clip[:, :, top:top+crop_h, left:left+crop_w]
         
-        # Ensure tensor is contiguous before reshaping
-        cropped_clip = cropped_clip.contiguous()
+        # Resize back to original size using proper interpolation
+        resized_frames = []
+        for t in range(T):
+            frame = cropped_clip[:, t]  # [C, H_crop, W_crop]
+            resized_frame = torch.nn.functional.interpolate(
+                frame.unsqueeze(0),  # [1, C, H_crop, W_crop]
+                size=(H, W),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(0)  # [C, H, W]
+            resized_frames.append(resized_frame)
         
-        # Resize back to original size
-        resized_clip = torch.nn.functional.interpolate(
-            cropped_clip.reshape(C, T*crop_h, crop_w).unsqueeze(0),
-            size=(T*H, W),
-            mode='bilinear',
-            align_corners=False
-        ).squeeze(0).reshape(C, T, H, W)
+        resized_clip = torch.stack(resized_frames, dim=1)  # [C, T, H, W]
+        
+        # Safety check for NaN
+        if torch.isnan(resized_clip).any():
+            logger.warning("NaN detected in RandomSpatialCrop, returning original clip")
+            return clip
         
         return resized_clip
 
@@ -277,8 +297,24 @@ class RandomGaussianNoise(torch.nn.Module):
             clip = clip.float() / 255.0
         
         noise_std = random.uniform(*self.std_range)
+        # Clamp noise std to safe range
+        noise_std = max(0.001, min(0.2, noise_std))
+        
         noise = torch.randn_like(clip) * noise_std
-        return torch.clamp(clip + noise, 0, 1)
+        
+        # Safety check for NaN in noise (shouldn't happen, but be safe)
+        if torch.isnan(noise).any():
+            logger.warning("NaN detected in Gaussian noise, replacing with zeros")
+            noise = torch.where(torch.isnan(noise), torch.zeros_like(noise), noise)
+        
+        result = torch.clamp(clip + noise, 0, 1)
+        
+        # Final safety check
+        if torch.isnan(result).any():
+            logger.warning("NaN detected in RandomGaussianNoise result, returning original clip")
+            return clip
+        
+        return result
 
 class SeverityAwareAugmentation(torch.nn.Module):
     """Apply stronger augmentation to minority severity classes"""
@@ -1215,7 +1251,12 @@ def variable_views_collate_fn(batch):
             _, _, C, T, H, W = first_clip.shape
             
             # Create padded tensor: (batch_size, clips_per_video, max_views, C, T, H, W)
-            padded_clips = torch.zeros(batch_size, clips_per_video, max_views, C, T, H, W, dtype=first_clip.dtype)
+            # Use small non-zero values instead of zeros to prevent division-by-zero
+            padded_clips = torch.full(
+                (batch_size, clips_per_video, max_views, C, T, H, W), 
+                fill_value=1e-6,  # Small positive value
+                dtype=first_clip.dtype
+            )
             
             for i, clips in enumerate(clips_list):
                 num_views = clips.shape[1]
@@ -1230,7 +1271,7 @@ def variable_views_collate_fn(batch):
                 view_mask[i, :, :num_views] = True
             
             batched_data["view_mask"] = view_mask
-    
+            
     elif first_clip.dim() == 5:  # [num_views, C, T, H, W] - legacy format
         # Get max views from the first dimension (num_views)
         max_views = max(clips.shape[0] for clips in clips_list)
@@ -1245,7 +1286,12 @@ def variable_views_collate_fn(batch):
             _, C, T, H, W = first_clip.shape
             
             # Create padded tensor: (batch_size, max_views, C, T, H, W)
-            padded_clips = torch.zeros(batch_size, max_views, C, T, H, W, dtype=first_clip.dtype)
+            # Use small non-zero values instead of zeros to prevent division-by-zero
+            padded_clips = torch.full(
+                (batch_size, max_views, C, T, H, W), 
+                fill_value=1e-6,  # Small positive value
+                dtype=first_clip.dtype
+            )
             
             for i, clips in enumerate(clips_list):
                 num_views = clips.shape[0]
@@ -1822,17 +1868,25 @@ class VideoRandAugment(torch.nn.Module):
                 frame = clip[:, t]
                 min_val = frame.min()
                 max_val = frame.max()
-                if max_val > min_val:
-                    clip[:, t] = (frame - min_val) / (max_val - min_val)
+                # Fix division by zero that causes NaN
+                denominator = max_val - min_val
+                if denominator > 1e-8:  # Only apply if there's sufficient contrast
+                    clip[:, t] = (frame - min_val) / denominator
+                # If denominator is too small, skip this frame (leave unchanged)
         
         elif op == 'brightness':
             factor = 1.0 + magnitude * random.uniform(-0.5, 0.5)
+            # Clamp factor to prevent extreme values
+            factor = torch.clamp(torch.tensor(factor), 0.1, 3.0).item()
             clip = clip * factor
         
         elif op == 'contrast':
             factor = 1.0 + magnitude * random.uniform(-0.5, 0.5)
+            # Clamp factor to prevent extreme values
+            factor = torch.clamp(torch.tensor(factor), 0.1, 3.0).item()
             mean = clip.mean(dim=[2, 3], keepdim=True)
-            clip = (clip - mean) * factor + mean
+            # Ensure we don't create extreme values
+            clip = torch.clamp((clip - mean) * factor + mean, 0.0, 1.0)
         
         elif op == 'rotate':
             angle = magnitude * random.uniform(-30, 30)
@@ -1845,9 +1899,53 @@ class VideoRandAugment(torch.nn.Module):
         
         elif op == 'color':
             factor = 1.0 + magnitude * random.uniform(-0.5, 0.5)
+            # Clamp factor to prevent extreme values
+            factor = torch.clamp(torch.tensor(factor), 0.1, 3.0).item()
             if C == 3:
                 gray = 0.299 * clip[0:1] + 0.587 * clip[1:2] + 0.114 * clip[2:3]
                 clip = clip * factor + gray * (1 - factor)
+        
+        elif op == 'equalize':
+            # Add histogram equalization (simple version)
+            for t in range(T):
+                frame = clip[:, t]
+                # Simple histogram equalization approximation
+                frame_flat = frame.view(C, -1)
+                frame_sorted, indices = torch.sort(frame_flat, dim=1)
+                # Create equalized values
+                eq_values = torch.linspace(0, 1, frame_flat.size(1), device=frame.device)
+                eq_frame = torch.gather(eq_values.unsqueeze(0).expand(C, -1), 1, indices.argsort(dim=1))
+                clip[:, t] = eq_frame.view(C, H, W)
+        
+        elif op == 'invert':
+            clip = 1.0 - clip
+        
+        elif op == 'posterize':
+            # Reduce the number of color levels
+            bits = max(1, int(8 - magnitude * 4))  # 1-8 bits
+            levels = 2 ** bits
+            clip = torch.round(clip * (levels - 1)) / (levels - 1)
+            
+        elif op == 'sharpness':
+            # Simple sharpening approximation
+            factor = magnitude * 2.0  # 0-2 range
+            if factor > 0.1:
+                for t in range(T):
+                    frame = clip[:, t]
+                    # Simple sharpening kernel approximation
+                    blurred = torch.nn.functional.avg_pool2d(
+                        frame.unsqueeze(0), kernel_size=3, stride=1, padding=1
+                    ).squeeze(0)
+                    sharpened = frame + factor * (frame - blurred)
+                    clip[:, t] = torch.clamp(sharpened, 0.0, 1.0)
+        
+        # Always clamp output to valid range and check for NaN
+        clip = torch.clamp(clip, 0.0, 1.0)
+        
+        # Safety check: replace any NaN values with zeros
+        if torch.isnan(clip).any():
+            logger.warning(f"NaN detected after {op} augmentation, replacing with zeros")
+            clip = torch.where(torch.isnan(clip), torch.zeros_like(clip), clip)
         
         return clip
 

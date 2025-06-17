@@ -4,6 +4,7 @@ from typing import Dict, Tuple, Optional, List
 import logging
 import os
 import torch.utils.checkpoint as checkpoint
+from torch.cuda.amp import autocast
 
 from .resnet3d_model import MultiTaskMultiViewResNet3D, ResNet3DBackbone
 from .config import ModelConfig
@@ -270,41 +271,93 @@ class OptimizedMViTProcessor(nn.Module):
             clips = torch.where(torch.isnan(clips), torch.zeros_like(clips), clips)
             logger.warning("Replaced NaN input values with zeros")
         
-        # Clamp input values to prevent extreme values
-        clips = torch.clamp(clips, min=-10.0, max=10.0)
+        # Check for padded views (very small values close to 1e-6)
+        is_padded = (clips.abs() < 1e-5).all(dim=(1,2,3,4)) if clips.dim() == 5 else (clips.abs() < 1e-5).all()
+        if is_padded.any() if torch.is_tensor(is_padded) else is_padded:
+            logger.debug(f"Detected padded views in input clips")
+            # For padded views, return zero features to be masked out later
+            if torch.is_tensor(is_padded):
+                # Multiple clips, some are padded
+                num_clips = clips.shape[0]
+                # Process non-padded clips normally
+                non_padded_mask = ~is_padded
+                if non_padded_mask.any():
+                    non_padded_clips = clips[non_padded_mask]
+                    # Process the non-padded clips
+                    non_padded_clips = torch.clamp(non_padded_clips, min=-10.0, max=10.0)
+                    # Continue with normal processing for non-padded clips
+                    clips = clips.clone()
+                    clips[non_padded_mask] = non_padded_clips
+                    # Set padded clips to valid range but will be masked later
+                    clips[is_padded] = torch.zeros_like(clips[is_padded])
+            else:
+                # Single clip is padded, return zero features
+                feature_dim = 768  # Default MViT feature dimension
+                return torch.zeros(1, feature_dim, device=clips.device, dtype=clips.dtype)
+        else:
+            # Clamp input values to prevent extreme values
+            clips = torch.clamp(clips, min=-10.0, max=10.0)
         
-        # Ensure proper input format for MViT and forward pass
+        # Ensure proper input format for MViT (expects BCTHW)
+        if clips.dim() == 5:  # [N, C, T, H, W] - multiple clips
+            clips_to_process = clips
+        elif clips.dim() == 4:  # [C, T, H, W] - single clip
+            clips_to_process = clips.unsqueeze(0)  # Add batch dimension
+        else:
+            raise ValueError(f"Unexpected input dimensions: {clips.shape}")
+        
         try:
-            features = self.backbone(clips)
+            # Forward through MViT backbone
+            with autocast(enabled=self.use_mixed_precision):
+                if self.use_gradient_checkpointing and self.training:
+                    # Use gradient checkpointing to save memory
+                    dummy = torch.ones(1, device=clips_to_process.device, requires_grad=True)
+                    features = checkpoint.checkpoint(
+                        lambda _dummy, x: self.backbone(x),
+                        dummy,
+                        clips_to_process,
+                        use_reentrant=False,
+                    )
+                else:
+                    features = self.backbone(clips_to_process)
             
-            # Comprehensive NaN detection in backbone outputs
+            # Handle different output formats
+            if isinstance(features, dict):
+                # Some models return dict with 'features' key
+                features = features.get('features', features.get('last_hidden_state', list(features.values())[0]))
+            
+            if features.dim() == 3:  # [B, seq_len, feature_dim] - transformer output
+                features = features[:, 0]  # Extract CLS token features
+            elif features.dim() == 4:  # [B, feature_dim, T, 1] - some conv models
+                features = features.mean(dim=(2, 3))  # Global average pooling
+            elif features.dim() == 2:  # [B, feature_dim] - already pooled
+                pass  # Use as-is
+            else:
+                logger.warning(f"Unexpected feature dimensions: {features.shape}, applying adaptive pooling")
+                # Adaptive handling for unexpected dimensions
+                while features.dim() > 2:
+                    features = features.mean(dim=-1)
+            
+            # Ensure output is 2D: [B, feature_dim]
+            if features.dim() != 2:
+                raise ValueError(f"Failed to process features to 2D tensor, got shape: {features.shape}")
+            
+            # Final NaN check
             if torch.isnan(features).any():
-                logger.error(f"NaN detected in backbone features! Shape: {features.shape}")
-                logger.error(f"NaN count: {torch.isnan(features).sum().item()}")
-                
-                # Replace NaN values with zeros and add small random noise for gradient flow
-                nan_mask = torch.isnan(features)
-                replacement_values = torch.randn_like(features) * 0.01  # Small random values
-                features = torch.where(nan_mask, replacement_values, features)
-                logger.warning("Replaced NaN backbone features with small random values")
-            
-            # Clamp features to prevent extreme values
-            features = torch.clamp(features, min=-50.0, max=50.0)
+                logger.error(f"NaN detected in backbone output! Shape: {features.shape}")
+                logger.error(f"Features NaN count: {torch.isnan(features).sum().item()}")
+                # Replace NaN with zeros
+                features = torch.where(torch.isnan(features), torch.zeros_like(features), features)
+                logger.warning("Replaced NaN backbone features with zeros")
             
             return features
             
         except Exception as e:
-            logger.error(f"Backbone forward pass failed: {str(e)}")
-            # Create fallback features with proper shape
-            if hasattr(self.backbone, 'num_features'):
-                feature_dim = self.backbone.num_features
-            else:
-                feature_dim = 768  # Default MViT feature dimension
-            
-            batch_size = clips.shape[0]
-            fallback_features = torch.randn(batch_size, feature_dim, device=clips.device) * 0.01
-            logger.warning(f"Using fallback features with shape {fallback_features.shape}")
-            return fallback_features
+            logger.error(f"Error in backbone forward pass: {str(e)}")
+            # Return zero features as fallback
+            feature_dim = 768  # Default feature dimension
+            batch_size = clips_to_process.shape[0] if clips_to_process.dim() > 4 else 1
+            return torch.zeros(batch_size, feature_dim, device=clips_to_process.device, dtype=clips_to_process.dtype)
 
 
 class MultiTaskMultiViewMViT(nn.Module):

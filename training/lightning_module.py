@@ -417,21 +417,45 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         view_consistency_enabled = (hasattr(self.args, 'view_consistency') and 
                                   self.args.view_consistency)
         
+        # Check if we have view mask for variable views
+        view_mask = batch.get("view_mask", None)
+        
         try:
             if view_consistency_enabled:
                 model_output = self.model(batch, return_view_logits=True)
                 sev_logits = model_output['severity_logits']
                 act_logits = model_output['action_logits']
-                view_logits = {
-                    'sev_logits_v': model_output['sev_logits_v'],
-                    'act_logits_v': model_output['act_logits_v'],
-                    'view_mask': model_output['view_mask']
-                }
+                
+                # Get view logits if available
+                view_logits = None
+                if 'view_logits' in model_output:
+                    view_logits = model_output['view_logits']
+                    # Ensure view_mask is properly passed to view consistency loss
+                    if view_mask is not None:
+                        # Make sure view_mask matches the view_logits dimensions
+                        if view_logits['sev_logits_v'].dim() == 3:  # [B, V, C]
+                            batch_size, max_views = view_logits['sev_logits_v'].shape[:2]
+                            if view_mask.shape != (batch_size, max_views):
+                                if view_mask.dim() == 3:  # [B, clips_per_video, max_views]
+                                    # Take the first clip's mask (assuming same for all clips)
+                                    view_mask = view_mask[:, 0, :]
+                        # Add view_mask to view_logits for consistency loss calculation
+                        view_logits['view_mask'] = view_mask
+                    else:
+                        # Create a default mask if not provided
+                        if 'sev_logits_v' in view_logits:
+                            batch_size, max_views = view_logits['sev_logits_v'].shape[:2]
+                            view_mask = torch.ones(batch_size, max_views, dtype=torch.bool, device=sev_logits.device)
+                            view_logits['view_mask'] = view_mask
+                
                 total_loss, loss_sev, loss_act, loss_components = calculate_multitask_loss(
                     sev_logits, act_logits, batch, self.loss_config, view_logits
                 )
             else:
-                sev_logits, act_logits = self.model(batch)
+                model_output = self.model(batch)
+                sev_logits = model_output['severity_logits']
+                act_logits = model_output['action_logits']
+                view_logits = None
                 total_loss, loss_sev, loss_act, loss_components = calculate_multitask_loss(
                     sev_logits, act_logits, batch, self.loss_config
                 )
