@@ -1019,7 +1019,7 @@ class SoccerNetMVFoulDataset(Dataset):
             end_frame = start_frame + self.frames_per_clip
             
             # Load video with torchvision
-            video_tensor, audio_tensor, info = torchvision.io.read_video(
+            video_tensor, audio_tensor, info = read_video(
                 str(video_path),
                 start_pts=start_frame / video_fps,
                 end_pts=end_frame / video_fps,
