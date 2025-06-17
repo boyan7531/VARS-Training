@@ -521,14 +521,14 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
         
         # Log view consistency loss (only from main process)
         if is_main_process():
-            logger.debug(f"View consistency loss - Severity: {vc_sev:.4f}, Action: {vc_act:.4f}, Total: {vc_loss_total:.4f}")
+            logger.debug(f"View consistency loss - Severity: {vc_sev.item():.4f}, Action: {vc_act.item():.4f}, Total: {vc_loss_total.item():.4f}")
     
     # Final safety check for NaN/Inf in total loss
     if torch.isnan(total_loss) or torch.isinf(total_loss):
         logger.error("NaN/Inf detected in total loss!")
-        logger.error(f"Loss components: sev={loss_sev:.4f}, act={loss_act:.4f}")
+        logger.error(f"Loss components: sev={loss_sev.item():.4f}, act={loss_act.item():.4f}")
         if 'vc_loss_total' in loss_components:
-            logger.error(f"View consistency: {loss_components['vc_loss_total']:.4f}")
+            logger.error(f"View consistency: {loss_components['vc_loss_total'].item():.4f}")
         logger.error("Falling back to severity loss only to continue training")
         total_loss = loss_sev
         
