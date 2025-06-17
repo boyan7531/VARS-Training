@@ -1,6 +1,10 @@
 # @package _global_
 # Baseline training configuration
 
+# Multi-clip temporal sampling (root level)
+clips_per_video: 3  # temporal ensemble with 3 clips per video
+clip_sampling: uniform  # evenly spaced clips
+
 training:
   # Basic training
   max_epochs: 50
@@ -24,8 +28,4 @@ training:
   
   # Advanced optimizers
   lookahead: false
-  use_sam: false
-
-  # Multi-clip temporal sampling
-  clips_per_video: 3           # temporal ensemble with 3 clips per video
-  clip_sampling: uniform       # evenly spaced clips 
+  use_sam: false 
