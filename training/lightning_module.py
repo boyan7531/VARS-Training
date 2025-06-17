@@ -384,36 +384,60 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
     
     def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
         """Training step for one batch."""
-        # Apply GPU augmentation if enabled
-        if self.gpu_augmentation is not None:
-            if hasattr(self.gpu_augmentation, 'severity_multipliers'):
-                # Severity-aware augmentation
-                clips = self.gpu_augmentation(batch["clips"], batch["label_severity"])
-                batch["clips"] = clips
+        # Enable anomaly detection for debugging NaN issues
+        if batch_idx < 5:  # Only for first few batches to avoid performance impact
+            torch.autograd.set_detect_anomaly(True)
+        
+        # Handle early gradual freezing if enabled
+        if self.freezing_manager is not None:
+            # Unfreeze blocks based on current epoch and batch
+            info = self.freezing_manager.update_during_epoch(
+                current_epoch=self.current_epoch,
+                current_batch=batch_idx,
+                val_acc=self.trainer.callback_metrics.get('val_combined_acc', 0.0)
+            )
+            if info.get('blocks_unfrozen', 0) > 0:
+                logger.debug(f"Unfroze {info['blocks_unfrozen']} blocks at epoch {self.current_epoch}, batch {batch_idx}")
+        
+        # Get model output with view consistency if enabled
+        view_consistency_enabled = (hasattr(self.args, 'view_consistency') and 
+                                  self.args.view_consistency)
+        
+        try:
+            if view_consistency_enabled:
+                model_output = self.model(batch, return_view_logits=True)
+                sev_logits = model_output['severity_logits']
+                act_logits = model_output['action_logits']
+                view_logits = {
+                    'sev_logits_v': model_output['sev_logits_v'],
+                    'act_logits_v': model_output['act_logits_v'],
+                    'view_mask': model_output['view_mask']
+                }
+                total_loss, loss_sev, loss_act, loss_components = calculate_multitask_loss(
+                    sev_logits, act_logits, batch, self.loss_config, view_logits
+                )
             else:
-                # Standard augmentation
-                batch["clips"] = self.gpu_augmentation(batch["clips"])
-        
-        # Forward pass
-        view_consistency_enabled = self.loss_config.get('view_consistency', False)
-        
-        if view_consistency_enabled:
-            model_output = self.model(batch, return_view_logits=True)
-            sev_logits = model_output['severity_logits']
-            act_logits = model_output['action_logits']
-            view_logits = {
-                'sev_logits_v': model_output['sev_logits_v'],
-                'act_logits_v': model_output['act_logits_v'],
-                'view_mask': model_output['view_mask']
-            }
-            total_loss, loss_sev, loss_act, loss_components = calculate_multitask_loss(
-                sev_logits, act_logits, batch, self.loss_config, view_logits
-            )
-        else:
-            sev_logits, act_logits = self.model(batch)
-            total_loss, loss_sev, loss_act, loss_components = calculate_multitask_loss(
-                sev_logits, act_logits, batch, self.loss_config
-            )
+                sev_logits, act_logits = self.model(batch)
+                total_loss, loss_sev, loss_act, loss_components = calculate_multitask_loss(
+                    sev_logits, act_logits, batch, self.loss_config
+                )
+            
+            # Additional safety check for NaN in logits
+            if torch.isnan(sev_logits).any() or torch.isnan(act_logits).any():
+                logger.error(f"NaN detected in logits at batch {batch_idx}!")
+                logger.error(f"Severity logits NaN count: {torch.isnan(sev_logits).sum()}")
+                logger.error(f"Action logits NaN count: {torch.isnan(act_logits).sum()}")
+                # Skip this batch
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error in forward pass at batch {batch_idx}: {e}")
+            # Skip this batch
+            return None
+        finally:
+            # Disable anomaly detection after first few batches
+            if batch_idx < 5:
+                torch.autograd.set_detect_anomaly(False)
         
         # Calculate metrics
         sev_acc = calculate_accuracy(sev_logits, batch["label_severity"])

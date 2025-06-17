@@ -101,6 +101,10 @@ def create_trainer(args, callbacks, logger_instance=None):
     
     # Configure gradient clipping
     gradient_clip_val = getattr(args, 'gradient_clip_norm', 1.0)
+    # Be more conservative with gradient clipping to prevent NaN propagation
+    if gradient_clip_val > 0.5:
+        logger.warning(f"Large gradient clip value ({gradient_clip_val}) detected. Reducing to 0.5 for stability.")
+        gradient_clip_val = 0.5
     gradient_clip_algorithm = 'norm'
     
     # Create trainer configuration

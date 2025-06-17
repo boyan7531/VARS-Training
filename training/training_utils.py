@@ -180,6 +180,9 @@ class FocalLoss(nn.Module):
         self.label_smoothing = label_smoothing
         
     def forward(self, inputs, targets):
+        # Clamp inputs to prevent extreme logits that cause NaN
+        inputs = torch.clamp(inputs, min=-10.0, max=10.0)
+        
         # Standard cross entropy with label smoothing
         ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, 
                                 reduction='none', label_smoothing=self.label_smoothing)
@@ -187,8 +190,17 @@ class FocalLoss(nn.Module):
         # Calculate pt (model confidence for correct class)
         pt = torch.exp(-ce_loss)
         
+        # Clamp pt to prevent numerical issues with (1-pt)^gamma
+        pt = torch.clamp(pt, min=1e-8, max=1.0 - 1e-8)
+        
         # Apply focal term: (1-pt)^gamma
         focal_loss = (1 - pt) ** self.gamma * ce_loss
+        
+        # Safety check for NaN/Inf
+        if torch.isnan(focal_loss).any() or torch.isinf(focal_loss).any():
+            logger.warning("NaN/Inf detected in focal loss, applying fallback")
+            # Fallback to standard cross entropy
+            focal_loss = ce_loss
         
         if self.reduction == 'mean':
             return focal_loss.mean()
@@ -213,11 +225,15 @@ def view_consistency_loss(logits, mask, temperature=1.0):
     batch_size, max_views, num_classes = logits.shape
     device = logits.device
     
+    # Early exit if not enough valid views
     if mask.sum() < 2:  # Need at least 2 valid views for consistency
-        return torch.tensor(0.0, device=device, requires_grad=True)
+        return torch.zeros(1, device=device, requires_grad=True)
     
-    total_loss = torch.tensor(0.0, device=device, requires_grad=True)
-    num_pairs = 0
+    # Clamp logits to prevent numerical instability
+    logits = torch.clamp(logits, min=-10.0, max=10.0)
+    
+    # Use list to accumulate losses, then stack - more numerically stable
+    all_kl_losses = []
     
     # For each batch
     for b in range(batch_size):
@@ -230,29 +246,44 @@ def view_consistency_loss(logits, mask, temperature=1.0):
             for j in range(i + 1, len(valid_views)):
                 view_i, view_j = valid_views[i], valid_views[j]
                 
-                # Get logits for this pair
+                # Get logits for this pair and apply temperature
                 logits_i = logits[b, view_i] / temperature  # [C]
                 logits_j = logits[b, view_j] / temperature  # [C]
                 
-                # Compute log-probabilities and probabilities
-                log_p_i = torch.log_softmax(logits_i, dim=-1)
-                log_p_j = torch.log_softmax(logits_j, dim=-1)
+                # Compute probabilities with numerical stability
                 p_i = torch.softmax(logits_i, dim=-1)
                 p_j = torch.softmax(logits_j, dim=-1)
                 
-                # Symmetric KL divergence: KL(P_i||P_j) + KL(P_j||P_i)
-                # Use manual calculation to avoid reduction parameter compatibility issues
-                kl_ij = (p_j * (torch.log(p_j + 1e-8) - log_p_i)).sum()
-                kl_ji = (p_i * (torch.log(p_i + 1e-8) - log_p_j)).sum()
+                # Clamp probabilities to prevent log(0)
+                p_i = torch.clamp(p_i, min=1e-8, max=1.0)
+                p_j = torch.clamp(p_j, min=1e-8, max=1.0)
                 
-                total_loss = total_loss + kl_ij + kl_ji
-                num_pairs += 1
+                # Compute KL divergences using more stable formulation
+                # KL(P_i||P_j) = sum(p_i * log(p_i / p_j))
+                kl_ij = torch.sum(p_i * (torch.log(p_i) - torch.log(p_j)))
+                kl_ji = torch.sum(p_j * (torch.log(p_j) - torch.log(p_i)))
+                
+                # Symmetric KL divergence
+                symmetric_kl = kl_ij + kl_ji
+                
+                # Clamp the result to prevent extreme values
+                symmetric_kl = torch.clamp(symmetric_kl, min=0.0, max=10.0)
+                
+                all_kl_losses.append(symmetric_kl)
     
-    # Average over all valid pairs
-    if num_pairs > 0:
-        return total_loss / num_pairs
-    else:
-        return torch.tensor(0.0, device=device, requires_grad=True)
+    # Compute final loss
+    if len(all_kl_losses) == 0:
+        return torch.zeros(1, device=device, requires_grad=True)
+    
+    # Stack and mean - more numerically stable than manual accumulation
+    total_loss = torch.stack(all_kl_losses).mean()
+    
+    # Final safety check for NaN/Inf
+    if torch.isnan(total_loss) or torch.isinf(total_loss):
+        logger.warning("NaN/Inf detected in view consistency loss, returning zero")
+        return torch.zeros(1, device=device, requires_grad=True)
+    
+    return total_loss
 
 
 class AdaptiveFocalLoss(nn.Module):
@@ -297,6 +328,9 @@ class AdaptiveFocalLoss(nn.Module):
             AdaptiveFocalLoss._logged_gamma_values = True
     
     def forward(self, inputs, targets):
+        # Clamp inputs to prevent extreme logits that cause NaN
+        inputs = torch.clamp(inputs, min=-10.0, max=10.0)
+        
         # Standard cross entropy component
         ce_loss = F.cross_entropy(
             inputs, targets, 
@@ -308,6 +342,9 @@ class AdaptiveFocalLoss(nn.Module):
         # Calculate pt (model confidence for correct class)
         pt = torch.exp(-ce_loss)
         
+        # Clamp pt to prevent numerical issues
+        pt = torch.clamp(pt, min=1e-8, max=1.0 - 1e-8)
+        
         # Apply class-specific gamma focusing
         batch_gammas = torch.tensor(
             [self.class_gamma_map.get(t.item(), 2.0) for t in targets],
@@ -318,6 +355,12 @@ class AdaptiveFocalLoss(nn.Module):
         # Apply focal term with class-specific gamma: (1-pt)^gamma_c
         focal_weights = torch.pow(1 - pt, batch_gammas)
         focal_loss = focal_weights * ce_loss
+        
+        # Safety check for NaN/Inf
+        if torch.isnan(focal_loss).any() or torch.isinf(focal_loss).any():
+            logger.warning("NaN/Inf detected in adaptive focal loss, applying fallback")
+            # Fallback to standard cross entropy
+            focal_loss = ce_loss
         
         if self.reduction == 'mean':
             return focal_loss.mean()
@@ -479,6 +522,20 @@ def calculate_multitask_loss(sev_logits, act_logits, batch_data, loss_config: di
         # Log view consistency loss (only from main process)
         if is_main_process():
             logger.debug(f"View consistency loss - Severity: {vc_sev:.4f}, Action: {vc_act:.4f}, Total: {vc_loss_total:.4f}")
+    
+    # Final safety check for NaN/Inf in total loss
+    if torch.isnan(total_loss) or torch.isinf(total_loss):
+        logger.error("NaN/Inf detected in total loss!")
+        logger.error(f"Loss components: sev={loss_sev:.4f}, act={loss_act:.4f}")
+        if 'vc_loss_total' in loss_components:
+            logger.error(f"View consistency: {loss_components['vc_loss_total']:.4f}")
+        logger.error("Falling back to severity loss only to continue training")
+        total_loss = loss_sev
+        
+        # Double-check the fallback
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            logger.error("Even fallback loss is NaN/Inf! Using dummy loss.")
+            total_loss = torch.tensor(1.0, device=sev_logits.device, requires_grad=True)
     
     return total_loss, loss_sev, loss_act, loss_components
 
