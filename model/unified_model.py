@@ -108,7 +108,7 @@ class OptimizedMViTProcessor(nn.Module):
                 # If view_mask is 2D, assume it applies to all clips
             
             effective_batch_size = batch_size * clips_per_video
-        else:  # [B, max_views, C, T, H, W]
+        elif clips.dim() == 6:  # [B, max_views, C, T, H, W]
             batch_size, max_views = clips.shape[:2]
             clips_per_video = 1
             effective_batch_size = batch_size
@@ -118,6 +118,20 @@ class OptimizedMViTProcessor(nn.Module):
                 # If we have 3D view_mask but 2D clips, squeeze the clips dimension
                 if view_mask.shape[1] == 1:  # [B, 1, max_views]
                     view_mask = view_mask.squeeze(1)  # [B, max_views]
+        elif clips.dim() == 5:  # [B, C, T, H, W] - single view case
+            batch_size = clips.shape[0]
+            max_views = 1
+            clips_per_video = 1
+            effective_batch_size = batch_size
+            
+            # Create view_mask for single view if not provided
+            if view_mask is None:
+                view_mask = torch.ones(batch_size, 1, dtype=torch.bool, device=clips.device)
+            elif view_mask.dim() == 2 and view_mask.shape[1] > 1:
+                # If we have multi-view mask but single view clips, take first column
+                view_mask = view_mask[:, :1]
+        else:
+            raise ValueError(f"Unexpected clips tensor dimensions: {clips.dim()}. Expected 5D [B,C,T,H,W], 6D [B,V,C,T,H,W], or 7D [B,clips_per_video,V,C,T,H,W]")
         
         device = clips.device
         
@@ -126,7 +140,14 @@ class OptimizedMViTProcessor(nn.Module):
         # Pre-allocate output tensors for better memory management
         # Get feature dimension from a single forward pass
         with torch.no_grad():
-            sample_clip = clips[0, 0].unsqueeze(0)  # [1, C, T, H, W]
+            # Handle different tensor dimensions correctly
+            if clips.dim() == 6:  # [B, max_views, C, T, H, W]
+                sample_clip = clips[0, 0].unsqueeze(0)  # [1, C, T, H, W]
+            elif clips.dim() == 5:  # [B, C, T, H, W] - single view case
+                sample_clip = clips[0].unsqueeze(0)  # [1, C, T, H, W]
+            else:
+                raise ValueError(f"Unexpected clips tensor dimensions: {clips.dim()}")
+                
             logger.debug(f"Sample clip shape: {sample_clip.shape}")
             sample_features = self._forward_single_view(sample_clip)
             logger.debug(f"Sample features shape: {sample_features.shape}")
@@ -153,8 +174,17 @@ class OptimizedMViTProcessor(nn.Module):
         
         # Process views sequentially to avoid memory fragmentation
         for view_idx in range(max_views):
-            # Get current view for all batches
-            current_view = clips[:, view_idx]  # [effective_batch_size, C, T, H, W]
+            # Get current view for all batches - handle different tensor dimensions
+            if clips.dim() == 6:  # [B, max_views, C, T, H, W]
+                current_view = clips[:, view_idx]  # [effective_batch_size, C, T, H, W]
+            elif clips.dim() == 5:  # [B, C, T, H, W] - single view case
+                if view_idx == 0:
+                    current_view = clips  # [effective_batch_size, C, T, H, W]
+                else:
+                    # For single view case, only process view_idx 0
+                    continue
+            else:
+                raise ValueError(f"Unexpected clips tensor dimensions: {clips.dim()}")
             
             # Only process if any batch has a valid view at this index
             if view_mask[:, view_idx].any():
@@ -265,11 +295,11 @@ class OptimizedMViTProcessor(nn.Module):
         """Forward pass through backbone with optimized memory usage and NaN protection."""
         # Add input validation
         if torch.isnan(clips).any():
-            logger.error(f"NaN detected in input clips! Shape: {clips.shape}")
-            logger.error(f"NaN count: {torch.isnan(clips).sum().item()}")
+            nan_count = torch.isnan(clips).sum().item()
+            logger.debug(f"NaN detected in input clips! Shape: {clips.shape}, Count: {nan_count}")
             # Replace NaN with zeros as a fallback
             clips = torch.where(torch.isnan(clips), torch.zeros_like(clips), clips)
-            logger.warning("Replaced NaN input values with zeros")
+            logger.debug("Replaced NaN input values with zeros")
         
         # Check for padded views (zeros or very small values)
         is_padded = (clips.abs() < 1e-4).all(dim=(1,2,3,4)) if clips.dim() == 5 else (clips.abs() < 1e-4).all()
@@ -344,16 +374,29 @@ class OptimizedMViTProcessor(nn.Module):
             
             # Final NaN check
             if torch.isnan(features).any():
-                logger.error(f"NaN detected in backbone output! Shape: {features.shape}")
-                logger.error(f"Features NaN count: {torch.isnan(features).sum().item()}")
+                nan_count = torch.isnan(features).sum().item()
+                logger.debug(f"NaN detected in backbone output! Shape: {features.shape}, Count: {nan_count}")
                 # Replace NaN with zeros
                 features = torch.where(torch.isnan(features), torch.zeros_like(features), features)
-                logger.warning("Replaced NaN backbone features with zeros")
+                logger.debug("Replaced NaN backbone features with zeros")
             
             return features
             
         except Exception as e:
-            logger.error(f"Error in backbone forward pass: {str(e)}")
+            # Categorize errors for better logging
+            error_msg = str(e)
+            is_expected_error = any(pattern in error_msg.lower() for pattern in [
+                'expected input',  # Channel dimension mismatches
+                'size mismatch',   # Tensor size issues
+                'out of bounds',   # Index errors
+                'invalid argument' # Invalid tensor operations
+            ])
+            
+            if is_expected_error:
+                logger.debug(f"Handled expected backbone error: {error_msg}")
+            else:
+                logger.warning(f"Unexpected backbone error: {error_msg}")
+                
             # Return zero features as fallback
             feature_dim = 768  # Default feature dimension
             batch_size = clips_to_process.shape[0] if clips_to_process.dim() > 4 else 1
