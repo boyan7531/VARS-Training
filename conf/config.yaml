@@ -36,4 +36,8 @@ lr_warmup_pct: 0.05          # fraction of steps to warm-up over
 lr_warmup_start_lr: null     # null => lr / 100
 
 # Other model-level knobs
-max_views: null              # limit maximum number of camera views (null => all) 
+max_views: null              # limit maximum number of camera views (null => all)
+
+# Multi-clip temporal sampling
+clips_per_video: 1           # number of clips per video (1=single, 3+ for ensemble)
+clip_sampling: uniform       # sampling strategy: 'uniform' or 'random' 

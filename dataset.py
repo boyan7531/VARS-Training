@@ -492,7 +492,9 @@ class SoccerNetMVFoulDataset(Dataset):
                  transform=None,
                  target_height: int = 224,
                  target_width: int = 224,
-                 use_severity_aware_aug: bool = True):
+                 use_severity_aware_aug: bool = True,
+                 clips_per_video: int = 1,
+                 clip_sampling: str = 'uniform'):
         """
         Args:
             dataset_path (str): Path to the root of the SoccerNet MVFoul dataset (e.g., /path/to/SoccerNet_data/mvfouls).
@@ -538,6 +540,8 @@ class SoccerNetMVFoulDataset(Dataset):
         self.target_height = target_height
         self.target_width = target_width
         self.use_severity_aware_aug = use_severity_aware_aug
+        self.clips_per_video = clips_per_video
+        self.clip_sampling = clip_sampling
 
         # Validate frame range
         expected_frames = end_frame - start_frame + 1
@@ -866,7 +870,7 @@ class SoccerNetMVFoulDataset(Dataset):
             # print(f"Error getting FPS for {video_path_str}: {e}. Using default {default_fps}.")
             return float(default_fps)
 
-    def _get_video_clip(self, video_path_str: str, action_info: dict):
+    def _get_video_clip(self, video_path_str: str, action_info: dict, start_frame_override: int = None):
         video_path = self.split_dir / video_path_str
         if not video_path.exists():
             # print(f"Warning: Video file {video_path} not found for action {action_info['action_id']}. Skipping this view.")
@@ -884,11 +888,13 @@ class SoccerNetMVFoulDataset(Dataset):
             original_fps = self.target_fps
 
         # Calculate start and end times in seconds for read_video
-        # self.start_frame and self.end_frame are 0-indexed inclusive
-        start_time_sec = self.start_frame / original_fps
+        # Use override start frame if provided, otherwise use default
+        actual_start_frame = start_frame_override if start_frame_override is not None else self.start_frame
+        start_time_sec = actual_start_frame / original_fps
         # To include self.end_frame, read_video's end_pts should be the start of the (self.end_frame + 1)-th frame.
         # read_video loads [start_pts, end_pts)
-        end_time_sec = (self.end_frame + 1) / original_fps
+        # For multi-clip, calculate end based on frames_per_clip from start
+        end_time_sec = (actual_start_frame + self.frames_per_clip) / original_fps
         
         if start_time_sec >= end_time_sec:
             # print(f"Warning: Calculated start_time_sec {start_time_sec} >= end_time_sec {end_time_sec} for {video_path}. Attempting to load small segment around start.")
@@ -945,6 +951,39 @@ class SoccerNetMVFoulDataset(Dataset):
 
         clip = sampled_frames.permute(1, 0, 2, 3) # (C, T, H, W) -> (C, frames_per_clip, H, W)
         return clip
+
+    def _pick_start_frames(self, total_frames: int, clip_length: int) -> list[int]:
+        """Pick start frames for multi-clip sampling."""
+        if self.clips_per_video == 1:
+            # Single clip - use existing logic centered around foul
+            return [self.start_frame]
+        
+        # Calculate available range for sampling clips
+        max_start_frame = min(total_frames - clip_length, self.end_frame - clip_length + 1)
+        min_start_frame = max(0, self.start_frame)
+        
+        if max_start_frame <= min_start_frame:
+            # Not enough frames, return single clip at start_frame
+            return [max(0, min(self.start_frame, total_frames - clip_length))]
+        
+        if self.clip_sampling == 'uniform':
+            # Evenly spaced clips across the available range
+            if self.clips_per_video == 1:
+                return [min_start_frame]
+            
+            stride = (max_start_frame - min_start_frame) / (self.clips_per_video - 1)
+            starts = [min_start_frame + int(stride * i) for i in range(self.clips_per_video)]
+            return starts
+        else:  # random sampling
+            import random
+            starts = sorted(random.sample(
+                range(min_start_frame, max_start_frame + 1), 
+                min(self.clips_per_video, max_start_frame - min_start_frame + 1)
+            ))
+            # Pad with duplicates if needed
+            while len(starts) < self.clips_per_video:
+                starts.append(starts[-1])
+            return starts
 
     def __getitem__(self, idx):
         action_info = self.actions[idx]
@@ -1004,95 +1043,104 @@ class SoccerNetMVFoulDataset(Dataset):
                 "handball_offence_standard_idx": torch.tensor(action_info["handball_offence_standard_idx"], dtype=torch.long)
             }
 
-        clips_for_action = []
-
         # Define item-specific augmentation based on severity for training split
         item_specific_aug = None
         if self.use_severity_aware_aug and self.split == 'train':
             severity_label = action_info["label_severity"]
             item_specific_aug = SeverityAwareAugmentation(severity_label)
 
-        for video_path_rel_str in selected_video_paths_relative:
-            clip = self._get_video_clip(video_path_rel_str, action_info)
-            if clip is not None:
-                if item_specific_aug:
-                    clip = item_specific_aug(clip)
-
-                if self.transform: # Apply general transforms like normalization
-                    clip = self.transform(clip)
-                clips_for_action.append(clip)
+        # Multi-clip sampling: get start frames first
+        # For this we need to estimate total frames - use a rough estimate based on action duration
+        estimated_total_frames = max(100, self.end_frame + 20)  # Conservative estimate
+        start_frames = self._pick_start_frames(estimated_total_frames, self.frames_per_clip)
         
-        num_successfully_loaded = len(clips_for_action)
-        num_expected_views = len(selected_video_paths_relative)
+        clips_for_action = []  # Shape will be [clips_per_video, num_views, C, T, H, W]
+        
+        for clip_idx, start_frame in enumerate(start_frames):
+            clips_for_this_start = []
+            
+            for video_path_rel_str in selected_video_paths_relative:
+                clip = self._get_video_clip(video_path_rel_str, action_info, start_frame_override=start_frame)
+                if clip is not None:
+                    if item_specific_aug:
+                        clip = item_specific_aug(clip)
 
+                    if self.transform: # Apply general transforms like normalization
+                        clip = self.transform(clip)
+                    clips_for_this_start.append(clip)
+            
+            clips_for_action.append(clips_for_this_start)
+        
+        # Now organize clips: clips_for_action is [clips_per_video][views_per_clip]
+        # We need to restructure to [clips_per_video, views, C, T, H, W]
+        num_expected_views = len(selected_video_paths_relative)
+        
+        # Check if we got any clips at all
+        total_clips_loaded = sum(len(clips_for_start) for clips_for_start in clips_for_action)
+        
         final_clips_tensor = None
-        if num_successfully_loaded == 0:
-            print(f"Warning: All views failed to load for action {action_info['action_id']}. Returning dummy tensor.")
-            # Create a dummy tensor of shape (num_expected_views, C, T, H, W)
-            final_clips_tensor = torch.zeros((num_expected_views, 3, self.frames_per_clip, self.target_height, self.target_width))
-        elif num_successfully_loaded < num_expected_views:
-            print(f"Warning: Loaded {num_successfully_loaded}/{num_expected_views} views for action {action_info['action_id']}. Padding with dummies.")
-            
-            # CRITICAL: First standardize existing clips to ensure consistent temporal dimension
-            target_frames = self.frames_per_clip
-            standardized_clips = []
-            
-            for clip in clips_for_action:
-                current_frames = clip.shape[1]  # Assuming shape is [C, T, H, W]
-                
-                if current_frames != target_frames:
-                    if current_frames > target_frames:
-                        # Crop: center crop to target length
-                        start_idx = (current_frames - target_frames) // 2
-                        clip = clip[:, start_idx:start_idx + target_frames, :, :]
-                    else:
-                        # Pad: repeat boundary frames
-                        padding_needed = target_frames - current_frames
-                        left_pad = padding_needed // 2
-                        right_pad = padding_needed - left_pad
-                        
-                        left_padding = clip[:, :1, :, :].repeat(1, left_pad, 1, 1)
-                        right_padding = clip[:, -1:, :, :].repeat(1, right_pad, 1, 1)
-                        clip = torch.cat([left_padding, clip, right_padding], dim=1)
-                
-                standardized_clips.append(clip)
-            
-            # Create dummy clip with standardized dimensions
-            dummy_view_clip = torch.zeros((3, target_frames, self.target_height, self.target_width))
-            
-            # Add dummy clips to reach expected number of views
-            for _ in range(num_expected_views - num_successfully_loaded):
-                standardized_clips.append(dummy_view_clip)
-            
-            final_clips_tensor = torch.stack(standardized_clips)
+        if total_clips_loaded == 0:
+            print(f"Warning: All clips failed to load for action {action_info['action_id']}. Returning dummy tensor.")
+            # Create a dummy tensor of shape (clips_per_video, num_expected_views, C, T, H, W)
+            final_clips_tensor = torch.zeros((self.clips_per_video, num_expected_views, 3, self.frames_per_clip, self.target_height, self.target_width))
         else:
-            # CRITICAL: Ensure all clips have the same temporal dimension before stacking
-            # This handles cases where augmentations like VariableLengthAugmentation
-            # may have produced slightly different lengths across views
+            # Process each clip set and create the final tensor
+            final_clips_list = []
             target_frames = self.frames_per_clip
-            standardized_clips = []
             
-            for clip in clips_for_action:
-                current_frames = clip.shape[1]  # Assuming shape is [C, T, H, W]
-                
-                if current_frames != target_frames:
-                    if current_frames > target_frames:
-                        # Crop: center crop to target length
-                        start_idx = (current_frames - target_frames) // 2
-                        clip = clip[:, start_idx:start_idx + target_frames, :, :]
-                    else:
-                        # Pad: repeat boundary frames
-                        padding_needed = target_frames - current_frames
-                        left_pad = padding_needed // 2
-                        right_pad = padding_needed - left_pad
-                        
-                        left_padding = clip[:, :1, :, :].repeat(1, left_pad, 1, 1)
-                        right_padding = clip[:, -1:, :, :].repeat(1, right_pad, 1, 1)
-                        clip = torch.cat([left_padding, clip, right_padding], dim=1)
-                
-                standardized_clips.append(clip)
+            for clips_for_start in clips_for_action:
+                # Handle this clip's views
+                if len(clips_for_start) == 0:
+                    # No views for this clip - create dummy
+                    dummy_clips = torch.zeros((num_expected_views, 3, target_frames, self.target_height, self.target_width))
+                    final_clips_list.append(dummy_clips)
+                elif len(clips_for_start) < num_expected_views:
+                    # Some views missing - pad with dummies
+                    standardized_clips = []
+                    
+                    for clip in clips_for_start:
+                        current_frames = clip.shape[1]  # [C, T, H, W]
+                        if current_frames != target_frames:
+                            if current_frames > target_frames:
+                                start_idx = (current_frames - target_frames) // 2
+                                clip = clip[:, start_idx:start_idx + target_frames, :, :]
+                            else:
+                                padding_needed = target_frames - current_frames
+                                left_pad = padding_needed // 2
+                                right_pad = padding_needed - left_pad
+                                left_padding = clip[:, :1, :, :].repeat(1, left_pad, 1, 1)
+                                right_padding = clip[:, -1:, :, :].repeat(1, right_pad, 1, 1)
+                                clip = torch.cat([left_padding, clip, right_padding], dim=1)
+                        standardized_clips.append(clip)
+                    
+                    # Add dummy clips for missing views
+                    dummy_clip = torch.zeros((3, target_frames, self.target_height, self.target_width))
+                    for _ in range(num_expected_views - len(clips_for_start)):
+                        standardized_clips.append(dummy_clip)
+                    
+                    final_clips_list.append(torch.stack(standardized_clips))
+                else:
+                    # All views present - standardize and stack
+                    standardized_clips = []
+                    for clip in clips_for_start:
+                        current_frames = clip.shape[1]  # [C, T, H, W]
+                        if current_frames != target_frames:
+                            if current_frames > target_frames:
+                                start_idx = (current_frames - target_frames) // 2
+                                clip = clip[:, start_idx:start_idx + target_frames, :, :]
+                            else:
+                                padding_needed = target_frames - current_frames
+                                left_pad = padding_needed // 2
+                                right_pad = padding_needed - left_pad
+                                left_padding = clip[:, :1, :, :].repeat(1, left_pad, 1, 1)
+                                right_padding = clip[:, -1:, :, :].repeat(1, right_pad, 1, 1)
+                                clip = torch.cat([left_padding, clip, right_padding], dim=1)
+                        standardized_clips.append(clip)
+                    
+                    final_clips_list.append(torch.stack(standardized_clips))
             
-            final_clips_tensor = torch.stack(standardized_clips)
+            # Stack all clips: [clips_per_video, views, C, T, H, W]
+            final_clips_tensor = torch.stack(final_clips_list)
 
         # Return both original and standardized indices in a dictionary
         return {

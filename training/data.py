@@ -671,7 +671,9 @@ def create_datasets(args):
             max_views_to_load=args.max_views,  # None by default = use all views
             transform=train_transform,
             target_height=args.img_height,
-            target_width=args.img_width
+            target_width=args.img_width,
+            clips_per_video=getattr(args, 'clips_per_video', 1),
+            clip_sampling=getattr(args, 'clip_sampling', 'uniform')
         )
         
         val_dataset = SoccerNetMVFoulDataset(
@@ -684,7 +686,9 @@ def create_datasets(args):
             max_views_to_load=args.max_views,  # None by default = use all views
             transform=val_transform,
             target_height=args.img_height,
-            target_width=args.img_width
+            target_width=args.img_width,
+            clips_per_video=getattr(args, 'clips_per_video', 1),
+            clip_sampling=getattr(args, 'clip_sampling', 'uniform')
         )
     except FileNotFoundError as e:
         logger.error(f"Error loading dataset: {e}")

@@ -303,6 +303,12 @@ def parse_args():
     parser.add_argument('--mvit_sequential_processing', action='store_true', default=True,
                        help='Use sequential view processing for MViT to reduce memory fragmentation')
     
+    # === MULTI-CLIP TEMPORAL SAMPLING ===
+    parser.add_argument('--clips_per_video', type=int, default=1,
+                       help='Number of clips to sample per video (1=single clip, 3+ for temporal ensemble)')
+    parser.add_argument('--clip_sampling', type=str, default='uniform', choices=['uniform', 'random'],
+                       help='How to sample multiple clips: uniform (evenly spaced) or random positions')
+    
     # === TESTING AND DEVELOPMENT ===
     parser.add_argument('--test_run', action='store_true', help='Perform a quick test run (1 epoch, few batches, no saving)')
     parser.add_argument('--test_batches', type=int, default=2, help='Number of batches to run in test mode')

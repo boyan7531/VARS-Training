@@ -388,12 +388,21 @@ class MultiTaskMultiViewMViT(nn.Module):
             Dict with aggregated and per-view logits if return_view_logits=True
         """
         try:
-            # Get batch size from clips
+            # Get clips and handle multi-clip format
             clips = batch_data["clips"]
             if isinstance(clips, list):
                 batch_size = len(clips)
+                clips_per_video = 1  # Variable list format doesn't support multi-clip yet
             else:
-                batch_size = clips.shape[0]
+                # Check if we have multi-clip format: [B, C, V, 3, T, H, W]
+                if clips.dim() == 7:
+                    batch_size, clips_per_video = clips.shape[:2]
+                    # Flatten clips and views: [B*C, V, 3, T, H, W]
+                    clips = clips.view(batch_size * clips_per_video, *clips.shape[2:])
+                else:
+                    # Standard format: [B, V, 3, T, H, W]
+                    batch_size = clips.shape[0]
+                    clips_per_video = 1
             
             # Apply adaptive augmentation based on severity (more for minority classes)
             if self.use_augmentation and self.training:
@@ -426,6 +435,12 @@ class MultiTaskMultiViewMViT(nn.Module):
             else:
                 severity_logits = self.severity_head(combined_features)
                 action_type_logits = self.action_type_head(combined_features)
+            
+            # Handle multi-clip averaging if we flattened clips earlier
+            if clips_per_video > 1:
+                # Reshape back to [B, C, num_classes] and average over clips
+                severity_logits = severity_logits.view(batch_size, clips_per_video, -1).mean(dim=1)
+                action_type_logits = action_type_logits.view(batch_size, clips_per_video, -1).mean(dim=1)
             
             # Generate per-view logits if requested
             if return_view_logits:
