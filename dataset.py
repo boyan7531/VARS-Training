@@ -1260,7 +1260,9 @@ class SoccerNetMVFoulDataset(Dataset):
             clips_for_this_start = []
             
             for video_path_rel_str in selected_video_paths_relative:
-                clip = self._get_video_clip(video_path_rel_str, action_info, start_frame_override=start_frame)
+                # Construct full video path by combining dataset path with relative path
+                full_video_path = self.split_dir / video_path_rel_str
+                clip = self._get_video_clip(str(full_video_path), action_info, start_frame_override=start_frame)
                 if clip is not None:
                     if item_specific_aug:
                         # [NaN-origin] Step 3: Check before SeverityAwareAugmentation
