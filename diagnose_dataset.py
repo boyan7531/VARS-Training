@@ -57,6 +57,21 @@ def analyze_dataset_structure(dataset_path: str, split: str):
     
     print(f"✅ Annotations loaded successfully")
     
+    # Debug: Show the structure of annotations
+    print(f"\n🔍 Inspecting annotations structure...")
+    print(f"   Type: {type(annotations)}")
+    if isinstance(annotations, dict):
+        sample_keys = list(annotations.keys())[:3]
+        print(f"   Sample keys: {sample_keys}")
+        if sample_keys:
+            first_key = sample_keys[0]
+            first_value = annotations[first_key]
+            print(f"   Type of '{first_key}': {type(first_value)}")
+            if isinstance(first_value, dict):
+                print(f"   Keys in '{first_key}': {list(first_value.keys())}")
+            elif isinstance(first_value, str):
+                print(f"   Value of '{first_key}': {first_value[:100]}...")
+    
     # Analyze video file availability
     print(f"\n🎥 Analyzing video file availability...")
     
@@ -66,43 +81,75 @@ def analyze_dataset_structure(dataset_path: str, split: str):
     missing_actions = []
     found_clips = 0
     
-    for action_id, action_data in annotations.items():
-        total_actions += 1
-        clips_info = action_data.get("Clips", [])
+    # Handle different annotation structures
+    if isinstance(annotations, dict):
+        # Check if this is the SoccerNet format with "Actions" key
+        if "Actions" in annotations:
+            print(f"   📝 Found SoccerNet format with 'Actions' key")
+            actions_data = annotations["Actions"]
+            print(f"   📊 Number of actions: {len(actions_data)}")
+        else:
+            print(f"   📝 Using direct format (actions as top-level keys)")
+            actions_data = annotations
         
-        if not clips_info:
-            missing_actions.append(action_id)
-            continue
-        
-        action_has_videos = False
-        for clip_info in clips_info:
-            total_clips += 1
-            raw_url = clip_info.get("Url", "")
+        for action_id, action_data in actions_data.items():
+            total_actions += 1
             
-            if raw_url:
-                # Process URL as done in dataset.py
-                path_prefix_to_strip = f"Dataset/{split.capitalize()}/"
-                if raw_url.startswith(path_prefix_to_strip):
-                    processed_url = raw_url[len(path_prefix_to_strip):]
-                else:
-                    processed_url = raw_url
+            # Handle different data types
+            if isinstance(action_data, str):
+                print(f"   ⚠️  Action {action_id} has string data instead of dict: {action_data[:50]}...")
+                missing_actions.append(action_id)
+                continue
+            elif not isinstance(action_data, dict):
+                print(f"   ⚠️  Action {action_id} has unexpected data type: {type(action_data)}")
+                missing_actions.append(action_id)
+                continue
+            
+            clips_info = action_data.get("Clips", [])
+            
+            if not clips_info:
+                missing_actions.append(action_id)
+                continue
+            
+            action_has_videos = False
+            for clip_info in clips_info:
+                total_clips += 1
                 
-                # Add .mp4 extension if missing
-                if not Path(processed_url).suffix:
-                    processed_url += ".mp4"
-                
-                # Check if file exists
-                video_path = split_dir / processed_url
-                if video_path.exists():
-                    found_clips += 1
-                    action_has_videos = True
+                if isinstance(clip_info, str):
+                    raw_url = clip_info
+                elif isinstance(clip_info, dict):
+                    raw_url = clip_info.get("Url", "")
                 else:
-                    missing_clips += 1
-                    if len(missing_actions) < 10:  # Only show first 10 for brevity
-                        print(f"   ❌ Missing: {video_path}")
-        
-        if not action_has_videos:
-            missing_actions.append(action_id)
+                    print(f"   ⚠️  Unexpected clip info type: {type(clip_info)}")
+                    continue
+                
+                if raw_url:
+                    # Process URL as done in dataset.py
+                    path_prefix_to_strip = f"Dataset/{split.capitalize()}/"
+                    if raw_url.startswith(path_prefix_to_strip):
+                        processed_url = raw_url[len(path_prefix_to_strip):]
+                    else:
+                        processed_url = raw_url
+                    
+                    # Add .mp4 extension if missing
+                    if not Path(processed_url).suffix:
+                        processed_url += ".mp4"
+                    
+                    # Check if file exists
+                    video_path = split_dir / processed_url
+                    if video_path.exists():
+                        found_clips += 1
+                        action_has_videos = True
+                    else:
+                        missing_clips += 1
+                        if missing_clips <= 10:  # Only show first 10 for brevity
+                            print(f"   ❌ Missing: {video_path}")
+            
+            if not action_has_videos:
+                missing_actions.append(action_id)
+    else:
+        print(f"   ❌ Unexpected annotations structure: {type(annotations)}")
+        return False
     
     print(f"\n📊 Dataset Statistics:")
     print(f"   Total actions: {total_actions}")
@@ -110,7 +157,10 @@ def analyze_dataset_structure(dataset_path: str, split: str):
     print(f"   Clips found: {found_clips}")
     print(f"   Clips missing: {missing_clips}")
     print(f"   Actions with no videos: {len(missing_actions)}")
-    print(f"   Data availability: {found_clips/total_clips*100:.1f}%")
+    if total_clips > 0:
+        print(f"   Data availability: {found_clips/total_clips*100:.1f}%")
+    else:
+        print(f"   Data availability: N/A (no clips expected from annotations)")
     
     if missing_clips > 0:
         print(f"\n⚠️  Found {missing_clips} missing video files!")
