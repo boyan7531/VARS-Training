@@ -215,8 +215,13 @@ class GPUAugmentationPipeline(nn.Module):
             ])
     
     def forward(self, video):
-        for aug in self.augmentations:
+        # [NaN-origin] Step 5: GPU augmentations before/after pattern
+        for aug_idx, aug in enumerate(self.augmentations):
+            video_before = video.clone()
             video = aug(video)
+            if torch.isnan(video).any() and not torch.isnan(video_before).any():
+                logger.error(f"[NaN-origin] GPU augmentation {aug_idx}:{aug.__class__.__name__}")
+                raise RuntimeError("NaN introduced by GPU augmentation")
         return video
 
 
@@ -1453,6 +1458,11 @@ class KorniaGPUAugmentationPipeline(nn.Module):
         if not self.training:
             return video
         
+        # [NaN-origin] Step 5: Check input to KorniaGPUAugmentationPipeline
+        if torch.isnan(video).any():
+            logger.error(f"[NaN-origin] KorniaGPUAugmentationPipeline input NaN")
+            raise RuntimeError("NaN in KorniaGPUAugmentationPipeline input")
+        
         # Handle different video tensor formats
         original_shape = video.shape
         
@@ -1477,6 +1487,11 @@ class KorniaGPUAugmentationPipeline(nn.Module):
             
             # Reshape back to (B, V, C, T, H, W)
             video = video_2d_aug.view(B, V, T, C, H, W).permute(0, 1, 3, 2, 4, 5).contiguous()
+        
+        # [NaN-origin] Step 5: Check output from KorniaGPUAugmentationPipeline
+        if torch.isnan(video).any():
+            logger.error(f"[NaN-origin] KorniaGPUAugmentationPipeline output NaN")
+            raise RuntimeError("NaN in KorniaGPUAugmentationPipeline output")
         
         return video
 

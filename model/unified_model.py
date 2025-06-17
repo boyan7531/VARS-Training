@@ -71,10 +71,11 @@ class OptimizedMViTProcessor(nn.Module):
     Processes views sequentially to avoid memory fragmentation and improve GPU utilization.
     """
     
-    def __init__(self, backbone, use_gradient_checkpointing=False):
+    def __init__(self, backbone, use_gradient_checkpointing=False, use_mixed_precision=False):
         super().__init__()
         self.backbone = backbone
         self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.use_mixed_precision = use_mixed_precision
         
     def forward(self, clips, view_mask=None):
         """
@@ -271,8 +272,8 @@ class OptimizedMViTProcessor(nn.Module):
             clips = torch.where(torch.isnan(clips), torch.zeros_like(clips), clips)
             logger.warning("Replaced NaN input values with zeros")
         
-        # Check for padded views (very small values close to 1e-6)
-        is_padded = (clips.abs() < 1e-5).all(dim=(1,2,3,4)) if clips.dim() == 5 else (clips.abs() < 1e-5).all()
+        # Check for padded views (zeros or very small values)
+        is_padded = (clips.abs() < 1e-4).all(dim=(1,2,3,4)) if clips.dim() == 5 else (clips.abs() < 1e-4).all()
         if is_padded.any() if torch.is_tensor(is_padded) else is_padded:
             logger.debug(f"Detected padded views in input clips")
             # For padded views, return zero features to be masked out later
@@ -436,7 +437,8 @@ class MultiTaskMultiViewMViT(nn.Module):
             # Wrap backbone with optimized processor
             self.mvit_processor = OptimizedMViTProcessor(
                 backbone, 
-                use_gradient_checkpointing=self.use_gradient_checkpointing
+                use_gradient_checkpointing=self.use_gradient_checkpointing,
+                use_mixed_precision=getattr(self.config, 'use_mixed_precision', False)
             )
             
             # Initialize augmentation for addressing class imbalance

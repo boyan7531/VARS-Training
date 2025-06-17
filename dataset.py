@@ -8,6 +8,10 @@ import random
 from collections import defaultdict
 import numpy as np
 from scipy.ndimage import gaussian_filter, map_coordinates
+import logging
+
+# Initialize logger for NaN detection
+logger = logging.getLogger(__name__)
 
 # Optional import for advanced augmentations
 try:
@@ -181,10 +185,20 @@ class RandomBrightnessContrast(torch.nn.Module):
         if random.random() > self.prob:
             return clip
         
+        # DEBUG: Check input
+        if torch.isnan(clip).any():
+            print(f"🚨 RandomBrightnessContrast: NaN in INPUT! Count: {torch.isnan(clip).sum().item()}")
+            return clip
+        
         # Convert to float32 first if it's uint8
         original_dtype = clip.dtype
         if clip.dtype == torch.uint8:
             clip = clip.float() / 255.0
+            
+            # DEBUG: Check after conversion
+            if torch.isnan(clip).any():
+                print(f"🚨 RandomBrightnessContrast: NaN after uint8->float conversion!")
+                return clip
         
         C, T, H, W = clip.shape
         
@@ -194,7 +208,17 @@ class RandomBrightnessContrast(torch.nn.Module):
                 # Random brightness adjustment - clamp factor for safety
                 brightness_factor = 1.0 + random.uniform(-self.brightness_range, self.brightness_range)
                 brightness_factor = max(0.1, min(3.0, brightness_factor))  # Safe range
+                
+                pre_brightness = clip[:, t, :, :].clone()
                 clip[:, t, :, :] = torch.clamp(clip[:, t, :, :] * brightness_factor, 0, 1)
+                
+                # DEBUG: Check after brightness
+                if torch.isnan(clip[:, t, :, :]).any():
+                    print(f"🚨 RandomBrightnessContrast: NaN after brightness on frame {t}!")
+                    print(f"   Brightness factor: {brightness_factor}")
+                    print(f"   Pre-brightness range: {pre_brightness.min():.3f} to {pre_brightness.max():.3f}")
+                    clip[:, t, :, :] = pre_brightness  # Revert
+                    continue
                 
                 # Random contrast adjustment - clamp factor for safety
                 contrast_factor = 1.0 + random.uniform(-self.contrast_range, self.contrast_range)
@@ -203,13 +227,22 @@ class RandomBrightnessContrast(torch.nn.Module):
                 
                 # Ensure mean is not NaN (shouldn't happen, but safety first)
                 if torch.isnan(mean).any():
+                    print(f"🚨 RandomBrightnessContrast: NaN in mean calculation on frame {t}!")
                     continue  # Skip this frame if mean is NaN
                 
+                pre_contrast = clip[:, t, :, :].clone()
                 clip[:, t, :, :] = torch.clamp(mean + contrast_factor * (clip[:, t, :, :] - mean), 0, 1)
+                
+                # DEBUG: Check after contrast
+                if torch.isnan(clip[:, t, :, :]).any():
+                    print(f"🚨 RandomBrightnessContrast: NaN after contrast on frame {t}!")
+                    print(f"   Contrast factor: {contrast_factor}")
+                    print(f"   Mean: {mean.mean().item():.3f}")
+                    clip[:, t, :, :] = pre_contrast  # Revert
         
         # Final safety check
         if torch.isnan(clip).any():
-            logger.warning("NaN detected in RandomBrightnessContrast, replacing with zeros")
+            print(f"🚨 RandomBrightnessContrast: NaN in FINAL output! Count: {torch.isnan(clip).sum().item()}")
             clip = torch.where(torch.isnan(clip), torch.zeros_like(clip), clip)
         
         return clip
@@ -224,11 +257,21 @@ class RandomSpatialCrop(torch.nn.Module):
     def forward(self, clip):
         if random.random() > self.prob:
             return clip
+        
+        # DEBUG: Check input
+        if torch.isnan(clip).any():
+            print(f"🚨 RandomSpatialCrop: NaN in INPUT! Count: {torch.isnan(clip).sum().item()}")
+            return clip
             
         # Convert to float32 first if it's uint8
         original_dtype = clip.dtype
         if clip.dtype == torch.uint8:
             clip = clip.float() / 255.0
+            
+            # DEBUG: Check after conversion
+            if torch.isnan(clip).any():
+                print(f"🚨 RandomSpatialCrop: NaN after uint8->float conversion!")
+                return clip
         
         C, T, H, W = clip.shape
         
@@ -244,23 +287,47 @@ class RandomSpatialCrop(torch.nn.Module):
         # Crop all frames
         cropped_clip = clip[:, :, top:top+crop_h, left:left+crop_w]
         
+        # DEBUG: Check after cropping
+        if torch.isnan(cropped_clip).any():
+            print(f"🚨 RandomSpatialCrop: NaN after CROPPING!")
+            print(f"   Crop params: scale={scale:.3f}, crop_h={crop_h}, crop_w={crop_w}")
+            print(f"   Crop position: top={top}, left={left}")
+            return clip
+        
         # Resize back to original size using proper interpolation
         resized_frames = []
         for t in range(T):
             frame = cropped_clip[:, t]  # [C, H_crop, W_crop]
+            
+            # DEBUG: Check frame before interpolation
+            if torch.isnan(frame).any():
+                print(f"🚨 RandomSpatialCrop: NaN in frame {t} before interpolation!")
+                resized_frames.append(clip[:, t])  # Use original frame
+                continue
+            
             resized_frame = torch.nn.functional.interpolate(
                 frame.unsqueeze(0),  # [1, C, H_crop, W_crop]
                 size=(H, W),
                 mode='bilinear',
                 align_corners=False
             ).squeeze(0)  # [C, H, W]
+            
+            # DEBUG: Check after interpolation
+            if torch.isnan(resized_frame).any():
+                print(f"🚨 RandomSpatialCrop: NaN after INTERPOLATION on frame {t}!")
+                print(f"   Input frame shape: {frame.shape}")
+                print(f"   Input frame range: {frame.min():.3f} to {frame.max():.3f}")
+                print(f"   Target size: ({H}, {W})")
+                resized_frames.append(clip[:, t])  # Use original frame
+                continue
+            
             resized_frames.append(resized_frame)
         
         resized_clip = torch.stack(resized_frames, dim=1)  # [C, T, H, W]
         
         # Safety check for NaN
         if torch.isnan(resized_clip).any():
-            logger.warning("NaN detected in RandomSpatialCrop, returning original clip")
+            print(f"🚨 RandomSpatialCrop: NaN in FINAL output! Count: {torch.isnan(resized_clip).sum().item()}")
             return clip
         
         return resized_clip
@@ -292,9 +359,19 @@ class RandomGaussianNoise(torch.nn.Module):
         if random.random() > self.prob:
             return clip
         
+        # DEBUG: Check input
+        if torch.isnan(clip).any():
+            print(f"🚨 RandomGaussianNoise: NaN in INPUT! Count: {torch.isnan(clip).sum().item()}")
+            return clip
+        
         # Convert to float32 first if it's uint8
         if clip.dtype == torch.uint8:
             clip = clip.float() / 255.0
+            
+            # DEBUG: Check after conversion
+            if torch.isnan(clip).any():
+                print(f"🚨 RandomGaussianNoise: NaN after uint8->float conversion!")
+                return clip
         
         noise_std = random.uniform(*self.std_range)
         # Clamp noise std to safe range
@@ -304,14 +381,17 @@ class RandomGaussianNoise(torch.nn.Module):
         
         # Safety check for NaN in noise (shouldn't happen, but be safe)
         if torch.isnan(noise).any():
-            logger.warning("NaN detected in Gaussian noise, replacing with zeros")
+            print(f"🚨 RandomGaussianNoise: NaN in NOISE generation! Count: {torch.isnan(noise).sum().item()}")
+            print(f"   Noise std: {noise_std}")
             noise = torch.where(torch.isnan(noise), torch.zeros_like(noise), noise)
         
         result = torch.clamp(clip + noise, 0, 1)
         
         # Final safety check
         if torch.isnan(result).any():
-            logger.warning("NaN detected in RandomGaussianNoise result, returning original clip")
+            print(f"🚨 RandomGaussianNoise: NaN in FINAL result! Count: {torch.isnan(result).sum().item()}")
+            print(f"   Input range: {clip.min():.3f} to {clip.max():.3f}")
+            print(f"   Noise range: {noise.min():.3f} to {noise.max():.3f}")
             return clip
         
         return result
@@ -341,10 +421,20 @@ class SeverityAwareAugmentation(torch.nn.Module):
         ])
     
     def forward(self, clip):
+        # [NaN-origin] Step 3: Check SeverityAwareAugmentation separately
+        clip_before = clip.clone()
+        
         if self.severity_label in self.heavy_aug_classes:
-            return self.heavy_aug(clip)
+            clip_result = self.heavy_aug(clip)
         else:
-            return self.light_aug(clip)
+            clip_result = self.light_aug(clip)
+        
+        # Check if augmentation introduced NaN
+        if torch.isnan(clip_result).any() and not torch.isnan(clip_before).any():
+            logger.error(f"[NaN-origin] SeverityAwareAugmentation augmentation pipeline for severity {self.severity_label}")
+            raise RuntimeError("NaN introduced by severity-aware augmentation")
+        
+        return clip_result
 
 class ClassBalancedSampler(torch.utils.data.Sampler):
     """Custom sampler that balances severity classes by oversampling minority classes"""
@@ -907,86 +997,160 @@ class SoccerNetMVFoulDataset(Dataset):
             return float(default_fps)
 
     def _get_video_clip(self, video_path_str: str, action_info: dict, start_frame_override: int = None):
-        video_path = self.split_dir / video_path_str
+        """
+        Load and process a video clip with comprehensive NaN debugging.
+        """
+        video_path = Path(video_path_str)
+        
         if not video_path.exists():
-            # print(f"Warning: Video file {video_path} not found for action {action_info['action_id']}. Skipping this view.")
+            print(f"Video file not found: {video_path}")
             return None
-
-        # --- Determine Original FPS ---
-        original_fps_annotated = action_info.get("original_fps_from_annotation")
-        if original_fps_annotated is not None and float(original_fps_annotated) > 0:
-            original_fps = float(original_fps_annotated)
-        else:
-            original_fps = self._get_video_fps(str(video_path), self.target_fps)
         
-        if original_fps <= 0: # Should be caught by _get_video_fps default, but defensive
-            # print(f"Warning: Invalid original_fps ({original_fps}) for {video_path}. Using target_fps {self.target_fps}.")
-            original_fps = self.target_fps
-
-        # Calculate start and end times in seconds for read_video
-        # Use override start frame if provided, otherwise use default
-        actual_start_frame = start_frame_override if start_frame_override is not None else self.start_frame
-        start_time_sec = actual_start_frame / original_fps
-        # To include self.end_frame, read_video's end_pts should be the start of the (self.end_frame + 1)-th frame.
-        # read_video loads [start_pts, end_pts)
-        # For multi-clip, calculate end based on frames_per_clip from start
-        end_time_sec = (actual_start_frame + self.frames_per_clip) / original_fps
-        
-        if start_time_sec >= end_time_sec:
-            # print(f"Warning: Calculated start_time_sec {start_time_sec} >= end_time_sec {end_time_sec} for {video_path}. Attempting to load small segment around start.")
-            # Attempt to load a small segment if times are problematic, e.g., 1 second or frames_per_clip duration
-            num_frames_to_load_for_segment = self.frames_per_clip # Or a fixed number like 30 if FPS is low
-            end_time_sec = start_time_sec + (num_frames_to_load_for_segment / original_fps)
-
-
-        vframes_segment = None
         try:
-            vframes_segment, aframes, info = read_video(
+            # Get video info first
+            video_fps = self._get_video_fps(str(video_path), default_fps=25.0)
+            
+            # Calculate frame indices
+            if start_frame_override is not None:
+                start_frame = start_frame_override
+            else:
+                start_frame = self.start_frame
+            
+            end_frame = start_frame + self.frames_per_clip
+            
+            # Load video with torchvision
+            video_tensor, audio_tensor, info = torchvision.io.read_video(
                 str(video_path),
-                start_pts=start_time_sec,
-                end_pts=end_time_sec,
-                pts_unit='sec',
-                output_format="TCHW"
+                start_pts=start_frame / video_fps,
+                end_pts=end_frame / video_fps,
+                pts_unit='sec'
             )
-        except RuntimeError as e:
-            # print(f"Error reading video segment {video_path} ({start_time_sec:.2f}s to {end_time_sec:.2f}s): {e}. Skipping view.")
+            
+            # DEBUG: Check immediately after loading
+            if torch.isnan(video_tensor).any():
+                nan_count = torch.isnan(video_tensor).sum().item()
+                print(f"🚨 NaN detected IMMEDIATELY after video loading!")
+                print(f"   File: {video_path}")
+                print(f"   Action ID: {action_info.get('action_id', 'unknown')}")
+                print(f"   NaN count: {nan_count}")
+                print(f"   Tensor shape: {video_tensor.shape}")
+                print(f"   Tensor dtype: {video_tensor.dtype}")
+                print(f"   Min/Max values: {video_tensor.min():.3f} / {video_tensor.max():.3f}")
+                
+                # Check if entire tensor is NaN
+                total_elements = video_tensor.numel()
+                if nan_count == total_elements:
+                    print(f"   ❌ ENTIRE TENSOR IS NaN - corrupted video file!")
+                    return None
+                else:
+                    print(f"   ⚠️  Partial NaN: {nan_count}/{total_elements} elements")
+            
+            # Check for other problematic values
+            if torch.isinf(video_tensor).any():
+                inf_count = torch.isinf(video_tensor).sum().item()
+                print(f"🚨 Infinite values detected after video loading!")
+                print(f"   File: {video_path}")
+                print(f"   Inf count: {inf_count}")
+            
+            # Validate tensor properties
+            if video_tensor.numel() == 0:
+                print(f"❌ Empty video tensor for {video_path}")
+                return None
+            
+            # Convert to float and normalize if needed
+            if video_tensor.dtype == torch.uint8:
+                print(f"🔄 Converting uint8 to float32 for {video_path}")
+                video_tensor = video_tensor.float() / 255.0
+                
+                # DEBUG: Check after conversion
+                if torch.isnan(video_tensor).any():
+                    print(f"🚨 NaN appeared AFTER uint8->float conversion!")
+                    print(f"   This suggests overflow/underflow during conversion")
+            
+            # Resize to target dimensions
+            original_shape = video_tensor.shape
+            if len(video_tensor.shape) == 4:  # [T, H, W, C]
+                video_tensor = video_tensor.permute(3, 0, 1, 2)  # [C, T, H, W]
+            
+            C, T, H, W = video_tensor.shape
+            
+            if H != self.target_height or W != self.target_width:
+                print(f"🔄 Resizing from {H}x{W} to {self.target_height}x{self.target_width}")
+                
+                # Resize each frame individually to avoid memory issues
+                resized_frames = []
+                for t in range(T):
+                    frame = video_tensor[:, t, :, :]  # [C, H, W]
+                    resized_frame = torch.nn.functional.interpolate(
+                        frame.unsqueeze(0),  # [1, C, H, W]
+                        size=(self.target_height, self.target_width),
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze(0)  # [C, H, W]
+                    
+                    # DEBUG: Check after each frame resize
+                    if torch.isnan(resized_frame).any():
+                        print(f"🚨 NaN appeared after resizing frame {t}!")
+                        print(f"   Original frame shape: {frame.shape}")
+                        print(f"   Original frame range: {frame.min():.3f} to {frame.max():.3f}")
+                        print(f"   Resized frame shape: {resized_frame.shape}")
+                        # Replace NaN in this frame
+                        resized_frame = torch.where(torch.isnan(resized_frame), torch.zeros_like(resized_frame), resized_frame)
+                    
+                    resized_frames.append(resized_frame)
+                
+                video_tensor = torch.stack(resized_frames, dim=1)  # [C, T, H, W]
+                
+                # DEBUG: Check after all resizing
+                if torch.isnan(video_tensor).any():
+                    print(f"🚨 NaN detected AFTER resizing operation!")
+                    nan_count = torch.isnan(video_tensor).sum().item()
+                    print(f"   NaN count after resize: {nan_count}")
+            
+            # Apply augmentations if present
+            if self.transform is not None:
+                print(f"🔄 Applying augmentations...")
+                pre_aug_nan = torch.isnan(video_tensor).any()
+                
+                video_tensor = self.transform(video_tensor)
+                
+                # DEBUG: Check after augmentation
+                post_aug_nan = torch.isnan(video_tensor).any()
+                if post_aug_nan and not pre_aug_nan:
+                    print(f"🚨 NaN appeared DURING AUGMENTATION!")
+                    print(f"   This indicates a bug in the augmentation pipeline")
+                    nan_count = torch.isnan(video_tensor).sum().item()
+                    print(f"   NaN count after augmentation: {nan_count}")
+                    
+                    # Try to identify which augmentation caused it
+                    if hasattr(self.transform, 'transforms'):
+                        print(f"   Augmentation pipeline: {[type(t).__name__ for t in self.transform.transforms]}")
+            
+            # Final validation
+            if torch.isnan(video_tensor).any():
+                nan_count = torch.isnan(video_tensor).sum().item()
+                total_elements = video_tensor.numel()
+                print(f"🚨 FINAL NaN CHECK FAILED!")
+                print(f"   File: {video_path}")
+                print(f"   Final NaN count: {nan_count}/{total_elements}")
+                print(f"   Final shape: {video_tensor.shape}")
+                print(f"   Final range: {video_tensor.min():.3f} to {video_tensor.max():.3f}")
+                
+                # Replace NaN values for safety but log the issue
+                video_tensor = torch.where(torch.isnan(video_tensor), torch.zeros_like(video_tensor), video_tensor)
+                print(f"   ⚠️  Replaced NaN with zeros as fallback")
+            
+            # Ensure proper range
+            video_tensor = torch.clamp(video_tensor, 0.0, 1.0)
+            
+            print(f"✅ Successfully loaded clip: {video_path.name} -> {video_tensor.shape}")
+            return video_tensor
+            
+        except Exception as e:
+            print(f"❌ Error loading video {video_path}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
-        except Exception as e_gen: # Catch other potential exceptions from read_video
-            # print(f"Generic error reading video segment {video_path}: {e_gen}. Skipping view.")
-            return None
-
-
-        if vframes_segment is None or vframes_segment.size(0) == 0:
-            # print(f"Warning: No frames read from {video_path} for specified time range [{start_time_sec:.2f}s, {end_time_sec:.2f}s]. Skipping view.")
-            return None
-        
-        num_extracted_frames = vframes_segment.size(0)
-        
-        # --- Sample to desired frames_per_clip if different from extracted range ---
-        if num_extracted_frames < self.frames_per_clip:
-            # print(f"Warning: Extracted only {num_extracted_frames} frames from {video_path} (target {self.frames_per_clip}). Padding with last frame.")
-            padding_needed = self.frames_per_clip - num_extracted_frames
-            if num_extracted_frames > 0: # Ensure there's at least one frame to repeat
-                last_frame = vframes_segment[-1:].repeat(padding_needed, 1, 1, 1)
-                sampled_frames = torch.cat([vframes_segment, last_frame], dim=0)
-            else: # This case means vframes_segment was empty after all.
-                # print(f"Error: num_extracted_frames is 0 before padding for {video_path}. Cannot proceed.")
-                return None 
-        elif num_extracted_frames > self.frames_per_clip:
-            # If we have more frames than needed, subsample uniformly
-            indices = torch.linspace(0, num_extracted_frames - 1, self.frames_per_clip).long()
-            sampled_frames = torch.index_select(vframes_segment, 0, indices)
-        else:
-            # Perfect match
-            sampled_frames = vframes_segment
-
-        # Ensure sampled_frames is not None and has the correct first dimension
-        if sampled_frames is None or sampled_frames.size(0) != self.frames_per_clip:
-             # print(f"Error: Frame sampling failed for {video_path}. Expected {self.frames_per_clip} frames, got {sampled_frames.size(0) if sampled_frames is not None else 'None'}.")
-             return None
-
-        clip = sampled_frames.permute(1, 0, 2, 3) # (C, T, H, W) -> (C, frames_per_clip, H, W)
-        return clip
 
     def _pick_start_frames(self, total_frames: int, clip_length: int) -> list[int]:
         """Pick start frames for multi-clip sampling."""
@@ -1099,10 +1263,25 @@ class SoccerNetMVFoulDataset(Dataset):
                 clip = self._get_video_clip(video_path_rel_str, action_info, start_frame_override=start_frame)
                 if clip is not None:
                     if item_specific_aug:
+                        # [NaN-origin] Step 3: Check before SeverityAwareAugmentation
+                        if torch.isnan(clip).any():
+                            logger.error(f"[NaN-origin] NaN before SeverityAwareAugmentation – action {action_info['action_id']}")
+                            raise RuntimeError("NaN before SeverityAwareAugmentation")
                         clip = item_specific_aug(clip)
+                        # [NaN-origin] Step 3: Check after SeverityAwareAugmentation
+                        if torch.isnan(clip).any():
+                            logger.error(f"[NaN-origin] SeverityAwareAugmentation introduced NaN")
+                            raise RuntimeError("NaN introduced by SeverityAwareAugmentation")
 
                     if self.transform: # Apply general transforms like normalization
-                        clip = self.transform(clip)
+                        # [NaN-origin] Step 2: Identify which CPU-side augmentation inserts NaNs
+                        clip_before_transforms = clip.clone()
+                        for t_idx, t in enumerate(self.transform.transforms):
+                            clip_before = clip.clone()
+                            clip = t(clip)
+                            if torch.isnan(clip).any() and not torch.isnan(clip_before).any():
+                                logger.error(f"[NaN-origin] CPU transform {t_idx}:{t.__class__.__name__}")
+                                raise RuntimeError("NaN introduced")
                     clips_for_this_start.append(clip)
             
             clips_for_action.append(clips_for_this_start)
@@ -1118,7 +1297,12 @@ class SoccerNetMVFoulDataset(Dataset):
         if total_clips_loaded == 0:
             print(f"Warning: All clips failed to load for action {action_info['action_id']}. Returning dummy tensor.")
             # Create a dummy tensor of shape (clips_per_video, num_expected_views, C, T, H, W)
-            final_clips_tensor = torch.zeros((self.clips_per_video, num_expected_views, 3, self.frames_per_clip, self.target_height, self.target_width))
+            # Use small positive values instead of zeros to avoid numerical issues
+            final_clips_tensor = torch.full(
+                (self.clips_per_video, num_expected_views, 3, self.frames_per_clip, self.target_height, self.target_width),
+                fill_value=0.01,  # Small positive value
+                dtype=torch.float32
+            )
         else:
             # Process each clip set and create the final tensor
             final_clips_list = []
@@ -1127,8 +1311,12 @@ class SoccerNetMVFoulDataset(Dataset):
             for clips_for_start in clips_for_action:
                 # Handle this clip's views
                 if len(clips_for_start) == 0:
-                    # No views for this clip - create dummy
-                    dummy_clips = torch.zeros((num_expected_views, 3, target_frames, self.target_height, self.target_width))
+                    # No views for this clip - create dummy with small positive values
+                    dummy_clips = torch.full(
+                        (num_expected_views, 3, target_frames, self.target_height, self.target_width),
+                        fill_value=0.01,  # Small positive value
+                        dtype=torch.float32
+                    )
                     final_clips_list.append(dummy_clips)
                 elif len(clips_for_start) < num_expected_views:
                     # Some views missing - pad with dummies
@@ -1177,6 +1365,33 @@ class SoccerNetMVFoulDataset(Dataset):
             
             # Stack all clips: [clips_per_video, views, C, T, H, W]
             final_clips_tensor = torch.stack(final_clips_list)
+
+        # Critical: Check for NaN values and replace them
+        if torch.isnan(final_clips_tensor).any():
+            nan_count = torch.isnan(final_clips_tensor).sum().item()
+            print(f"Warning: {nan_count} NaN values detected in final clips tensor for action {action_info['action_id']}")
+            # Replace NaN with small positive values
+            final_clips_tensor = torch.where(
+                torch.isnan(final_clips_tensor), 
+                torch.full_like(final_clips_tensor, 0.01), 
+                final_clips_tensor
+            )
+            print(f"Replaced {nan_count} NaN values with 0.01")
+        
+        # Check for infinite values
+        if torch.isinf(final_clips_tensor).any():
+            inf_count = torch.isinf(final_clips_tensor).sum().item()
+            print(f"Warning: {inf_count} infinite values detected in final clips tensor for action {action_info['action_id']}")
+            # Replace inf with clamped values
+            final_clips_tensor = torch.where(
+                torch.isinf(final_clips_tensor), 
+                torch.clamp(final_clips_tensor, min=0.0, max=1.0),
+                final_clips_tensor
+            )
+            print(f"Clamped {inf_count} infinite values")
+        
+        # Ensure values are in valid range [0, 1]
+        final_clips_tensor = torch.clamp(final_clips_tensor, min=0.0, max=1.0)
 
         # Return both original and standardized indices in a dictionary
         return {
@@ -1251,10 +1466,9 @@ def variable_views_collate_fn(batch):
             _, _, C, T, H, W = first_clip.shape
             
             # Create padded tensor: (batch_size, clips_per_video, max_views, C, T, H, W)
-            # Use small non-zero values instead of zeros to prevent division-by-zero
-            padded_clips = torch.full(
+            # Use zeros for padding - we'll handle masking properly
+            padded_clips = torch.zeros(
                 (batch_size, clips_per_video, max_views, C, T, H, W), 
-                fill_value=1e-6,  # Small positive value
                 dtype=first_clip.dtype
             )
             
@@ -1272,6 +1486,11 @@ def variable_views_collate_fn(batch):
             
             batched_data["view_mask"] = view_mask
             
+            # [NaN-origin] Step 4: Verify collate & padding step
+            if torch.isnan(padded_clips).any():
+                logger.error(f"[NaN-origin] collate_fn padding step")
+                raise RuntimeError("NaN introduced in collate_fn padding step")
+            
     elif first_clip.dim() == 5:  # [num_views, C, T, H, W] - legacy format
         # Get max views from the first dimension (num_views)
         max_views = max(clips.shape[0] for clips in clips_list)
@@ -1286,10 +1505,9 @@ def variable_views_collate_fn(batch):
             _, C, T, H, W = first_clip.shape
             
             # Create padded tensor: (batch_size, max_views, C, T, H, W)
-            # Use small non-zero values instead of zeros to prevent division-by-zero
-            padded_clips = torch.full(
+            # Use zeros for padding - we'll handle masking properly
+            padded_clips = torch.zeros(
                 (batch_size, max_views, C, T, H, W), 
-                fill_value=1e-6,  # Small positive value
                 dtype=first_clip.dtype
             )
             
@@ -1306,9 +1524,29 @@ def variable_views_collate_fn(batch):
                 view_mask[i, :num_views] = True
             
             batched_data["view_mask"] = view_mask
+            
+            # [NaN-origin] Step 4: Verify collate & padding step (legacy format)
+            if torch.isnan(padded_clips).any():
+                logger.error(f"[NaN-origin] collate_fn padding step (legacy format)")
+                raise RuntimeError("NaN introduced in collate_fn padding step (legacy format)")
     
     else:
         raise ValueError(f"Unexpected clip tensor dimensions: {first_clip.shape}. Expected 5D or 6D tensor.")
+    
+    # Final safety check for NaN values in the batched clips
+    if "clips" in batched_data:
+        clips = batched_data["clips"]
+        if torch.isnan(clips).any():
+            nan_count = torch.isnan(clips).sum().item()
+            print(f"ERROR: {nan_count} NaN values detected in batched clips! Replacing with zeros.")
+            batched_data["clips"] = torch.where(
+                torch.isnan(clips), 
+                torch.zeros_like(clips), 
+                clips
+            )
+        
+        # Clamp to valid range
+        batched_data["clips"] = torch.clamp(batched_data["clips"], min=0.0, max=1.0)
     
     return batched_data
 

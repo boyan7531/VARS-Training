@@ -388,6 +388,12 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         if batch_idx < 5:  # Only for first few batches to avoid performance impact
             torch.autograd.set_detect_anomaly(True)
         
+        # [NaN-origin] Step 6: Safety net at Lightning level
+        if torch.isnan(batch["clips"]).any():
+            self.log("batch_has_nan", True)
+            logger.error(f"[NaN-origin] NaN reached the model in batch {batch_idx}")
+            raise RuntimeError("NaN reached the model")
+        
         # Comprehensive input validation
         if "clips" in batch:
             clips = batch["clips"]
