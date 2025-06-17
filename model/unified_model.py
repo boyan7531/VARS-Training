@@ -164,7 +164,7 @@ class OptimizedMViTProcessor(nn.Module):
         with torch.no_grad():
             # Handle different tensor dimensions correctly
             if clips.dim() == 6:  # [B, max_views, C, T, H, W]
-            sample_clip = clips[0, 0].unsqueeze(0)  # [1, C, T, H, W]
+                sample_clip = clips[0, 0].unsqueeze(0)  # [1, C, T, H, W]
             elif clips.dim() == 5:  # [B, C, T, H, W] - single view case
                 sample_clip = clips[0].unsqueeze(0)  # [1, C, T, H, W]
             else:
@@ -198,7 +198,7 @@ class OptimizedMViTProcessor(nn.Module):
         for view_idx in range(max_views):
             # Get current view for all batches - handle different tensor dimensions
             if clips.dim() == 6:  # [B, max_views, C, T, H, W]
-            current_view = clips[:, view_idx]  # [effective_batch_size, C, T, H, W]
+                current_view = clips[:, view_idx]  # [effective_batch_size, C, T, H, W]
             elif clips.dim() == 5:  # [B, C, T, H, W] - single view case
                 if view_idx == 0:
                     current_view = clips  # [effective_batch_size, C, T, H, W]
@@ -865,16 +865,16 @@ class MultiTaskMultiViewMViT(nn.Module):
     def get_model_info(self) -> Dict[str, any]:
         """Get comprehensive model information."""
         try:
-        total_params = sum(p.numel() for p in self.parameters())
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        
+            total_params = sum(p.numel() for p in self.parameters())
+            trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+            
             # Get backbone-specific info
             backbone_params = sum(p.numel() for p in self.mvit_processor.backbone.parameters())
             backbone_trainable = sum(p.numel() for p in self.mvit_processor.backbone.parameters() if p.requires_grad)
             
             info = {
-            'total_parameters': total_params,
-            'trainable_parameters': trainable_params,
+                'total_parameters': total_params,
+                'trainable_parameters': trainable_params,
                 'backbone_parameters': backbone_params,
                 'backbone_trainable': backbone_trainable,
                 'backbone_frozen_ratio': (backbone_params - backbone_trainable) / backbone_params if backbone_params > 0 else 0,
