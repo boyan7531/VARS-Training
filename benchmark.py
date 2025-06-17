@@ -209,8 +209,8 @@ def clamp_vocab_indices(batch_data, vocab_sizes):
     
     return batch_data
 
-def run_benchmark(model, dataloader, device, vocab_sizes):
-    """Run model inference and generate predictions"""
+def run_benchmark(model, dataloader, device):
+    """Run model inference and generate predictions using ONLY video inputs (clips)."""
     model.eval()
     
     all_predictions = {}
@@ -227,16 +227,16 @@ def run_benchmark(model, dataloader, device, vocab_sizes):
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Processing batches")):
             try:
-                # Move data to device
-                for key in batch_data:
-                    if isinstance(batch_data[key], torch.Tensor):
-                        batch_data[key] = batch_data[key].to(device, non_blocking=True)
-                
-                # Clamp vocabulary indices to prevent out-of-bounds errors
-                batch_data = clamp_vocab_indices(batch_data, vocab_sizes)
-                
-                # Forward pass
-                sev_logits, act_logits = model(batch_data)
+                # Create a minimal batch dict that only contains the video tensors
+                batch_on_device = {}
+                # Move the mandatory "clips" tensor to the target device
+                batch_on_device["clips"] = batch_data["clips"].to(device, non_blocking=True)
+                # If a view mask exists, move it as well (optional)
+                if "view_mask" in batch_data and isinstance(batch_data["view_mask"], torch.Tensor):
+                    batch_on_device["view_mask"] = batch_data["view_mask"].to(device, non_blocking=True)
+
+                # Forward pass using only video inputs
+                sev_logits, act_logits = model(batch_on_device)
                 
                 # Get action type predictions
                 act_probs = torch.softmax(act_logits, dim=1)
@@ -634,8 +634,8 @@ def main():
         logger.error("This might be due to model architecture mismatch or corrupted checkpoint")
         return
     
-    # Run benchmark
-    predictions = run_benchmark(model, test_loader, device, vocab_sizes)
+    # Run benchmark (video-only)
+    predictions = run_benchmark(model, test_loader, device)
     
     # Save results
     save_benchmark_results(predictions, args.output_file, args.split)
