@@ -119,13 +119,23 @@ def load_model_checkpoint(checkpoint_path, device):
     if 'best_val_acc' in metrics:
         logger.info(f"Best validation accuracy: {metrics['best_val_acc']:.4f}")
     
-    # Use EMA weights if available (they typically perform better)
-    if has_ema and 'ema_state_dict' in checkpoint:
+    # Handle different checkpoint formats (Lightning vs custom)
+    state_dict = None
+    if 'state_dict' in checkpoint:
+        # Lightning checkpoint format
+        logger.info("Using Lightning checkpoint format")
+        state_dict = checkpoint['state_dict']
+    elif 'model_state_dict' in checkpoint:
+        # Custom checkpoint format
+        logger.info("Using custom checkpoint format")
+        state_dict = checkpoint['model_state_dict']
+    elif has_ema and 'ema_state_dict' in checkpoint:
         logger.info("✅ Using EMA weights for benchmark (better performance)")
         state_dict = checkpoint['ema_state_dict']
     else:
-        logger.info("Using online model weights for benchmark")
-        state_dict = checkpoint['model_state_dict']
+        logger.error("Could not find model weights in checkpoint!")
+        logger.info(f"Available keys: {list(checkpoint.keys())}")
+        raise KeyError("No model weights found in checkpoint")
     
     vocab_sizes = {}
     
@@ -605,7 +615,20 @@ def main():
     
     # Load model weights with DataParallel compatibility
     try:
-        state_dict = checkpoint['model_state_dict']
+        # Get state dict from checkpoint (already handled in load_model_checkpoint)
+        if 'state_dict' in checkpoint:
+            # Lightning checkpoint format
+            state_dict = checkpoint['state_dict']
+        elif 'model_state_dict' in checkpoint:
+            # Custom checkpoint format
+            state_dict = checkpoint['model_state_dict']
+        elif checkpoint.get('has_ema', False) and 'ema_state_dict' in checkpoint:
+            # EMA weights
+            state_dict = checkpoint['ema_state_dict']
+        else:
+            logger.error("Could not find model weights in checkpoint!")
+            return
+        
         model_state_dict = model.state_dict()
         
         # Handle DataParallel state dict key mismatch
