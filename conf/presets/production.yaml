@@ -2,7 +2,6 @@
 # Production preset with all optimizations enabled
 
 defaults:
-  - /dataset: mvfouls
   - /model: mvit
   - /training: baseline
   - /loss: focal
