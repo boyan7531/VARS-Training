@@ -229,19 +229,6 @@ class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     system: SystemConfig = field(default_factory=SystemConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
-    
-    # Global overrides
-    defaults: List[Any] = field(default_factory=lambda: [
-        "_self_",
-        "dataset: mvfouls",
-        "model: mvit",
-        "training: baseline",
-        "loss: focal",
-        "sampling: progressive",
-        "freezing: progressive",
-        "system: single_gpu",
-        "experiment: default"
-    ])
 
 
 # Register structured configs with Hydra
