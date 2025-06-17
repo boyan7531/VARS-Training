@@ -107,6 +107,13 @@ def convert_config_to_args(cfg: DictConfig) -> object:
             self._config = config_dict
             # Flatten the nested config for backward compatibility
             self._flatten_config(config_dict)
+            
+            # BEGIN PATCH: ensure legacy path attributes exist
+            # Map new Hydra dataset path to legacy attribute expected by existing code
+            if hasattr(self, "dataset_data_dir") and not hasattr(self, "mvfouls_path"):
+                # Ensure mvfouls_path is stored as string
+                self.mvfouls_path = str(getattr(self, "dataset_data_dir"))
+            # END PATCH
         
         def _flatten_config(self, config_dict, prefix=''):
             """Flatten nested config into attributes"""
