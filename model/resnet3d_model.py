@@ -339,6 +339,7 @@ class MultiTaskMultiViewResNet3D(nn.Module):
         self.num_severity = num_severity
         self.num_action_type = num_action_type
         self.vocab_sizes = vocab_sizes
+        self.backbone_name = backbone_name  # Store backbone name for get_model_info
         self.config = config or ModelConfig()
         self.use_augmentation = use_augmentation
         self.severity_weights = severity_weights

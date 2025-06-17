@@ -607,9 +607,10 @@ def create_transforms(args, is_training=True):
     
     else:
         # Standard validation transforms (NO augmentation for consistent evaluation)
+        # Note: Videos are already converted to float32 and resized in dataset.py
+        # So we only need normalization and PyTorchVideo transforms
         return transforms.Compose([
-            ConvertToFloatAndScale(),
-            SafeVideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            SafeVideoNormalize4D(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ShortSideScale(size=args.img_height),
             PerFrameCenterCrop((args.img_height, args.img_width))
         ])
@@ -1610,6 +1611,54 @@ class SafeVideoNormalize(torch.nn.Module):
         """
         Args:
             video: Tensor of shape (C, T, H, W) or (N, C, T, H, W)
+        """
+        # Ensure video is float
+        if video.dtype == torch.uint8:
+            video = video.float() / 255.0
+        
+        # Handle NaN/inf values before normalization
+        if torch.isnan(video).any() or torch.isinf(video).any():
+            logger.warning("Input video contains NaN/inf values before normalization")
+            video = torch.nan_to_num(video, nan=0.0, posinf=1.0, neginf=0.0)
+        
+        # Clamp to reasonable range to prevent extreme values
+        video = torch.clamp(video, 0.0, 1.0)
+        
+        # Add epsilon to std to prevent division by zero
+        safe_std = self.std + self.eps
+        
+        # Normalize
+        normalized = (video - self.mean) / safe_std
+        
+        # Final safety check
+        if torch.isnan(normalized).any() or torch.isinf(normalized).any():
+            logger.warning("NaN/inf detected after normalization - applying fallback")
+            normalized = torch.nan_to_num(normalized, nan=0.0, posinf=3.0, neginf=-3.0)
+        
+        # Clamp to reasonable range (approximately ±3 standard deviations)
+        normalized = torch.clamp(normalized, -4.0, 4.0)
+        
+        return normalized 
+
+
+class SafeVideoNormalize4D(torch.nn.Module):
+    """
+    Safe video normalization for 4D tensors (C, T, H, W).
+    
+    This is specifically designed for single video tensors without batch dimension,
+    which is the format used in dataset transforms.
+    """
+    def __init__(self, mean, std, eps=1e-6):
+        super().__init__()
+        # For 4D tensors: (C, T, H, W) -> mean/std shape should be (C, 1, 1, 1)
+        self.register_buffer('mean', torch.tensor(mean).view(-1, 1, 1, 1))
+        self.register_buffer('std', torch.tensor(std).view(-1, 1, 1, 1))
+        self.eps = eps
+    
+    def forward(self, video):
+        """
+        Args:
+            video: Tensor of shape (C, T, H, W)
         """
         # Ensure video is float
         if video.dtype == torch.uint8:
