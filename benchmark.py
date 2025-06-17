@@ -594,11 +594,13 @@ def main():
         config_kwargs = {k: v for k, v in model_config.__dict__.items() 
                         if k not in ['use_attention_aggregation', 'pretrained_model_name']}
         
+        # For video-only inference, create model without categorical embeddings
+        logger.info("Creating video-only model (no categorical embeddings)")
         model = create_unified_model(
             backbone_type=args.backbone_type,
             num_severity=6,  # 6 severity classes: "", 1.0, 2.0, 3.0, 4.0, 5.0
             num_action_type=10,  # 10 action types
-            vocab_sizes=vocab_sizes,
+            vocab_sizes=None,  # No categorical embeddings for video-only inference
             backbone_name=args.backbone_name,
             use_attention_aggregation=args.attention_aggregation,
             use_augmentation=False,  # Disable augmentation for inference
@@ -606,7 +608,7 @@ def main():
             dropout_rate=getattr(args, 'dropout_rate', 0.1),
             **config_kwargs
         )
-        logger.info("Model initialized successfully")
+        logger.info("Video-only model initialized successfully")
         
     except Exception as e:
         logger.error(f"Error initializing model: {e}")
@@ -646,11 +648,42 @@ def main():
                 state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
                 logger.info("Removed 'module.' prefix from checkpoint keys for DataParallel compatibility")
         
-        model.load_state_dict(state_dict)
+        # Filter out embedding-related keys for video-only inference
+        embedding_patterns = [
+            'embedding_manager.',
+            'model.embedding_manager.',
+            'module.embedding_manager.'
+        ]
+        
+        filtered_state_dict = {}
+        skipped_keys = []
+        
+        for key, value in state_dict.items():
+            # Skip embedding-related keys
+            if any(pattern in key for pattern in embedding_patterns):
+                skipped_keys.append(key)
+                continue
+            filtered_state_dict[key] = value
+        
+        if skipped_keys:
+            logger.info(f"Skipped {len(skipped_keys)} embedding-related keys for video-only inference")
+            logger.debug(f"Skipped keys: {skipped_keys[:5]}...")  # Show first 5 skipped keys
+        
+        # Load the filtered state dict
+        missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
+        
+        if missing_keys:
+            logger.warning(f"Missing keys in checkpoint: {len(missing_keys)} keys")
+            logger.debug(f"Missing keys: {missing_keys[:5]}...")  # Show first 5 missing keys
+        
+        if unexpected_keys:
+            logger.warning(f"Unexpected keys in checkpoint: {len(unexpected_keys)} keys")
+            logger.debug(f"Unexpected keys: {unexpected_keys[:5]}...")  # Show first 5 unexpected keys
+        
         model.to(device)
         model.eval()
         
-        logger.info(f"Model loaded successfully from epoch {epoch}")
+        logger.info(f"Video-only model loaded successfully from epoch {epoch}")
         
     except Exception as e:
         logger.error(f"Error loading model weights: {e}")
