@@ -94,10 +94,33 @@ class OptimizedMViTProcessor(nn.Module):
     
     def _process_tensor_views(self, clips, view_mask):
         """Process standard tensor input with sequential view processing."""
-        batch_size, max_views = clips.shape[:2]
+        # Handle different clip formats
+        if clips.dim() == 7:  # [B, clips_per_video, max_views, C, T, H, W]
+            batch_size, clips_per_video, max_views = clips.shape[:3]
+            # Flatten clips and views: [B*clips_per_video, max_views, C, T, H, W]
+            clips = clips.view(batch_size * clips_per_video, max_views, *clips.shape[3:])
+            
+            # Handle view_mask flattening if provided
+            if view_mask is not None:
+                if view_mask.dim() == 3:  # [B, clips_per_video, max_views]
+                    view_mask = view_mask.view(batch_size * clips_per_video, max_views)
+                # If view_mask is 2D, assume it applies to all clips
+            
+            effective_batch_size = batch_size * clips_per_video
+        else:  # [B, max_views, C, T, H, W]
+            batch_size, max_views = clips.shape[:2]
+            clips_per_video = 1
+            effective_batch_size = batch_size
+            
+            # Handle view_mask dimensions
+            if view_mask is not None and view_mask.dim() == 3:
+                # If we have 3D view_mask but 2D clips, squeeze the clips dimension
+                if view_mask.shape[1] == 1:  # [B, 1, max_views]
+                    view_mask = view_mask.squeeze(1)  # [B, max_views]
+        
         device = clips.device
         
-        logger.debug(f"Processing tensor views: batch_size={batch_size}, max_views={max_views}, clips.shape={clips.shape}")
+        logger.debug(f"Processing tensor views: effective_batch_size={effective_batch_size}, max_views={max_views}, clips.shape={clips.shape}")
         
         # Pre-allocate output tensors for better memory management
         # Get feature dimension from a single forward pass
@@ -119,18 +142,18 @@ class OptimizedMViTProcessor(nn.Module):
                 raise ValueError("Backbone output must be a tensor")
         
         # Pre-allocate feature tensor
-        all_features = torch.zeros(batch_size, max_views, feature_dim, 
+        all_features = torch.zeros(effective_batch_size, max_views, feature_dim, 
                                  device=device, dtype=clips.dtype)
         logger.debug(f"Pre-allocated all_features shape: {all_features.shape}")
         
         # Create view mask if not provided
         if view_mask is None:
-            view_mask = torch.ones(batch_size, max_views, dtype=torch.bool, device=device)
+            view_mask = torch.ones(effective_batch_size, max_views, dtype=torch.bool, device=device)
         
         # Process views sequentially to avoid memory fragmentation
         for view_idx in range(max_views):
             # Get current view for all batches
-            current_view = clips[:, view_idx]  # [B, C, T, H, W]
+            current_view = clips[:, view_idx]  # [effective_batch_size, C, T, H, W]
             
             # Only process if any batch has a valid view at this index
             if view_mask[:, view_idx].any():
@@ -156,9 +179,9 @@ class OptimizedMViTProcessor(nn.Module):
                 logger.debug(f"View {view_idx} features shape before processing: {view_features.shape}")
                 
                 # Handle different output formats efficiently
-                if view_features.ndim == 3:  # [B, seq_len, feature_dim]
+                if view_features.ndim == 3:  # [effective_batch_size, seq_len, feature_dim]
                     # Extract CLS token (first token) efficiently
-                    view_features = view_features[:, 0]  # [B, feature_dim]
+                    view_features = view_features[:, 0]  # [effective_batch_size, feature_dim]
                     logger.debug(f"View {view_idx} features shape after CLS extraction: {view_features.shape}")
                 
                 # Store features for valid views only
@@ -171,6 +194,20 @@ class OptimizedMViTProcessor(nn.Module):
                 torch.cuda.empty_cache() if torch.cuda.is_available() else None
         
         logger.debug(f"Final all_features shape: {all_features.shape}")
+        
+        # If we had multi-clip format, we might need to reshape back
+        if clips_per_video > 1:
+            # Reshape features back to [B, clips_per_video, max_views, feature_dim]
+            all_features = all_features.view(batch_size, clips_per_video, max_views, feature_dim)
+            # Average over clips dimension
+            all_features = all_features.mean(dim=1)  # [B, max_views, feature_dim]
+            
+            # Also reshape view_mask back if needed
+            if view_mask.dim() == 2:
+                view_mask = view_mask.view(batch_size, clips_per_video, max_views)
+                # Use logical OR to combine clip masks (a view is valid if valid in any clip)
+                view_mask = view_mask.any(dim=1)  # [B, max_views]
+        
         return all_features, view_mask
     
     def _process_variable_views(self, clips_list):

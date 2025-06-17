@@ -1195,36 +1195,74 @@ def variable_views_collate_fn(batch):
         batched_data[key] = torch.stack([item[key] for item in batch])
     
     # Handle variable views for clips
-    # Each item in clips_list has shape (num_views, C, T, H, W)
-    # We need to create a list of tensors, where each tensor is (B, C, T, H, W) for one view
+    # Each item in clips_list has shape (clips_per_video, num_views, C, T, H, W)
+    # We need to handle the case where num_views (second dimension) varies
     
-    max_views = max(clips.shape[0] for clips in clips_list)
-    batch_size = len(clips_list)
+    # Check the dimensions to determine the format
+    first_clip = clips_list[0]
+    if first_clip.dim() == 6:  # [clips_per_video, num_views, C, T, H, W]
+        # Get max views from the second dimension (num_views)
+        max_views = max(clips.shape[1] for clips in clips_list)
+        batch_size = len(clips_list)
+        clips_per_video = first_clip.shape[0]
+        
+        if max_views == 1 or all(clips.shape[1] == clips_list[0].shape[1] for clips in clips_list):
+            # All items have same number of views, can stack normally
+            batched_data["clips"] = torch.stack(clips_list)
+        else:
+            # Variable number of views - create padded tensor
+            # Get dimensions from first item
+            _, _, C, T, H, W = first_clip.shape
+            
+            # Create padded tensor: (batch_size, clips_per_video, max_views, C, T, H, W)
+            padded_clips = torch.zeros(batch_size, clips_per_video, max_views, C, T, H, W, dtype=first_clip.dtype)
+            
+            for i, clips in enumerate(clips_list):
+                num_views = clips.shape[1]
+                padded_clips[i, :, :num_views] = clips
+            
+            batched_data["clips"] = padded_clips
+            
+            # Also create a mask indicating which views are real vs padded
+            view_mask = torch.zeros(batch_size, clips_per_video, max_views, dtype=torch.bool)
+            for i, clips in enumerate(clips_list):
+                num_views = clips.shape[1]
+                view_mask[i, :, :num_views] = True
+            
+            batched_data["view_mask"] = view_mask
     
-    if max_views == 1 or all(clips.shape[0] == clips_list[0].shape[0] for clips in clips_list):
-        # All items have same number of views, can stack normally
-        batched_data["clips"] = torch.stack(clips_list)
+    elif first_clip.dim() == 5:  # [num_views, C, T, H, W] - legacy format
+        # Get max views from the first dimension (num_views)
+        max_views = max(clips.shape[0] for clips in clips_list)
+        batch_size = len(clips_list)
+        
+        if max_views == 1 or all(clips.shape[0] == clips_list[0].shape[0] for clips in clips_list):
+            # All items have same number of views, can stack normally
+            batched_data["clips"] = torch.stack(clips_list)
+        else:
+            # Variable number of views - create padded tensor
+            # Get dimensions from first item
+            _, C, T, H, W = first_clip.shape
+            
+            # Create padded tensor: (batch_size, max_views, C, T, H, W)
+            padded_clips = torch.zeros(batch_size, max_views, C, T, H, W, dtype=first_clip.dtype)
+            
+            for i, clips in enumerate(clips_list):
+                num_views = clips.shape[0]
+                padded_clips[i, :num_views] = clips
+            
+            batched_data["clips"] = padded_clips
+            
+            # Also create a mask indicating which views are real vs padded
+            view_mask = torch.zeros(batch_size, max_views, dtype=torch.bool)
+            for i, clips in enumerate(clips_list):
+                num_views = clips.shape[0]
+                view_mask[i, :num_views] = True
+            
+            batched_data["view_mask"] = view_mask
+    
     else:
-        # Variable number of views - create list of view tensors
-        # Pad shorter sequences with zeros
-        C, T, H, W = clips_list[0].shape[1:]  # Get dimensions from first item
-        
-        # Create padded tensor: (batch_size, max_views, C, T, H, W)
-        padded_clips = torch.zeros(batch_size, max_views, C, T, H, W, dtype=clips_list[0].dtype)
-        
-        for i, clips in enumerate(clips_list):
-            num_views = clips.shape[0]
-            padded_clips[i, :num_views] = clips
-        
-        batched_data["clips"] = padded_clips
-        
-        # Also create a mask indicating which views are real vs padded
-        view_mask = torch.zeros(batch_size, max_views, dtype=torch.bool)
-        for i, clips in enumerate(clips_list):
-            num_views = clips.shape[0]
-            view_mask[i, :num_views] = True
-        
-        batched_data["view_mask"] = view_mask
+        raise ValueError(f"Unexpected clip tensor dimensions: {first_clip.shape}. Expected 5D or 6D tensor.")
     
     return batched_data
 
