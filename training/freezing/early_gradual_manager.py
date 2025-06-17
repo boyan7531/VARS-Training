@@ -46,7 +46,16 @@ class EarlyGradualFreezingManager:
             logger.info(f"[EARLY_GRADUAL] Initialized with {len(self.backbone_blocks)} backbone blocks")
             logger.info(f"[EARLY_GRADUAL] Target: {self.target_ratio*100:.0f}% of backbone ({self.target_unfrozen_params:,}/{self.total_backbone_params:,} parameters)")
     
-
+    def enable_debug_mode_on_unfreezing(self, enabled=True):
+        """Enable debug mode for backbone processor when unfreezing starts."""
+        try:
+            if hasattr(self.actual_model, 'enable_backbone_debug_mode'):
+                self.actual_model.enable_backbone_debug_mode(enabled)
+                from ..training_utils import is_main_process
+                if is_main_process():
+                    logger.info(f"[EARLY_GRADUAL] Backbone debug mode: {'enabled' if enabled else 'disabled'}")
+        except Exception as e:
+            logger.warning(f"[EARLY_GRADUAL] Failed to set debug mode: {e}")
     
     def _calculate_parameter_targets(self):
         """Calculate total backbone parameters and target unfrozen parameters."""
@@ -140,6 +149,20 @@ class EarlyGradualFreezingManager:
             from ..training_utils import is_main_process
             if is_main_process():
                 logger.info(f"[EARLY_GRADUAL] Progress: {self.current_unfrozen_params:,}/{self.target_unfrozen_params:,} parameters ({progress:.1f}% of target)")
+            
+            # Stabilize model after unfreezing to prevent temporary instabilities
+            try:
+                if hasattr(self.actual_model, 'stabilize_after_gradual_unfreezing'):
+                    self.actual_model.stabilize_after_gradual_unfreezing()
+                    if is_main_process():
+                        logger.debug(f"[EARLY_GRADUAL] Model stabilized after unfreezing {len(newly_unfrozen)} blocks")
+                elif hasattr(self.actual_model, 'mvit_processor') and hasattr(self.actual_model.mvit_processor, 'stabilize_after_unfreezing'):
+                    self.actual_model.mvit_processor.stabilize_after_unfreezing()
+                    if is_main_process():
+                        logger.debug(f"[EARLY_GRADUAL] Backbone stabilized after unfreezing {len(newly_unfrozen)} blocks")
+            except Exception as e:
+                if is_main_process():
+                    logger.warning(f"[EARLY_GRADUAL] Failed to stabilize model after unfreezing: {e}")
         
         return newly_unfrozen
     

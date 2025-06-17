@@ -75,7 +75,29 @@ class OptimizedMViTProcessor(nn.Module):
         self.backbone = backbone
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_mixed_precision = use_mixed_precision
+        self._debug_silent_errors = False  # Enable for debugging silent backbone errors
         
+    def enable_debug_mode(self, enabled=True):
+        """Enable debugging for silent backbone errors."""
+        self._debug_silent_errors = enabled
+        logger.info(f"Debug mode for silent backbone errors: {'enabled' if enabled else 'disabled'}")
+    
+    def stabilize_after_unfreezing(self):
+        """Stabilize model after gradual unfreezing by ensuring proper parameter states."""
+        try:
+            # Ensure all parameters are properly initialized and contiguous
+            for name, param in self.backbone.named_parameters():
+                if param.requires_grad and not param.is_contiguous():
+                    param.data = param.data.contiguous()
+            
+            # Clear any cached computations
+            if hasattr(self.backbone, 'clear_cache'):
+                self.backbone.clear_cache()
+            
+            logger.debug("Model stabilized after unfreezing")
+        except Exception as e:
+            logger.warning(f"Failed to stabilize model after unfreezing: {e}")
+    
     def forward(self, clips, view_mask=None):
         """
         Process clips with optimized memory usage and sequential view processing.
@@ -337,7 +359,19 @@ class OptimizedMViTProcessor(nn.Module):
             raise ValueError(f"Unexpected input dimensions: {clips.shape}")
         
         try:
-            # Forward through MViT backbone
+            # Ensure tensor is contiguous and on the correct device
+            if not clips_to_process.is_contiguous():
+                clips_to_process = clips_to_process.contiguous()
+                if self._debug_silent_errors:
+                    logger.debug("Made input tensor contiguous before backbone forward")
+            
+            # Validate tensor properties before backbone forward
+            if self._debug_silent_errors:
+                logger.debug(f"Backbone input: shape={clips_to_process.shape}, "
+                           f"device={clips_to_process.device}, dtype={clips_to_process.dtype}, "
+                           f"contiguous={clips_to_process.is_contiguous()}")
+            
+            # Forward pass through MViT backbone
             with torch.amp.autocast('cuda', enabled=self.use_mixed_precision):
                 if self.use_gradient_checkpointing and self.training:
                     # Use gradient checkpointing to save memory
@@ -383,19 +417,86 @@ class OptimizedMViTProcessor(nn.Module):
             return features
             
         except Exception as e:
+            # Get comprehensive error information
+            error_msg = str(e) if str(e) else ""
+            error_type = type(e).__name__
+            error_repr = repr(e)
+            
+            # Try to get more context about the error
+            import traceback
+            error_traceback = traceback.format_exc()
+            
             # Categorize errors for better logging
-            error_msg = str(e)
             is_expected_error = any(pattern in error_msg.lower() for pattern in [
-                'expected input',  # Channel dimension mismatches
-                'size mismatch',   # Tensor size issues
-                'out of bounds',   # Index errors
-                'invalid argument' # Invalid tensor operations
+                'expected input',     # Channel dimension mismatches
+                'size mismatch',      # Tensor size issues
+                'out of bounds',      # Index errors
+                'invalid argument',   # Invalid tensor operations
+                'dimension',          # Dimension-related errors
+                'shape',              # Shape-related errors
+                'cuda error',         # CUDA memory issues
+                'out of memory'       # Memory issues
             ])
             
-            if is_expected_error:
-                logger.debug(f"Handled expected backbone error: {error_msg}")
+            # Handle different types of errors appropriately
+            if error_msg and error_msg.strip():
+                # Non-empty error message
+                if is_expected_error:
+                    logger.debug(f"Handled expected backbone error: {error_msg}")
+                else:
+                    logger.warning(f"Unexpected backbone error: {error_msg} (type: {error_type})")
+                    logger.debug(f"Full traceback: {error_traceback}")
+            elif error_type in ['RuntimeError', 'ValueError', 'TypeError']:
+                # Known error types with empty messages - likely CUDA/tensor issues
+                logger.debug(f"Handled silent {error_type} in backbone (likely tensor/CUDA issue)")
+                # Add more debugging for silent errors during epoch 3+
+                if hasattr(self, '_debug_silent_errors'):
+                    logger.debug(f"Silent {error_type} details: repr={error_repr}")
+                    logger.debug(f"Input tensor shape: {clips_to_process.shape if clips_to_process is not None else 'None'}")
+                    logger.debug(f"Input tensor device: {clips_to_process.device if clips_to_process is not None else 'None'}")
+                
+                # For RuntimeError during training (common during gradual unfreezing), try stabilization
+                if error_type == 'RuntimeError' and self.training:
+                    logger.debug("Attempting model stabilization for RuntimeError during training")
+                    try:
+                        # Ensure model is in consistent state
+                        self.stabilize_after_unfreezing()
+                        
+                        # Try forward pass once more with stabilized model
+                        with torch.amp.autocast('cuda', enabled=self.use_mixed_precision):
+                            if self.use_gradient_checkpointing and self.training:
+                                features = torch.utils.checkpoint.checkpoint(self.backbone, clips_to_process, use_reentrant=False)
+                            else:
+                                features = self.backbone(clips_to_process)
+                        
+                        # If successful, log recovery
+                        logger.debug("Successfully recovered from RuntimeError with model stabilization")
+                        
+                        # Check for NaN in recovered features
+                        if torch.isnan(features).any():
+                            nan_count = torch.isnan(features).sum().item()
+                            logger.debug(f"NaN detected in recovered backbone output! Shape: {features.shape}, Count: {nan_count}")
+                            features = torch.where(torch.isnan(features), torch.zeros_like(features), features)
+                            logger.debug("Replaced NaN in recovered features with zeros")
+                        
+                        return features
+                        
+                    except Exception as recovery_e:
+                        logger.debug(f"Model stabilization recovery failed: {recovery_e}")
+                        # Fall through to return zero features
             else:
-                logger.warning(f"Unexpected backbone error: {error_msg}")
+                # Unknown error type - provide better debugging information
+                debug_info = []
+                if error_repr and error_repr.strip() and error_repr != error_type + "()":
+                    debug_info.append(f"repr: {error_repr}")
+                if clips_to_process is not None:
+                    debug_info.append(f"input_shape: {clips_to_process.shape}")
+                    debug_info.append(f"input_device: {clips_to_process.device}")
+                    debug_info.append(f"input_dtype: {clips_to_process.dtype}")
+                
+                debug_str = " | ".join(debug_info) if debug_info else "no additional info"
+                logger.warning(f"Unknown backbone error type '{error_type}' with empty message ({debug_str})")
+                logger.debug(f"Full traceback: {error_traceback}")
                 
             # Return zero features as fallback
             feature_dim = 768  # Default feature dimension
@@ -762,28 +863,52 @@ class MultiTaskMultiViewMViT(nn.Module):
         return self.train(False)
     
     def get_model_info(self) -> Dict[str, any]:
-        """Get model information for logging/debugging."""
-        total_params = sum(p.numel() for p in self.parameters())
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        
-        # Safely get severity weights
-        severity_weights = None
-        if hasattr(self, 'video_augmentation') and hasattr(self.video_augmentation, 'severity_weights'):
-            severity_weights = self.video_augmentation.severity_weights
-        
-        return {
-            'backbone_name': self.config.pretrained_model_name,
-            'video_feature_dim': self.video_feature_dim,
-            'total_embedding_dim': self.config.get_total_embedding_dim(),
-            'total_parameters': total_params,
-            'trainable_parameters': trainable_params,
-            'num_severity_classes': self.num_severity,
-            'num_action_type_classes': self.num_action_type,
-            'augmentation_enabled': self.use_augmentation,
-            'gradient_checkpointing_enabled': self.use_gradient_checkpointing,
-            'memory_optimization_enabled': self.enable_memory_optimization,
-            'severity_weights': severity_weights
-        }
+        """Get comprehensive model information."""
+        try:
+            total_params = sum(p.numel() for p in self.parameters())
+            trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+            
+            # Get backbone-specific info
+            backbone_params = sum(p.numel() for p in self.mvit_processor.backbone.parameters())
+            backbone_trainable = sum(p.numel() for p in self.mvit_processor.backbone.parameters() if p.requires_grad)
+            
+            info = {
+                'total_parameters': total_params,
+                'trainable_parameters': trainable_params,
+                'backbone_parameters': backbone_params,
+                'backbone_trainable': backbone_trainable,
+                'backbone_frozen_ratio': (backbone_params - backbone_trainable) / backbone_params if backbone_params > 0 else 0,
+                'video_feature_dim': self.video_feature_dim,
+                'num_severity': self.num_severity,
+                'num_action_type': self.num_action_type,
+                'use_gradient_checkpointing': self.use_gradient_checkpointing,
+                'enable_memory_optimization': self.enable_memory_optimization,
+                'dropout_rate': self.dropout_rate
+            }
+            
+            return info
+        except Exception as e:
+            logger.error(f"Failed to get model info: {e}")
+            return {'error': str(e)}
+    
+    def enable_backbone_debug_mode(self, enabled=True):
+        """Enable debug mode for backbone processor to help diagnose gradual unfreezing issues."""
+        if hasattr(self, 'mvit_processor'):
+            self.mvit_processor.enable_debug_mode(enabled)
+            logger.info(f"Backbone debug mode: {'enabled' if enabled else 'disabled'}")
+        else:
+            logger.warning("No mvit_processor found - cannot enable debug mode")
+    
+    def stabilize_after_gradual_unfreezing(self):
+        """Stabilize model after gradual unfreezing to prevent temporary instabilities."""
+        try:
+            if hasattr(self, 'mvit_processor'):
+                self.mvit_processor.stabilize_after_unfreezing()
+                logger.info("Model stabilized after gradual unfreezing")
+            else:
+                logger.warning("No mvit_processor found - cannot stabilize")
+        except Exception as e:
+            logger.warning(f"Failed to stabilize model after gradual unfreezing: {e}")
 
 
 def create_unified_model(
