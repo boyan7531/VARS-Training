@@ -161,7 +161,6 @@ benchmark.log
 
 # Dataset files (large)
 mvfouls/
-dataset/
 data/
 
 # Temporary files

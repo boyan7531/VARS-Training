@@ -1,0 +1,47 @@
+# @package _group_
+# MVFouls dataset configuration
+
+dataset:
+  # Core paths - MUST be set by user
+  data_dir: ???  # Path to video files
+  # Each split directory (train/valid/test) must contain an 'annotations.json' file.
+  # These JSON files follow the SoccerNet MVFoul format and are automatically
+  # discovered by the data loader, so explicit CSV paths are no longer required.
+  # If you wish to use only train/valid splits, simply omit the test split.
+  #
+  # Example structure:
+  #   mvfouls/
+  #     ├── train/
+  #     │   ├── annotations.json
+  #     │   └── action_000/
+  #     ├── valid/
+  #     │   └── annotations.json
+  #     └── test/
+  #         └── annotations.json
+  
+  # Video processing
+  clip_duration: 2.0
+  fps: 25
+  frame_size: 224
+  num_frames: 16
+  
+  # Data loading
+  batch_size: 8
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  
+  # Augmentations
+  enable_augmentations: true
+  horizontal_flip_prob: 0.5
+  rotation_degrees: 10
+  color_jitter_brightness: 0.2
+  color_jitter_contrast: 0.2
+  color_jitter_saturation: 0.2
+  color_jitter_hue: 0.1
+  
+  # Advanced augmentations
+  mixup_alpha: 0.0
+  cutmix_alpha: 0.0
+  auto_augment: null 
