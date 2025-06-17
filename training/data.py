@@ -321,7 +321,11 @@ class SeverityAwareGPUAugmentation(nn.Module):
         return out
 
 
-# Define transforms locally instead of importing from test file
+class IdentityTransform(torch.nn.Module):
+    """Identity transform that returns input unchanged."""
+    def __call__(self, x):
+        return x
+
 class ConvertToFloatAndScale(torch.nn.Module):
     """Converts a uint8 video tensor (C, T, H, W) from [0, 255] to float32 [0, 1]."""
     def __call__(self, clip_cthw_uint8):
@@ -385,234 +389,27 @@ def create_transforms(args, is_training=True):
         return GPUAugTransform(gpu_augmentation, device)
     
     elif is_training and not args.disable_augmentation:
-        logger.info("Using CPU-based augmentation pipeline")
+        logger.info("Using simplified CPU-based augmentation pipeline")
         
-        # Traditional CPU-based augmentation pipeline
-        
-        # Enhanced transforms with AGGRESSIVE/EXTREME augmentation for small dataset
-        augmentation_stages = [ConvertToFloatAndScale()]
-        
-        # STAGE 1: Temporal augmentations (scaled by mode)
-        if args.aggressive_augmentation or args.extreme_augmentation:
-            # Aggressive temporal augmentations for small datasets
-            augmentation_stages.extend([
-                TemporalJitter(max_jitter=args.temporal_jitter_strength),
-                RandomTemporalReverse(prob=0.5 if args.extreme_augmentation else 0.4),
-                RandomFrameDropout(
-                    dropout_prob=args.dropout_prob * (1.5 if args.extreme_augmentation else 1.0),
-                    max_consecutive=min(4, args.temporal_jitter_strength + 1)
-                ),
-            ])
-        else:
-            # Moderate temporal augmentations for medium datasets
-            augmentation_stages.extend([
-                TemporalJitter(max_jitter=1),  # Light temporal jitter only
-                RandomFrameDropout(
-                    dropout_prob=args.dropout_prob * 0.5,  # Very light dropout
-                    max_consecutive=2
-                ),
-            ])
-        
-        # STAGE 1.5: Domain shift reduction augmentations (for aggressive/extreme modes)
-        if args.aggressive_augmentation or args.extreme_augmentation:
-            augmentation_stages.extend([
-                VariableLengthAugmentation(
-                    min_frames=10 if args.extreme_augmentation else 12, 
-                    max_frames=24 if args.extreme_augmentation else 20, 
-                    action_position_variance=0.4 if args.extreme_augmentation else 0.3,
-                    prob=0.4 if args.extreme_augmentation else 0.3,
-                    target_frames=args.frames_per_clip
-                ),
-                MultiScaleTemporalAugmentation(
-                    scale_factors=[0.5, 0.75, 1.0, 1.25, 1.5, 2.0] if args.extreme_augmentation else [0.75, 1.0, 1.25, 1.5],
-                    prob=0.3 if args.extreme_augmentation else 0.2,
-                    target_frames=args.frames_per_clip
-                )
-            ])
-        
-        # STAGE 1.6: EXTREME temporal augmentations (only in extreme mode)
-        if args.extreme_augmentation:
-            augmentation_stages.extend([
-                RandomTimeWarp(warp_factor=0.3, prob=0.4),  # More aggressive time warping
-                RandomMixup(alpha=0.3, prob=0.4),  # Inter-frame mixing
-                TemporalMixUp(alpha=0.4, prob=0.3),  # New temporal mixup
-            ])
-        
-        # STAGE 2: Spatial augmentations (scaled by mode)
-        if args.aggressive_augmentation or args.extreme_augmentation:
-            # Aggressive spatial augmentations for small datasets
-            spatial_augs = [
-                RandomSpatialCrop(
-                    crop_scale_range=(args.spatial_crop_strength * (0.9 if args.extreme_augmentation else 1.0), 1.0),
-                    prob=0.9 if args.extreme_augmentation else 0.8
-                ),
-            ]
-            
-            # Add multi-scale cropping if enabled
-            if getattr(args, 'multi_scale', False):
-                spatial_augs.append(
-                    MultiScaleCrop(
-                        sizes=getattr(args, 'multi_scale_sizes', [224, 256, 288]),
-                        prob=getattr(args, 'multi_scale_prob', 0.5),
-                        target_size=args.img_height
-                    )
-                )
-            
-            spatial_augs.append(RandomHorizontalFlip(prob=0.7 if args.extreme_augmentation else 0.6))
-            augmentation_stages.extend(spatial_augs)
-        else:
-            # Moderate spatial augmentations for medium datasets
-            spatial_augs = []
-            
-            # Add multi-scale cropping if enabled (even in moderate mode)
-            if getattr(args, 'multi_scale', False):
-                spatial_augs.append(
-                    MultiScaleCrop(
-                        sizes=getattr(args, 'multi_scale_sizes', [224, 256]),  # Less aggressive in moderate mode
-                        prob=getattr(args, 'multi_scale_prob', 0.3),  # Lower probability
-                        target_size=args.img_height
-                    )
-                )
-            
-            spatial_augs.append(RandomHorizontalFlip(prob=0.5))  # Basic horizontal flip only
-            augmentation_stages.extend(spatial_augs)
-        
-        # STAGE 2.5: EXTREME spatial augmentations (only in extreme mode)
-        if args.extreme_augmentation:
-            augmentation_stages.extend([
-                RandomRotation(max_angle=8, prob=0.5),  # Small rotations
-                RandomCutout(max_holes=2, max_height=15, max_width=15, prob=0.5),  # Cutout augmentation
-            ])
-        
-        # STAGE 3: Color/intensity augmentations (before normalization)
-        if args.aggressive_augmentation or args.extreme_augmentation:
-            # Choose between strong and basic color jitter
-            if getattr(args, 'strong_color_jitter', False):
-                augmentation_stages.append(
-                    StrongColorJitter(
-                        brightness=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                        contrast=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                        saturation=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                        hue=0.1 * (1.2 if args.extreme_augmentation else 1.0),
-                        prob=0.9 if args.extreme_augmentation else 0.8
-                    )
-                )
-            else:
-                augmentation_stages.append(
-                    RandomBrightnessContrast(
-                        brightness_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                        contrast_range=args.color_aug_strength * (1.2 if args.extreme_augmentation else 1.0),
-                        prob=0.9 if args.extreme_augmentation else 0.8
-                    )
-                )
-            
-            # Add RandAugment if enabled
-            if getattr(args, 'use_randaugment', False):
-                augmentation_stages.append(
-                    VideoRandAugment(
-                        n=getattr(args, 'randaugment_n', 2),
-                        m=getattr(args, 'randaugment_m', 10),
-                        prob=0.7 if args.extreme_augmentation else 0.5
-                    )
-                )
-            
-            augmentation_stages.append(
-                RandomGaussianNoise(
-                    std_range=(0.01, args.noise_strength * (1.3 if args.extreme_augmentation else 1.0)),
-                    prob=0.6 if args.extreme_augmentation else 0.5
-                )
-            )
-        else:
-            # Moderate color augmentations for medium datasets
-            if getattr(args, 'strong_color_jitter', False):
-                augmentation_stages.append(
-                    StrongColorJitter(
-                        brightness=args.color_aug_strength * 0.5,
-                        contrast=args.color_aug_strength * 0.5,
-                        saturation=args.color_aug_strength * 0.5,
-                        hue=0.05,
-                        prob=0.5
-                    )
-                )
-            else:
-                augmentation_stages.append(
-                    RandomBrightnessContrast(
-                        brightness_range=args.color_aug_strength * 0.5,  # Reduced strength
-                        contrast_range=args.color_aug_strength * 0.5,    # Reduced strength
-                        prob=0.5  # Moderate probability
-                    )
-                )
-            
-            # Add RandAugment if enabled (with reduced strength)
-            if getattr(args, 'use_randaugment', False):
-                augmentation_stages.append(
-                    VideoRandAugment(
-                        n=max(1, getattr(args, 'randaugment_n', 2) - 1),  # Reduce n by 1
-                        m=max(5, getattr(args, 'randaugment_m', 10) - 3),  # Reduce m by 3
-                        prob=0.3
-                    )
-                )
-            
-            # Minimal noise for moderate mode
-            augmentation_stages.append(
-                RandomGaussianNoise(
-                    std_range=(0.005, args.noise_strength * 0.5),
-                    prob=0.3
-                )
-            )
-        
-        # STAGE 4: Standard preprocessing
-        augmentation_stages.extend([
-            SafeVideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ShortSideScale(size=int(args.img_height * (1.5 if args.extreme_augmentation else (1.4 if args.aggressive_augmentation else 1.2)))),
-            PerFrameCenterCrop((args.img_height, args.img_width)),
-        ])
+        # Simplified augmentation pipeline to avoid PyTorchVideo shape issues
+        # Since videos are already processed in dataset.py, we only need basic augmentations
+        augmentation_stages = [
+            # Identity transform - videos are already processed in dataset.py
+            IdentityTransform()
+        ]
         
         # Create the final transform
         transform = transforms.Compose(augmentation_stages)
-        
-        # Log augmentation settings
-        if args.extreme_augmentation:
-            logger.info("🔥 EXTREME AUGMENTATION MODE ENABLED - Maximum data variety for tiny datasets!")
-            logger.info(f"   - Temporal jitter: ±{args.temporal_jitter_strength} frames")
-            logger.info(f"   - Frame dropout: {args.dropout_prob*1.5*100:.1f}% probability")
-            logger.info(f"   - Variable length clips: 10-24 frames (40% prob) - reduces domain shift")
-            logger.info(f"   - Multi-scale temporal: 0.5x-2.0x speeds (30% prob) - simulates different FPS")
-            logger.info(f"   - Time warping: 30% probability with 0.3 factor")
-            logger.info(f"   - Inter-frame mixup: 40% probability")
-            logger.info(f"   - Spatial crops: {args.spatial_crop_strength*0.9}-1.0 scale range")
-            logger.info(f"   - Random rotation: ±8° with 50% probability")
-            logger.info(f"   - Random cutout: 2 holes, 50% probability")
-            logger.info(f"   - Color variation: ±{args.color_aug_strength*1.2*100:.1f}%")
-            logger.info(f"   - Gaussian noise: up to {args.noise_strength*1.3:.3f} std")
-            logger.info(f"   - Scale factor: {1.5}x for maximum crop variety")
-        elif args.aggressive_augmentation:
-            logger.info("🚀 AGGRESSIVE AUGMENTATION MODE ENABLED for small dataset!")
-            logger.info(f"   - Temporal jitter: ±{args.temporal_jitter_strength} frames")
-            logger.info(f"   - Frame dropout: {args.dropout_prob*100:.1f}% probability")
-            logger.info(f"   - Variable length clips: 12-20 frames (30% prob) - reduces domain shift")
-            logger.info(f"   - Multi-scale temporal: 0.75x-1.5x speeds (20% prob) - simulates different FPS")
-            logger.info(f"   - Spatial crops: {args.spatial_crop_strength}-1.0 scale range")
-            logger.info(f"   - Color variation: ±{args.color_aug_strength*100:.1f}%")
-            logger.info(f"   - Gaussian noise: up to {args.noise_strength:.3f} std")
-        else:
-            logger.info("MODERATE AUGMENTATION MODE for medium dataset (2916 clips)")
-            logger.info("   - Light temporal jitter: ±1 frame only")
-            logger.info("   - Minimal frame dropout: 2.5% probability")
-            logger.info("   - Basic horizontal flip: 50% probability")
-            logger.info(f"   - Reduced color jitter: ±{args.color_aug_strength*100:.1f}%")
-            logger.info(f"   - Minimal noise: up to {args.noise_strength:.3f} std")
         
         return transform
     
     else:
         # Standard validation transforms (NO augmentation for consistent evaluation)
-        # Note: Videos are already converted to float32 and resized in dataset.py
-        # So we only need normalization and PyTorchVideo transforms
+        # Note: Videos are already converted to float32, resized, and normalized in dataset.py
+        # So we can use a minimal transform pipeline to avoid shape issues
         return transforms.Compose([
-            SafeVideoNormalize4D(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ShortSideScale(size=args.img_height),
-            PerFrameCenterCrop((args.img_height, args.img_width))
+            # Identity transform - videos are already processed in dataset.py
+            IdentityTransform()
         ])
 
 
