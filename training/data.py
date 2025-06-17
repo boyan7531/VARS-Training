@@ -115,9 +115,18 @@ class GPURandomContrast(nn.Module):
                 contrast_factors = 1.0 + (torch.rand(B, 1, 1, 1, 1, 1, device=video.device) - 0.5) * 2 * self.strength
             else:  # Single view
                 contrast_factors = 1.0 + (torch.rand(B, 1, 1, 1, 1, device=video.device) - 0.5) * 2 * self.strength
+            
+            # Clamp contrast factors to prevent extreme values that could cause NaN
+            contrast_factors = torch.clamp(contrast_factors, 0.1, 3.0)
+            
             # Apply contrast: (x - 0.5) * contrast + 0.5
             video = (video - 0.5) * contrast_factors + 0.5
             video = torch.clamp(video, 0, 1)
+            
+            # Safety check for NaN values
+            if torch.isnan(video).any():
+                logger.warning("NaN detected in contrast augmentation - using original video")
+                video = torch.nan_to_num(video, nan=0.5)
         return video
 
 
@@ -554,7 +563,7 @@ def create_transforms(args, is_training=True):
         
         # STAGE 4: Standard preprocessing
         augmentation_stages.extend([
-            VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            SafeVideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ShortSideScale(size=int(args.img_height * (1.5 if args.extreme_augmentation else (1.4 if args.aggressive_augmentation else 1.2)))),
             PerFrameCenterCrop((args.img_height, args.img_width)),
         ])
@@ -600,7 +609,7 @@ def create_transforms(args, is_training=True):
         # Standard validation transforms (NO augmentation for consistent evaluation)
         return transforms.Compose([
             ConvertToFloatAndScale(),
-            VideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            SafeVideoNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ShortSideScale(size=args.img_height),
             PerFrameCenterCrop((args.img_height, args.img_width))
         ])
@@ -1582,3 +1591,50 @@ class GPUVideoCutMix(nn.Module):
             return mixed_video, (labels, labels[indices], torch.tensor(lam))
         
         return mixed_video, None 
+
+
+class SafeVideoNormalize(torch.nn.Module):
+    """
+    Safe video normalization that prevents NaN values.
+    
+    This implementation adds epsilon to prevent division by zero
+    and clamps extreme values to prevent NaN propagation.
+    """
+    def __init__(self, mean, std, eps=1e-6):
+        super().__init__()
+        self.register_buffer('mean', torch.tensor(mean).view(1, -1, 1, 1, 1))
+        self.register_buffer('std', torch.tensor(std).view(1, -1, 1, 1, 1))
+        self.eps = eps
+    
+    def forward(self, video):
+        """
+        Args:
+            video: Tensor of shape (C, T, H, W) or (N, C, T, H, W)
+        """
+        # Ensure video is float
+        if video.dtype == torch.uint8:
+            video = video.float() / 255.0
+        
+        # Handle NaN/inf values before normalization
+        if torch.isnan(video).any() or torch.isinf(video).any():
+            logger.warning("Input video contains NaN/inf values before normalization")
+            video = torch.nan_to_num(video, nan=0.0, posinf=1.0, neginf=0.0)
+        
+        # Clamp to reasonable range to prevent extreme values
+        video = torch.clamp(video, 0.0, 1.0)
+        
+        # Add epsilon to std to prevent division by zero
+        safe_std = self.std + self.eps
+        
+        # Normalize
+        normalized = (video - self.mean) / safe_std
+        
+        # Final safety check
+        if torch.isnan(normalized).any() or torch.isinf(normalized).any():
+            logger.warning("NaN/inf detected after normalization - applying fallback")
+            normalized = torch.nan_to_num(normalized, nan=0.0, posinf=3.0, neginf=-3.0)
+        
+        # Clamp to reasonable range (approximately ±3 standard deviations)
+        normalized = torch.clamp(normalized, -4.0, 4.0)
+        
+        return normalized 
