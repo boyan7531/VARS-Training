@@ -388,17 +388,6 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         if batch_idx < 5:  # Only for first few batches to avoid performance impact
             torch.autograd.set_detect_anomaly(True)
         
-        # Handle early gradual freezing if enabled
-        if self.freezing_manager is not None:
-            # Unfreeze blocks based on current epoch and batch
-            info = self.freezing_manager.update_during_epoch(
-                current_epoch=self.current_epoch,
-                current_batch=batch_idx,
-                val_acc=self.trainer.callback_metrics.get('val_combined_acc', 0.0)
-            )
-            if info.get('blocks_unfrozen', 0) > 0:
-                logger.debug(f"Unfroze {info['blocks_unfrozen']} blocks at epoch {self.current_epoch}, batch {batch_idx}")
-        
         # Get model output with view consistency if enabled
         view_consistency_enabled = (hasattr(self.args, 'view_consistency') and 
                                   self.args.view_consistency)
