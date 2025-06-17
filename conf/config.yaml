@@ -18,4 +18,22 @@ hydra:
     dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
   sweep:
     dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: ${hydra:job.num} 
+    subdir: ${hydra:job.num}
+
+# Newly added global parameters (sync with training/config.py)
+aggregator_type: transformer  # ['mlp', 'transformer', 'moe']
+agg_heads: 2                 # heads for Transformer aggregator
+agg_layers: 1                # encoder layers for Transformer aggregator
+
+# View-consistency regulariser
+view_consistency: false      # enable KL agreement loss across views
+vc_weight: 0.3               # weight of the consistency loss
+
+# Learning-rate warm-up
+lr_warmup: false             # enable linear LR warm-up
+lr_warmup_steps: 0           # 0 => compute from lr_warmup_pct & total steps
+lr_warmup_pct: 0.05          # fraction of steps to warm-up over
+lr_warmup_start_lr: null     # null => lr / 100
+
+# Other model-level knobs
+max_views: null              # limit maximum number of camera views (null => all) 
