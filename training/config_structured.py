@@ -229,6 +229,31 @@ class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     system: SystemConfig = field(default_factory=SystemConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
+    
+    # Global parameters (from conf/config.yaml)
+    aggregator_type: str = "transformer"  # ['mlp', 'transformer', 'moe']
+    agg_heads: int = 2                    # heads for Transformer aggregator
+    agg_layers: int = 1                   # encoder layers for Transformer aggregator
+    
+    # View-consistency regulariser
+    view_consistency: bool = False        # enable KL agreement loss across views
+    vc_weight: float = 0.3                # weight of the consistency loss
+    
+    # Learning-rate warm-up
+    lr_warmup: bool = False               # enable linear LR warm-up
+    lr_warmup_steps: int = 0              # 0 => compute from lr_warmup_pct & total steps
+    lr_warmup_pct: float = 0.05           # fraction of steps to warm-up over
+    lr_warmup_start_lr: Optional[float] = None  # null => lr / 100
+    
+    # Other model-level knobs
+    max_views: Optional[int] = None       # limit maximum number of camera views (null => all)
+    
+    # Multi-clip temporal sampling
+    clips_per_video: int = 1              # number of clips per video (1=single, 3+ for ensemble)
+    clip_sampling: str = "uniform"        # sampling strategy: 'uniform' or 'random'
+    
+    # EMA validation
+    use_ema: bool = False                 # enable EMA validation
 
 
 # Register structured configs with Hydra
