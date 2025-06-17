@@ -19,9 +19,6 @@ class DatasetConfig:
     """Dataset and data loading configuration"""
     # Core paths
     data_dir: str = MISSING
-    train_csv: str = MISSING
-    val_csv: str = MISSING
-    test_csv: Optional[str] = None
     
     # Video processing
     clip_duration: float = 2.0
@@ -49,6 +46,11 @@ class DatasetConfig:
     mixup_alpha: float = 0.0
     cutmix_alpha: float = 0.0
     auto_augment: Optional[str] = None  # 'randaugment', 'trivialaugment', etc.
+
+    # Annotation format
+    # Each split folder (train / valid / test) must contain an 'annotations.json'
+    # file following the SoccerNet MVFoul specification. The data loader will
+    # automatically locate this file; no explicit annotation paths are needed.
 
 
 @dataclass

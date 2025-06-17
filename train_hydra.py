@@ -115,6 +115,35 @@ def convert_config_to_args(cfg: DictConfig) -> object:
                 self.mvfouls_path = str(getattr(self, "dataset_data_dir"))
             # END PATCH
         
+            # ------------------------------------------------------------------
+            # Legacy field aliases (until full migration away from argparse-style
+            # attribute names). These map the newer Hydra configuration keys to
+            # the attribute names used by existing training / data-loading code.
+            # ------------------------------------------------------------------
+
+            dataset_cfg = config_dict.get('dataset', {}) if isinstance(config_dict, dict) else {}
+
+            # Path to MVFouls root directory
+            if 'data_dir' in dataset_cfg:
+                setattr(self, 'mvfouls_path', dataset_cfg['data_dir'])
+
+            # Clip / video parameters
+            setattr(self, 'frames_per_clip', dataset_cfg.get('num_frames', 16))
+            setattr(self, 'target_fps', dataset_cfg.get('fps', 25))
+
+            frame_size = dataset_cfg.get('frame_size', 224)
+            setattr(self, 'img_height', frame_size)
+            setattr(self, 'img_width', frame_size)
+
+            # Data loader parameters
+            setattr(self, 'batch_size', dataset_cfg.get('batch_size', 8))
+            setattr(self, 'num_workers', dataset_cfg.get('num_workers', 8))
+            setattr(self, 'prefetch_factor', dataset_cfg.get('prefetch_factor', 2))
+
+            # Default foul-centered frame indices if not provided elsewhere
+            setattr(self, 'start_frame', dataset_cfg.get('start_frame', 67))
+            setattr(self, 'end_frame', dataset_cfg.get('end_frame', 82))
+        
         def _flatten_config(self, config_dict, prefix=''):
             """Flatten nested config into attributes"""
             for key, value in config_dict.items():
@@ -181,9 +210,11 @@ def main(cfg: DictConfig) -> None:
     logger.info("🎯 Starting training...")
     trainer.fit(model, datamodule)
     
-    # Test if test data is available
-    if cfg.dataset.test_csv:
-        logger.info("🧪 Running test evaluation...")
+    # Optional test evaluation if a 'test' split exists inside the dataset directory
+    from pathlib import Path as _P
+    test_annotations = _P(args.mvfouls_path) / "test" / "annotations.json"
+    if test_annotations.exists():
+        logger.info("🧪 Found test split – running test evaluation...")
         trainer.test(model, datamodule)
     
     logger.info("✅ Training completed!")
