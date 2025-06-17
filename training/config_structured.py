@@ -172,7 +172,7 @@ class TrainingConfig:
 class SystemConfig:
     """System and hardware configuration"""
     # Hardware
-    gpus: Union[int, List[int]] = 1
+    gpus: int = 1
     precision: str = "16-mixed"  # '32', '16-mixed', 'bf16-mixed'
     
     # Distributed training
