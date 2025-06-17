@@ -1110,6 +1110,27 @@ class SoccerNetMVFoulDataset(Dataset):
             # Apply augmentations if present
             if self.transform is not None:
                 print(f"🔄 Applying augmentations...")
+                print(f"   Video tensor shape before transform: {video_tensor.shape}")
+                print(f"   Video tensor dtype: {video_tensor.dtype}")
+                print(f"   Video tensor range: {video_tensor.min():.3f} to {video_tensor.max():.3f}")
+                
+                # Check if this is the expected 4D format [C, T, H, W]
+                if len(video_tensor.shape) != 4:
+                    print(f"🚨 UNEXPECTED TENSOR SHAPE! Expected 4D [C, T, H, W], got {len(video_tensor.shape)}D: {video_tensor.shape}")
+                    
+                    # Try to fix the shape if possible
+                    if len(video_tensor.shape) == 5 and video_tensor.shape[0] == 1:
+                        # Remove batch dimension if present: [1, C, T, H, W] -> [C, T, H, W]
+                        video_tensor = video_tensor.squeeze(0)
+                        print(f"   Fixed by removing batch dimension: {video_tensor.shape}")
+                    elif len(video_tensor.shape) == 3:
+                        # Add missing dimension if needed
+                        print(f"   ❌ Cannot fix 3D tensor shape automatically")
+                        return None
+                    else:
+                        print(f"   ❌ Cannot fix tensor shape automatically")
+                        return None
+                
                 pre_aug_nan = torch.isnan(video_tensor).any()
                 
                 video_tensor = self.transform(video_tensor)
