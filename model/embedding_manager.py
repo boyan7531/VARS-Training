@@ -11,12 +11,12 @@ class EmbeddingManager(nn.Module):
         self.config = config
         # No longer need to store vocab_sizes or create embeddings
         
-    def embed_features(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def embed_features(self, batch_data: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Return zero tensor since we no longer use categorical features.
+        Return zero tensors since we no longer use categorical features.
         
         Returns:
-            Zero tensor with appropriate batch size and zero embedding dimension
+            Tuple of (original_embedded, standard_embedded) - both zero tensors
         """
         # Get batch size from video clips
         clips = batch_data.get("clips")
@@ -27,5 +27,6 @@ class EmbeddingManager(nn.Module):
         
         device = clips.device if hasattr(clips, 'device') else torch.device('cpu')
         
-        # Return zero tensor - no categorical features anymore
-        return torch.zeros(batch_size, 0, device=device) 
+        # Return two zero tensors as expected by the calling code
+        zero_tensor = torch.zeros(batch_size, 0, device=device)
+        return zero_tensor, zero_tensor  # (original_embedded, standard_embedded) 

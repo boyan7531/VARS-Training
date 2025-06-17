@@ -75,7 +75,7 @@ def setup_freezing_strategy(args, model):
     freezing_manager = None
     
     logger.info("=" * 60)
-    logger.info("🧊 FREEZING STRATEGY CONFIGURATION")
+    logger.info("FREEZING STRATEGY CONFIGURATION")
     logger.info("=" * 60)
     
     if args.freezing_strategy == 'none':
@@ -189,7 +189,7 @@ def setup_freezing_strategy(args, model):
         
     else:
         # Standard training - all parameters trainable
-        logger.info("🔧 Standard training - all parameters trainable from start")
+        logger.info("SETUP: Standard training - all parameters trainable from start")
         log_trainable_parameters(model)
     
     logger.info("=" * 60)

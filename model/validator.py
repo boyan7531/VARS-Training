@@ -94,10 +94,14 @@ class InputValidator:
         if not isinstance(clips, torch.Tensor):
             raise ValidationError(f"Expected clips to be torch.Tensor, got {type(clips)}")
         
-        if clips.ndim != 6:  # [B, num_views, C, T, H, W]
-            raise ValidationError(f"Clips tensor should have 6 dimensions, got {clips.ndim}")
-        
-        batch_size, num_views, channels, frames, height, width = clips.shape
+        # Handle both 6D and 7D tensor formats
+        if clips.ndim == 6:  # [B, num_views, C, T, H, W]
+            batch_size, num_views, channels, frames, height, width = clips.shape
+        elif clips.ndim == 7:  # [B, clips_per_video, num_views, C, T, H, W]
+            batch_size, clips_per_video, num_views, channels, frames, height, width = clips.shape
+            logger.debug(f"7D tensor detected: clips_per_video={clips_per_video}")
+        else:
+            raise ValidationError(f"Clips tensor should have 6 or 7 dimensions, got {clips.ndim}")
         
         # Validate specific dimensions that must match
         if channels != self.config.input_channels:

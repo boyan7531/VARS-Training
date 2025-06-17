@@ -331,7 +331,7 @@ def log_trainable_parameters(model, epoch=None):
     
     if is_main_process:
         epoch_str = f" (Epoch {epoch})" if epoch is not None else ""
-        logger.info(f"📊 Trainable Parameters{epoch_str}:")
+        logger.info(f"PARAMS: Trainable Parameters{epoch_str}:")
         logger.info(f"  Total model: {trainable_params:,}/{total_params:,} ({trainable_params/total_params*100:.1f}%)")
         logger.info(f"  Backbone: {backbone_trainable:,}/{backbone_total:,} ({backbone_trainable/backbone_total*100:.1f}%)")
         logger.info(f"  Classification heads: {head_params:,}")

@@ -182,7 +182,7 @@ class VideoDataModule(pl.LightningDataModule):
         beta = 0.99 if total_samples < 10000 else 0.9999
         
         if is_main_process():
-            logger.info(f"Using β={beta} for effective-number-of-samples computation (dataset size: {total_samples})")
+            logger.info(f"Using beta={beta} for effective-number-of-samples computation (dataset size: {total_samples})")
         
         # Compute severity class weights
         severity_weights = {}

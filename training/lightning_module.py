@@ -228,7 +228,7 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                     else self.severity_class_weights
                 )
                 if self.args.use_class_balanced_sampler and not self.args.use_action_balanced_sampler_only and is_main_process():
-                    logger.info("🎯 ClassBalancedSampler detected: Setting severity_class_weights=None to prevent double-balancing")
+                    logger.info("BALANCE: ClassBalancedSampler detected: Setting severity_class_weights=None to prevent double-balancing")
                 
                 self.loss_config.update({
                     'severity_class_weights': severity_weights_for_loss,

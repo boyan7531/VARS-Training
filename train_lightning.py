@@ -7,16 +7,37 @@ while preserving all advanced features like freezing strategies, multi-task loss
 gradient accumulation, distributed training, and automatic mixed precision.
 """
 
+import warnings
+import os
+
+# Suppress repetitive warnings to keep training output clean
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+warnings.filterwarnings("ignore", category=UserWarning, module="pytorch_lightning")
+
+# Set environment variable to reduce PyTorch Lightning verbosity
+os.environ["PYTORCH_LIGHTNING_SEED_WORKERS"] = "1"
+
+# Fix Windows Unicode encoding issues
+if os.name == 'nt':  # Windows
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    import locale
+    try:
+        locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+    except locale.Error:
+        pass  # Fallback if UTF-8 locale not available
+
+import sys
+import argparse
+import logging
+from pathlib import Path
 import torch
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.strategies import DDPStrategy
-import logging
+import torch.multiprocessing as mp
 import random
 import numpy as np
-import os
-import multiprocessing as mp
-from pathlib import Path
 import time
 
 # Import training components
@@ -25,7 +46,7 @@ from training.lightning_module import MultiTaskVideoLightningModule
 from training.lightning_datamodule import VideoDataModule
 from training.lightning_callbacks import create_lightning_callbacks
 
-# Set up logging
+# Set up logging with reduced verbosity for cleaner output
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -34,6 +55,12 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+# Reduce PyTorch Lightning verbosity
+logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+logging.getLogger("pytorch_lightning.utilities.rank_zero").setLevel(logging.WARNING)
+logging.getLogger("pytorch_lightning.accelerators.cuda").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 

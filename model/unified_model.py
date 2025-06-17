@@ -4,7 +4,6 @@ from typing import Dict, Tuple, Optional, List
 import logging
 import os
 import torch.utils.checkpoint as checkpoint
-from torch.cuda.amp import autocast
 
 from .resnet3d_model import MultiTaskMultiViewResNet3D, ResNet3DBackbone
 from .config import ModelConfig
@@ -309,7 +308,7 @@ class OptimizedMViTProcessor(nn.Module):
         
         try:
             # Forward through MViT backbone
-            with autocast(enabled=self.use_mixed_precision):
+            with torch.amp.autocast('cuda', enabled=self.use_mixed_precision):
                 if self.use_gradient_checkpointing and self.training:
                     # Use gradient checkpointing to save memory
                     dummy = torch.ones(1, device=clips_to_process.device, requires_grad=True)

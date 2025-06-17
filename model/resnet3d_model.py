@@ -478,29 +478,39 @@ class MultiTaskMultiViewResNet3D(nn.Module):
             # Wrap unexpected errors
             raise RuntimeError(f"Forward pass failed: {str(e)}") from e
     
-    def _process_video_features(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Process video clips to extract aggregated features."""
+    def _process_video_features(self, batch_data):
+        """Process video clips through backbone."""
         clips = batch_data["clips"]
-        view_mask = batch_data.get("view_mask", None)
         
-        if isinstance(clips, list):
-            # Handle variable-length views
-            features, view_mask = self.view_aggregator.process_variable_views(clips, self.backbone)
+        # Handle different tensor dimensions
+        if clips.ndim == 7:  # [B, clips_per_video, num_views, C, T, H, W]
+            batch_size, clips_per_video, num_views, channels, frames, height, width = clips.shape
+            # Reshape to [B * clips_per_video * num_views, C, T, H, W] for backbone processing
+            clips_flat = clips.view(-1, channels, frames, height, width)
+        elif clips.ndim == 6:  # [B, num_views, C, T, H, W]
+            batch_size, num_views, channels, frames, height, width = clips.shape
+            clips_per_video = 1
+            # Reshape to [B * num_views, C, T, H, W] for backbone processing
+            clips_flat = clips.view(-1, channels, frames, height, width)
         else:
-            # Handle standard tensor input
-            batch_size, max_views = clips.shape[:2]
-            
-            # Reshape and process through backbone
-            clips_flat = clips.view(-1, *clips.shape[2:])  # [B*N, C, T, H, W]
-            features_flat = self.backbone(clips_flat)
-            
-            # Reshape back to [B, N, feature_dim]
-            features = features_flat.view(batch_size, max_views, -1)
+            raise ValueError(f"Unexpected clips tensor shape: {clips.shape}")
         
-        # Aggregate views
-        aggregated_features = self.view_aggregator.aggregate_views(features, view_mask)
+        # Process through backbone
+        features_flat = self.backbone(clips_flat)
         
-        return aggregated_features
+        # Reshape back to batch format
+        if clips.ndim == 7:
+            # Reshape back to [B, clips_per_video, num_views, feature_dim]
+            features = features_flat.view(batch_size, clips_per_video, num_views, -1)
+            # Average across clips_per_video and num_views
+            features = features.mean(dim=(1, 2))  # [B, feature_dim]
+        else:
+            # Reshape back to [B, num_views, feature_dim]
+            features = features_flat.view(batch_size, num_views, -1)
+            # Average across views
+            features = features.mean(dim=1)  # [B, feature_dim]
+        
+        return features
     
     def _process_categorical_features(self, batch_data: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Process categorical features through embeddings."""
