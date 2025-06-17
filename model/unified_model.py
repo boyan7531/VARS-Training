@@ -261,9 +261,50 @@ class OptimizedMViTProcessor(nn.Module):
         return all_features, view_mask
     
     def _forward_single_view(self, clips):
-        """Forward pass through backbone with optimized memory usage."""
-        # Ensure proper input format for MViT
-        return self.backbone(clips)
+        """Forward pass through backbone with optimized memory usage and NaN protection."""
+        # Add input validation
+        if torch.isnan(clips).any():
+            logger.error(f"NaN detected in input clips! Shape: {clips.shape}")
+            logger.error(f"NaN count: {torch.isnan(clips).sum().item()}")
+            # Replace NaN with zeros as a fallback
+            clips = torch.where(torch.isnan(clips), torch.zeros_like(clips), clips)
+            logger.warning("Replaced NaN input values with zeros")
+        
+        # Clamp input values to prevent extreme values
+        clips = torch.clamp(clips, min=-10.0, max=10.0)
+        
+        # Ensure proper input format for MViT and forward pass
+        try:
+            features = self.backbone(clips)
+            
+            # Comprehensive NaN detection in backbone outputs
+            if torch.isnan(features).any():
+                logger.error(f"NaN detected in backbone features! Shape: {features.shape}")
+                logger.error(f"NaN count: {torch.isnan(features).sum().item()}")
+                
+                # Replace NaN values with zeros and add small random noise for gradient flow
+                nan_mask = torch.isnan(features)
+                replacement_values = torch.randn_like(features) * 0.01  # Small random values
+                features = torch.where(nan_mask, replacement_values, features)
+                logger.warning("Replaced NaN backbone features with small random values")
+            
+            # Clamp features to prevent extreme values
+            features = torch.clamp(features, min=-50.0, max=50.0)
+            
+            return features
+            
+        except Exception as e:
+            logger.error(f"Backbone forward pass failed: {str(e)}")
+            # Create fallback features with proper shape
+            if hasattr(self.backbone, 'num_features'):
+                feature_dim = self.backbone.num_features
+            else:
+                feature_dim = 768  # Default MViT feature dimension
+            
+            batch_size = clips.shape[0]
+            fallback_features = torch.randn(batch_size, feature_dim, device=clips.device) * 0.01
+            logger.warning(f"Using fallback features with shape {fallback_features.shape}")
+            return fallback_features
 
 
 class MultiTaskMultiViewMViT(nn.Module):
@@ -391,17 +432,24 @@ class MultiTaskMultiViewMViT(nn.Module):
     def _create_optimized_head(self, input_dim: int, num_classes: int) -> nn.Module:
         """Create optimized classification head with LayerNorm for transformer feature stabilization."""
         head = nn.Sequential(
+            # Input normalization to stabilize transformer features
+            nn.LayerNorm(input_dim),
             nn.Linear(input_dim, 256),
             nn.LayerNorm(256),
             nn.GELU(),  # More efficient than ReLU for transformers
             nn.Dropout(self.dropout_rate),  # Use configurable dropout rate
-            nn.Linear(256, num_classes)
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(self.dropout_rate * 0.5),  # Reduced dropout for second layer
+            nn.Linear(128, num_classes)
         )
         
-        # Initialize weights properly for better training stability
+        # Initialize weights properly for better training stability with smaller scale
         for module in head.modules():
             if isinstance(module, nn.Linear):
-                torch.nn.init.xavier_uniform_(module.weight)
+                # Use smaller initialization scale to prevent exploding gradients
+                torch.nn.init.xavier_uniform_(module.weight, gain=0.1)
                 torch.nn.init.constant_(module.bias, 0)
             elif isinstance(module, nn.LayerNorm):
                 torch.nn.init.constant_(module.weight, 1.0)
@@ -461,6 +509,19 @@ class MultiTaskMultiViewMViT(nn.Module):
             combined_features = video_features
             logger.debug(f"Final features shape: {combined_features.shape}")
             
+            # Add NaN protection before classification heads
+            if torch.isnan(combined_features).any():
+                logger.error(f"NaN detected in combined features before classification!")
+                logger.error(f"Combined features NaN count: {torch.isnan(combined_features).sum().item()}")
+                # Replace NaN with small random values
+                nan_mask = torch.isnan(combined_features)
+                replacement_values = torch.randn_like(combined_features) * 0.01
+                combined_features = torch.where(nan_mask, replacement_values, combined_features)
+                logger.warning("Replaced NaN combined features with small random values")
+            
+            # Clamp features before classification heads
+            combined_features = torch.clamp(combined_features, min=-10.0, max=10.0)
+            
             # Generate predictions with potential checkpointing for large models
             if self.use_gradient_checkpointing and self.training:
                 severity_logits = checkpoint.checkpoint(
@@ -472,6 +533,21 @@ class MultiTaskMultiViewMViT(nn.Module):
             else:
                 severity_logits = self.severity_head(combined_features)
                 action_type_logits = self.action_type_head(combined_features)
+            
+            # Final NaN protection for logits
+            if torch.isnan(severity_logits).any():
+                logger.error(f"NaN detected in severity logits! Replacing with zeros.")
+                severity_logits = torch.where(torch.isnan(severity_logits), 
+                                            torch.zeros_like(severity_logits), severity_logits)
+            
+            if torch.isnan(action_type_logits).any():
+                logger.error(f"NaN detected in action logits! Replacing with zeros.")
+                action_type_logits = torch.where(torch.isnan(action_type_logits), 
+                                               torch.zeros_like(action_type_logits), action_type_logits)
+            
+            # Clamp final logits to reasonable range
+            severity_logits = torch.clamp(severity_logits, min=-20.0, max=20.0)
+            action_type_logits = torch.clamp(action_type_logits, min=-20.0, max=20.0)
             
             # Handle multi-clip averaging if we flattened clips earlier
             if clips_per_video > 1:

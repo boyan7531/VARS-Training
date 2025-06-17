@@ -388,6 +388,31 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         if batch_idx < 5:  # Only for first few batches to avoid performance impact
             torch.autograd.set_detect_anomaly(True)
         
+        # Comprehensive input validation
+        if "clips" in batch:
+            clips = batch["clips"]
+            if torch.isnan(clips).any():
+                logger.error(f"NaN detected in input clips at batch {batch_idx}!")
+                logger.error(f"Clips shape: {clips.shape}, NaN count: {torch.isnan(clips).sum().item()}")
+                # Skip this batch entirely if input is corrupted
+                return None
+            
+            # Check for extreme values that could cause instability
+            clips_min, clips_max = clips.min(), clips.max()
+            if clips_max > 100.0 or clips_min < -100.0:
+                logger.warning(f"Extreme values in clips at batch {batch_idx}: min={clips_min:.3f}, max={clips_max:.3f}")
+                # Clamp to reasonable range
+                batch["clips"] = torch.clamp(clips, min=-10.0, max=10.0)
+                logger.warning("Clamped input clips to [-10, 10] range")
+        
+        # Validate labels
+        for label_key in ["label_severity", "label_type"]:
+            if label_key in batch:
+                labels = batch[label_key]
+                if torch.isnan(labels).any():
+                    logger.error(f"NaN detected in {label_key} at batch {batch_idx}!")
+                    return None
+        
         # Get model output with view consistency if enabled
         view_consistency_enabled = (hasattr(self.args, 'view_consistency') and 
                                   self.args.view_consistency)
