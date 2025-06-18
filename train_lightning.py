@@ -63,6 +63,15 @@ logging.getLogger("pytorch_lightning.accelerators.cuda").setLevel(logging.WARNIN
 
 logger = logging.getLogger(__name__)
 
+# CRITICAL FIX: Apply patch for collate function issue
+try:
+    from fix_lightning_collate import patch_lightning_datamodule
+    patch_lightning_datamodule()
+    logger.info("✅ Applied Lightning DataModule collate_fn patch")
+except Exception as e:
+    logger.warning(f"Could not apply Lightning patch: {e}")
+    logger.warning("Continuing without patch - may encounter batch structure errors")
+
 
 def set_seed(seed: int):
     """Set random seeds for reproducibility."""
