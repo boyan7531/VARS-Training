@@ -397,7 +397,22 @@ def parse_args():
     return args
 
 def process_config(args):
-    """Process and validate configuration arguments."""
+    """
+    Process and validate configuration arguments.
+    Apply cross-argument logic and compatibility fixes.
+    """
+    # === EARLY PROCESSING: Apply use_class_weights_only flag FIRST ===
+    if args.use_class_weights_only:
+        logger.info("🎯 Early config processing: Using class weights only mode")
+        args.use_class_balanced_sampler = False
+        args.progressive_class_balancing = False
+        args.use_alternating_sampler = False
+        args.use_action_balanced_sampler_only = False
+        # Don't force loss_function change here - keep user's choice of focal vs weighted
+        logger.info("   - All sampling techniques disabled")
+        logger.info("   - Will use computed class weights for balanced training")
+    
+    # === CONFIGURATION PROCESSING ===
     
     # Set dataset path
     if args.dataset_root:
