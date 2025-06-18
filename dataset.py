@@ -771,8 +771,6 @@ class SoccerNetMVFoulDataset(Dataset):
             # Map all values (including empty) through the label mapping
             if json_severity_val in SEVERITY_LABELS:
                 numerical_severity = SEVERITY_LABELS[json_severity_val]
-                if json_severity_val == "":
-                    print(f"Info: Empty severity for action {action_id_str}, mapped to class 0")
             else:
                 print(f"Warning: Unknown 'Severity' value '{json_severity_val}' for action {action_id_str}. Mapping to empty class 0.")
                 numerical_severity = 0  # Map unknown values to empty class
@@ -783,8 +781,6 @@ class SoccerNetMVFoulDataset(Dataset):
             # Map all values (including empty) through the label mapping
             if json_action_class in ACTION_TYPE_LABELS:
                 numerical_action_type = ACTION_TYPE_LABELS[json_action_class]
-                if json_action_class == "":
-                    print(f"Info: Empty action class for action {action_id_str}, mapped to class 0")
             else:
                 print(f"Warning: Unknown 'Action class' value '{json_action_class}' for action {action_id_str}. Mapping to empty class 0.")
                 numerical_action_type = 0  # Map unknown values to empty class
@@ -845,8 +841,6 @@ class SoccerNetMVFoulDataset(Dataset):
             offence_str = action_details.get("Offence", "")  # Default to empty string
             
             # Keep empty values as empty - don't force any defaults
-            if offence_str == "":
-                print(f"Info: Empty offence value for action {action_id_str}, keeping as empty")
             
             # Map to indices, using 0 for empty (which can represent "unknown" or "no classification")
             if offence_str in OFFENCE_VALUES:
