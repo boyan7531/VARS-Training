@@ -160,4 +160,25 @@ class SmartFreezingManager:
                 return True
         
         logger.info(f"[ADAPTIVE] All layers already unfrozen")
-        return False 
+        return False
+    
+    def update_after_epoch(self, val_metric, epoch):
+        """Update state after each epoch - interface compatibility with other freezing managers."""
+        update_info = {
+            'rebuild_optimizer': False,
+            'unfrozen_layers': [],
+            'warmup_updates': {},
+            'rollback_performed': False
+        }
+        
+        # Monitor gradients for analysis
+        self.monitor_gradients(epoch)
+        
+        # Perform adaptive unfreezing step
+        if self.adaptive_unfreeze_step(val_metric, epoch):
+            update_info['rebuild_optimizer'] = True
+            # Get the last unfrozen layer
+            if self.unfrozen_layers:
+                update_info['unfrozen_layers'] = [self.unfrozen_layers[-1]]
+        
+        return update_info 
