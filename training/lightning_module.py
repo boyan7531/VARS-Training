@@ -458,9 +458,7 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                     sev_logits, act_logits, batch, self.loss_config, view_logits
                 )
             else:
-                model_output = self.model(batch)
-                sev_logits = model_output['severity_logits']
-                act_logits = model_output['action_logits']
+                sev_logits, act_logits = self.model(batch)
                 view_logits = None
                 total_loss, loss_sev, loss_act, loss_components = calculate_multitask_loss(
                     sev_logits, act_logits, batch, self.loss_config
