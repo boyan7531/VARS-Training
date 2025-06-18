@@ -151,6 +151,17 @@ class VideoDataModule(pl.LightningDataModule):
             logger.warning("Training dataset not available for class weight computation")
             return
         
+        # Check if class weighting is disabled
+        class_weighting_strategy = getattr(self.args, 'class_weighting_strategy', 'sqrt')
+        if class_weighting_strategy == 'none':
+            logger.info("Class weighting strategy set to 'none' - skipping class weight computation")
+            logger.info("All class weights will be uniform (1.0)")
+            
+            # Set uniform weights
+            self.severity_class_weights = torch.ones(6)  # 6 severity classes
+            self.action_class_weights = torch.ones(10)   # 10 action classes
+            return
+        
         logger.info("Computing automatic class weights using effective-number-of-samples formula...")
         
         # Extract labels from training dataset
