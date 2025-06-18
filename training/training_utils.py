@@ -75,6 +75,93 @@ def calculate_f1_score(outputs, labels, num_classes):
     return f1_score(labels.cpu().numpy(), predicted.cpu().numpy(), average='weighted', zero_division=0)
 
 
+def log_validation_prediction_stats(sev_logits, act_logits, sev_labels, act_labels, epoch, log_frequency=5):
+    """
+    Log prediction distribution statistics to debug stuck validation accuracy.
+    
+    Args:
+        sev_logits: Severity prediction logits [batch_size, num_severity_classes]
+        act_logits: Action prediction logits [batch_size, num_action_classes] 
+        sev_labels: True severity labels [batch_size]
+        act_labels: True action labels [batch_size]
+        epoch: Current epoch number
+        log_frequency: How often to log (every N epochs)
+    """
+    # Only log every N epochs to avoid spam
+    if epoch % log_frequency != 0:
+        return
+        
+    # Get predictions
+    sev_preds = torch.argmax(sev_logits, dim=1)
+    act_preds = torch.argmax(act_logits, dim=1)
+    
+    # Calculate prediction distributions
+    sev_pred_dist = torch.bincount(sev_preds, minlength=6).cpu().numpy()
+    act_pred_dist = torch.bincount(act_preds, minlength=10).cpu().numpy()
+    
+    # Calculate true label distributions for comparison
+    sev_true_dist = torch.bincount(sev_labels, minlength=6).cpu().numpy() 
+    act_true_dist = torch.bincount(act_labels, minlength=10).cpu().numpy()
+    
+    # Calculate prediction accuracy per class
+    sev_correct_per_class = torch.zeros(6)
+    act_correct_per_class = torch.zeros(10)
+    
+    for i in range(6):
+        if sev_true_dist[i] > 0:
+            mask = (sev_labels == i)
+            if mask.sum() > 0:
+                sev_correct_per_class[i] = (sev_preds[mask] == i).float().mean()
+    
+    for i in range(10):
+        if act_true_dist[i] > 0:
+            mask = (act_labels == i)
+            if mask.sum() > 0:
+                act_correct_per_class[i] = (act_preds[mask] == i).float().mean()
+    
+    logger.info("=" * 80)
+    logger.info(f"[EPOCH {epoch}] VALIDATION PREDICTION ANALYSIS")
+    logger.info("=" * 80)
+    logger.info("🎯 SEVERITY PREDICTIONS:")
+    logger.info(f"   Predicted distribution: {sev_pred_dist}")
+    logger.info(f"   True distribution:      {sev_true_dist}")
+    
+    for i in range(6):
+        if sev_true_dist[i] > 0:
+            pred_pct = (sev_pred_dist[i] / sev_pred_dist.sum() * 100) if sev_pred_dist.sum() > 0 else 0
+            true_pct = (sev_true_dist[i] / sev_true_dist.sum() * 100)
+            acc_pct = (sev_correct_per_class[i] * 100) if sev_correct_per_class[i] > 0 else 0
+            logger.info(f"   Class {i}: {pred_pct:5.1f}% pred vs {true_pct:5.1f}% true | Acc: {acc_pct:5.1f}%")
+    
+    logger.info("")
+    logger.info("🎯 ACTION PREDICTIONS:")
+    logger.info(f"   Predicted distribution: {act_pred_dist}")
+    logger.info(f"   True distribution:      {act_true_dist}")
+    
+    for i in range(10):
+        if act_true_dist[i] > 0:
+            pred_pct = (act_pred_dist[i] / act_pred_dist.sum() * 100) if act_pred_dist.sum() > 0 else 0
+            true_pct = (act_true_dist[i] / act_true_dist.sum() * 100)
+            acc_pct = (act_correct_per_class[i] * 100) if act_correct_per_class[i] > 0 else 0
+            logger.info(f"   Class {i}: {pred_pct:5.1f}% pred vs {true_pct:5.1f}% true | Acc: {acc_pct:5.1f}%")
+    
+    # Check for collapsed predictions
+    sev_entropy = -torch.sum((sev_pred_dist / sev_pred_dist.sum()) * torch.log(torch.clamp(sev_pred_dist / sev_pred_dist.sum(), min=1e-8)))
+    act_entropy = -torch.sum((act_pred_dist / act_pred_dist.sum()) * torch.log(torch.clamp(act_pred_dist / act_pred_dist.sum(), min=1e-8)))
+    
+    logger.info("")
+    logger.info("📊 PREDICTION DIVERSITY:")
+    logger.info(f"   Severity prediction entropy: {sev_entropy:.3f} (max: {torch.log(torch.tensor(6.0)):.3f})")
+    logger.info(f"   Action prediction entropy: {act_entropy:.3f} (max: {torch.log(torch.tensor(10.0)):.3f})")
+    
+    if sev_entropy < 1.0:
+        logger.warning("   ⚠️ LOW SEVERITY PREDICTION DIVERSITY - Model may be collapsed!")
+    if act_entropy < 1.5:
+        logger.warning("   ⚠️ LOW ACTION PREDICTION DIVERSITY - Model may be collapsed!")
+    
+    logger.info("=" * 80)
+
+
 def update_confusion_matrix(confusion_matrix_dict, outputs, labels, task_name):
     """Update running confusion matrix for a task."""
     _, predicted = torch.max(outputs.data, 1)

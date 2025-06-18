@@ -543,6 +543,15 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
         update_confusion_matrix(self.val_confusion_matrices, sev_logits, batch["label_severity"], 'severity')
         update_confusion_matrix(self.val_confusion_matrices, act_logits, batch["label_type"], 'action_type')
         
+        # Store validation predictions for debugging (accumulated across batches)
+        if not hasattr(self, 'val_predictions'):
+            self.val_predictions = {'sev_logits': [], 'act_logits': [], 'sev_labels': [], 'act_labels': []}
+        
+        self.val_predictions['sev_logits'].append(sev_logits.detach())
+        self.val_predictions['act_logits'].append(act_logits.detach())
+        self.val_predictions['sev_labels'].append(batch["label_severity"].detach())
+        self.val_predictions['act_labels'].append(batch["label_type"].detach())
+        
         # Store outputs
         output = {
             'val_loss': total_loss,
@@ -618,7 +627,24 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
     def on_validation_epoch_end(self):
         """Called at the end of validation epoch."""
         # Import the rank checking function
-        from .training_utils import is_main_process
+        from .training_utils import is_main_process, log_validation_prediction_stats
+        
+        # Log validation prediction statistics for debugging
+        if hasattr(self, 'val_predictions') and is_main_process():
+            # Concatenate all validation predictions from this epoch
+            sev_logits = torch.cat(self.val_predictions['sev_logits'], dim=0)
+            act_logits = torch.cat(self.val_predictions['act_logits'], dim=0)
+            sev_labels = torch.cat(self.val_predictions['sev_labels'], dim=0)
+            act_labels = torch.cat(self.val_predictions['act_labels'], dim=0)
+            
+            # Log prediction statistics every 5 epochs
+            log_validation_prediction_stats(
+                sev_logits, act_logits, sev_labels, act_labels, 
+                self.current_epoch, log_frequency=5
+            )
+            
+            # Clear predictions for next epoch
+            self.val_predictions = {'sev_logits': [], 'act_logits': [], 'sev_labels': [], 'act_labels': []}
         
         # Log confusion matrices every 5 epochs
         if (self.current_epoch + 1) % 5 == 0:
