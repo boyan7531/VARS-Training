@@ -202,6 +202,34 @@ class VideoDataModule(pl.LightningDataModule):
             else:
                 action_weights[class_id] = 0.0
         
+        # Apply weight capping using max_weight_ratio from args
+        def cap_weights(weights_dict, max_ratio):
+            if not weights_dict or max_ratio <= 0:
+                return weights_dict
+            
+            weight_values = list(weights_dict.values())
+            if not weight_values:
+                return weights_dict
+                
+            min_weight = min(w for w in weight_values if w > 0)
+            max_allowed_weight = min_weight * max_ratio
+            
+            capped_weights = {}
+            for class_id, weight in weights_dict.items():
+                capped_weights[class_id] = min(weight, max_allowed_weight)
+            
+            return capped_weights
+        
+        # Get max_weight_ratio from args (default 2.0 if not set)
+        max_weight_ratio = getattr(self.args, 'max_weight_ratio', 2.0)
+        
+        if is_main_process():
+            logger.info(f"Applying weight capping with max_weight_ratio={max_weight_ratio}")
+        
+        # Apply capping before normalization
+        severity_weights = cap_weights(severity_weights, max_weight_ratio)
+        action_weights = cap_weights(action_weights, max_weight_ratio)
+        
         # Normalize weights so they sum to number of classes
         def normalize_weights(weights_dict):
             if not weights_dict:
