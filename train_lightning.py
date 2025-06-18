@@ -222,8 +222,15 @@ def main():
     # Parse arguments
     args = parse_args()
     
+    # DEBUG: Check the flag before processing
+    logger.info(f"DEBUG: use_class_weights_only flag = {getattr(args, 'use_class_weights_only', 'NOT_SET')}")
+    
     # CRITICAL: Process config to handle flags like use_class_weights_only
     args = process_config(args)
+    
+    # DEBUG: Check flags after processing
+    logger.info(f"DEBUG: After processing - use_class_balanced_sampler = {getattr(args, 'use_class_balanced_sampler', 'NOT_SET')}")
+    logger.info(f"DEBUG: After processing - progressive_class_balancing = {getattr(args, 'progressive_class_balancing', 'NOT_SET')}")
     
     # Apply auto learning rate scaling if enabled
     if getattr(args, 'auto_lr_scale', False):

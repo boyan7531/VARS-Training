@@ -401,6 +401,9 @@ def process_config(args):
     Process and validate configuration arguments.
     Apply cross-argument logic and compatibility fixes.
     """
+    # DEBUG: Log that function is being called
+    logger.info(f"DEBUG: process_config called with use_class_weights_only = {getattr(args, 'use_class_weights_only', 'NOT_SET')}")
+    
     # === EARLY PROCESSING: Apply use_class_weights_only flag FIRST ===
     if args.use_class_weights_only:
         logger.info("🎯 Early config processing: Using class weights only mode")
