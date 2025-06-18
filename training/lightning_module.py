@@ -473,7 +473,10 @@ class MultiTaskVideoLightningModule(pl.LightningModule):
                 return None
             
         except Exception as e:
-            logger.error(f"Error in forward pass at batch {batch_idx}: {str(e)}")
+            logger.error(f"Error in forward pass at batch {batch_idx}: Forward pass failed: {str(e)}")
+            # Log more details about the error
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             # Skip this batch
             return None
         finally:
