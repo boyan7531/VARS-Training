@@ -41,7 +41,7 @@ import numpy as np
 import time
 
 # Import training components
-from training.config import parse_args, log_configuration_summary
+from training.config import parse_args, log_configuration_summary, process_config
 from training.lightning_module import MultiTaskVideoLightningModule
 from training.lightning_datamodule import VideoDataModule
 from training.lightning_callbacks import create_lightning_callbacks
@@ -221,6 +221,9 @@ def main():
     
     # Parse arguments
     args = parse_args()
+    
+    # CRITICAL: Process config to handle flags like use_class_weights_only
+    args = process_config(args)
     
     # Apply auto learning rate scaling if enabled
     if getattr(args, 'auto_lr_scale', False):
