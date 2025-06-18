@@ -145,9 +145,15 @@ def log_validation_prediction_stats(sev_logits, act_logits, sev_labels, act_labe
             acc_pct = (act_correct_per_class[i] * 100) if act_correct_per_class[i] > 0 else 0
             logger.info(f"   Class {i}: {pred_pct:5.1f}% pred vs {true_pct:5.1f}% true | Acc: {acc_pct:5.1f}%")
     
-    # Check for collapsed predictions
-    sev_entropy = -torch.sum((sev_pred_dist / sev_pred_dist.sum()) * torch.log(torch.clamp(sev_pred_dist / sev_pred_dist.sum(), min=1e-8)))
-    act_entropy = -torch.sum((act_pred_dist / act_pred_dist.sum()) * torch.log(torch.clamp(act_pred_dist / act_pred_dist.sum(), min=1e-8)))
+    # Check for collapsed predictions - ensure we work with tensors
+    sev_pred_dist = torch.tensor(sev_pred_dist, dtype=torch.float32)
+    act_pred_dist = torch.tensor(act_pred_dist, dtype=torch.float32)
+    
+    sev_probs = sev_pred_dist / sev_pred_dist.sum()
+    act_probs = act_pred_dist / act_pred_dist.sum()
+    
+    sev_entropy = -torch.sum(sev_probs * torch.log(torch.clamp(sev_probs, min=1e-8)))
+    act_entropy = -torch.sum(act_probs * torch.log(torch.clamp(act_probs, min=1e-8)))
     
     logger.info("")
     logger.info("📊 PREDICTION DIVERSITY:")
