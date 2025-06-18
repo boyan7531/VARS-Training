@@ -446,9 +446,13 @@ class OptimizedMViTProcessor(nn.Module):
                 else:
                     logger.warning(f"Unexpected backbone error: {error_msg} (type: {error_type})")
                     logger.debug(f"Full traceback: {error_traceback}")
-            elif error_type in ['RuntimeError', 'ValueError', 'TypeError']:
+            elif error_type in ['RuntimeError', 'ValueError', 'TypeError', '_StopRecomputationError']:
                 # Known error types with empty messages - likely CUDA/tensor issues
-                logger.debug(f"Handled silent {error_type} in backbone (likely tensor/CUDA issue)")
+                # _StopRecomputationError is normal PyTorch gradient checkpointing control flow
+                if error_type == '_StopRecomputationError':
+                    logger.debug(f"Handled {error_type} in backbone (normal gradient checkpointing control flow)")
+                else:
+                    logger.debug(f"Handled silent {error_type} in backbone (likely tensor/CUDA issue)")
                 # Add more debugging for silent errors during epoch 3+
                 if hasattr(self, '_debug_silent_errors'):
                     logger.debug(f"Silent {error_type} details: repr={error_repr}")
