@@ -389,6 +389,9 @@ def parse_args():
     
     parser.add_argument('--torch_compile', action='store_true', help='Compile model with torch.compile for speed (PyTorch 2.0+)')
     
+    parser.add_argument('--no_class_balanced_sampler', dest='use_class_balanced_sampler', action='store_false',
+                        help='Disable class-balanced sampler and use natural data distribution')
+    
     args = parser.parse_args()
     
     # Apply configuration processing and validation
