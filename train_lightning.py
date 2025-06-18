@@ -7,8 +7,14 @@ while preserving all advanced features like freezing strategies, multi-task loss
 gradient accumulation, distributed training, and automatic mixed precision.
 """
 
+# Limit BLAS/OMP thread usage BEFORE heavy numerical libraries are loaded
 import warnings
 import os
+
+# Prevent OpenBLAS / MKL from spawning dozens of threads that exceed system limits
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")  # OpenBLAS
+os.environ.setdefault("OMP_NUM_THREADS", "1")        # GCC / LLVM OpenMP
+os.environ.setdefault("MKL_NUM_THREADS", "1")        # Intel MKL
 
 # Suppress repetitive warnings to keep training output clean
 warnings.filterwarnings("ignore", category=FutureWarning)
