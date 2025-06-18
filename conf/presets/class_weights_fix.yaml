@@ -1,0 +1,44 @@
+# @package _global_
+# Class weights only configuration - Fix for severe class imbalance bias
+# This configuration disables oversampling and uses only class weights for balanced training
+
+defaults:
+  - override /loss: focal
+  - override /sampling: progressive  # Will be overridden by flags below
+
+# === CLASS BALANCING FIX ===
+# Use class weights only, disable all oversampling
+use_class_weights_only: true  # This will disable all sampling techniques
+
+# === LOSS CONFIGURATION ===
+loss:
+  function: "weighted"  # Use weighted loss with computed class weights
+  use_class_weights: true
+  class_weight_method: "effective_num"  # Use effective number of samples method
+  effective_num_beta: 0.99
+  label_smoothing: 0.0  # Disable label smoothing with class weights
+
+# === AUGMENTATION CONFIGURATION ===
+# Disable in-model augmentation to prevent double bias
+disable_in_model_augmentation: true
+
+# === SAMPLING (will be overridden by use_class_weights_only flag) ===
+sampling:
+  use_class_balanced_sampler: false
+  progressive_class_balancing: false
+  use_alternating_sampler: false
+  use_action_balanced_sampler_only: false
+
+# === TRAINING CONFIGURATION ===
+epochs: 40
+batch_size: 8
+learning_rate: 0.0001
+scheduler: "cosine_annealing"
+
+# === MODEL CONFIGURATION ===
+model:
+  backbone_name: "r2plus1d_18"
+  dropout_rate: 0.1
+
+# === MONITORING ===
+early_stopping_patience: 8 

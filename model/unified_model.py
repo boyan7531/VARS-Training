@@ -592,10 +592,10 @@ class MultiTaskMultiViewMViT(nn.Module):
                 if severity_weights is None:
                     severity_weights = {
                         1.0: 1.0,   # Majority class - normal augmentation
-                        2.0: 2.5,   # 2.5x more aggressive augmentation
-                        3.0: 4.0,   # 4x more aggressive augmentation  
-                        4.0: 6.0,   # 6x more aggressive augmentation
-                        5.0: 8.0    # 8x more aggressive augmentation (if exists)
+                        2.0: 1.3,   # Reduced from 2.5x to 1.3x more aggressive augmentation
+                        3.0: 1.6,   # Reduced from 4.0x to 1.6x more aggressive augmentation  
+                        4.0: 2.0,   # Reduced from 6.0x to 2.0x more aggressive augmentation
+                        5.0: 2.5    # Reduced from 8.0x to 2.5x more aggressive augmentation
                     }
                 
                 self.video_augmentation = VideoAugmentation(
@@ -995,10 +995,10 @@ def create_unified_model(
         if severity_weights is None:
             severity_weights = {
                 1.0: 1.0,   # Majority class - normal augmentation
-                2.0: 2.5,   # 2.5x more aggressive augmentation
-                3.0: 4.0,   # 4x more aggressive augmentation  
-                4.0: 6.0,   # 6x more aggressive augmentation
-                5.0: 8.0    # 8x more aggressive augmentation (if exists)
+                2.0: 1.3,   # Reduced from 2.5x to 1.3x more aggressive augmentation
+                3.0: 1.6,   # Reduced from 4.0x to 1.6x more aggressive augmentation  
+                4.0: 2.0,   # Reduced from 6.0x to 2.0x more aggressive augmentation
+                5.0: 2.5    # Reduced from 8.0x to 2.5x more aggressive augmentation
             }
         
         # Override use_augmentation if disable_in_model_augmentation is True

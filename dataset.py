@@ -451,10 +451,13 @@ class ClassBalancedSampler(torch.utils.data.Sampler):
             self.class_counts[severity_label] += 1
             self.class_indices[severity_label].append(idx)
         
-                # Calculate sampling weights
+        # Calculate sampling weights
         max_count = 1
         if self.class_counts: # Ensure class_counts is not empty
             max_count = max(self.class_counts.values())
+        
+        # Find the actual majority class (class with highest count)
+        majority_class = max(self.class_counts, key=self.class_counts.get) if self.class_counts else 1
         
         self.sampling_weights = {}
         
@@ -463,10 +466,8 @@ class ClassBalancedSampler(torch.utils.data.Sampler):
                 self.sampling_weights[class_id] = 0
                 continue
 
-            # Example: if severity 1.0 is majority, its label might be 1.
-            # Adjust this condition based on your actual majority class label.
-            # Assuming SEVERITY_LABELS maps "1.0" to 1, and this is majority.
-            if class_id == SEVERITY_LABELS.get("1.0", 1):  # Majority class
+            # Dynamic majority class detection instead of hardcoded severity "1.0"
+            if class_id == majority_class:  # Actual majority class
                 self.sampling_weights[class_id] = 1.0
             else:  # Minority classes
                 self.sampling_weights[class_id] = min(oversample_factor, max_count / count)

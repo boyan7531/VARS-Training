@@ -687,6 +687,21 @@ def main():
     severity_class_names = ["Sev_0", "Sev_1", "Sev_2", "Sev_3", "Sev_4", "Sev_5"]
     action_class_names = [f"Act_{i}" for i in range(10)]  # 10 action classes
 
+    # === CONFIGURATION PROCESSING: Apply use_class_weights_only flag ===
+    if args.use_class_weights_only:
+        logger.info("🎯 Using class weights only mode - disabling progressive sampling")
+        args.use_class_balanced_sampler = False
+        args.progressive_class_balancing = False
+        args.use_alternating_sampler = False
+        args.use_action_balanced_sampler_only = False
+        args.loss_function = 'weighted'  # Force weighted loss with proper class weights
+        logger.info("   - All sampling techniques disabled")
+        logger.info("   - Loss function set to 'weighted'")
+        logger.info("   - Will use computed class weights for balanced training")
+    
+    # Apply simple training mode overrides
+    if args.simple_training:
+
     # Main training loop
     logger.info("Starting Training")
     logger.info("=" * 80)

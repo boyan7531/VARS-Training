@@ -829,17 +829,17 @@ class ProgressiveClassBalancedSampler(torch.utils.data.Sampler):
                 self.targets_per_class[cls] = count
             elif minority_ratio >= 0.4:
                 # Medium classes (40-80% of majority): minimal oversampling
-                class_specific_factor = 1.0 + (current_factor - 1.0) * 0.3  # 30% of full factor
+                class_specific_factor = 1.0 + (current_factor - 1.0) * 0.2  # Reduced from 30% to 20%
                 target_count = int(count * class_specific_factor)
-                self.targets_per_class[cls] = min(target_count, int(self.majority_count * 1.2))  # Cap at 120% of majority
+                self.targets_per_class[cls] = min(target_count, int(self.majority_count * 1.1))  # Reduced cap from 120% to 110%
             else:
                 # True minority classes (<40% of majority): progressive oversampling
                 # Linear scaling based on rarity
                 rarity_factor = (1.0 - minority_ratio) / 0.6  # Scale from 0 to 1 as ratio goes from 0.4 to 0
-                class_specific_factor = 1.0 + (current_factor - 1.0) * (0.7 + 0.3 * rarity_factor)  # 70-100% of full factor
+                class_specific_factor = 1.0 + (current_factor - 1.0) * (0.5 + 0.3 * rarity_factor)  # Reduced from 70-100% to 50-80%
                 
-                # Cap the maximum oversampling
-                class_specific_factor = min(class_specific_factor, self.max_targets_multiplier)
+                # Cap the maximum oversampling to prevent extreme imbalance
+                class_specific_factor = min(class_specific_factor, self.max_targets_multiplier * 0.7)  # Reduced max multiplier
                 
                 # Calculate targets (but ensure at least the original count)
                 target_count = max(int(count * class_specific_factor), count)
@@ -997,13 +997,17 @@ class DistributedClassBalancedSampler(torch.utils.data.Sampler):
         if self.class_counts:
             max_count = max(self.class_counts.values())
         
+        # Find the actual majority class (class with highest count)
+        majority_class = max(self.class_counts, key=self.class_counts.get) if self.class_counts else 1
+        
         self.sampling_weights = {}
         for class_id, count in self.class_counts.items():
             if count == 0:
                 self.sampling_weights[class_id] = 0
                 continue
 
-            if class_id == SEVERITY_LABELS.get("1.0", 1):  # Majority class
+            # Dynamic majority class detection instead of hardcoded severity "1.0"
+            if class_id == majority_class:  # Actual majority class
                 self.sampling_weights[class_id] = 1.0
             else:  # Minority classes
                 self.sampling_weights[class_id] = min(oversample_factor, max_count / count)

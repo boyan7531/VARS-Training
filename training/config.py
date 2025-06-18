@@ -126,14 +126,16 @@ def parse_args():
                        help='Power factor for strong action weights (higher = more aggressive)')
     parser.add_argument('--disable_class_balancing', action='store_true', default=False,
                        help='Disable all class balancing techniques (use with caution)')
+    parser.add_argument('--use_class_weights_only', action='store_true', default=False,
+                       help='Use only class weights for balancing, disable progressive sampling (recommended fix for severe bias)')
     
     # === NEW STRATEGIES FOR CLASS IMBALANCE ===
     parser.add_argument('--progressive_class_balancing', action='store_true', default=True,
                        help='Enable progressive class-balanced sampling that increases minority representation over time (recommended over fixed oversampling)')
     parser.add_argument('--progressive_start_factor', type=float, default=1.5,
                        help='Starting balancing factor for progressive sampling (default: 1.5)')
-    parser.add_argument('--progressive_end_factor', type=float, default=3.0,
-                       help='Ending balancing factor for progressive sampling (default: 3.0)')
+    parser.add_argument('--progressive_end_factor', type=float, default=2.0,
+                       help='Ending balancing factor for progressive sampling (default: 2.0, reduced from 3.0)')
     parser.add_argument('--progressive_epochs', type=int, default=15,
                        help='Number of epochs for progressive sampling transition')
 

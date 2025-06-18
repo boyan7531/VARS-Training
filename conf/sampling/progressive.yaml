@@ -1,17 +1,20 @@
 # @package _global_
-# Progressive sampling configuration (OPTIMIZED)
+# Progressive sampling configuration (FIXED - reduced oversampling)
 
 sampling:
   # Sampling strategy
   use_class_balanced_sampler: false
   use_action_balanced_sampler_only: false
   
-  # Oversampling parameters (REDUCED from 4.0 to prevent overfitting)
+  # Oversampling parameters (REDUCED to prevent extreme oversampling)
   oversample_factor: 2.0
   action_oversample_factor: 2.0
   
-  # Progressive sampling (NOW DEFAULT - softer than fixed oversampling)
+  # Progressive sampling (REDUCED factors to prevent bias)
   progressive_class_balancing: true
+  progressive_start_factor: 1.5
+  progressive_end_factor: 2.0  # Reduced from 3.0 to prevent severe bias
+  progressive_epochs: 15
   progressive_start_epoch: 5
   progressive_end_epoch: 20
   
