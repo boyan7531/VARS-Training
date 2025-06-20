@@ -70,11 +70,12 @@ class OptimizedMViTProcessor(nn.Module):
     Processes views sequentially to avoid memory fragmentation and improve GPU utilization.
     """
     
-    def __init__(self, backbone, use_gradient_checkpointing=False, use_mixed_precision=False):
+    def __init__(self, backbone, use_gradient_checkpointing=False, use_mixed_precision=False, expected_max_views=None):
         super().__init__()
         self.backbone = backbone
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_mixed_precision = use_mixed_precision
+        self.expected_max_views = expected_max_views
         self._debug_silent_errors = False  # Enable for debugging silent backbone errors
         
     def enable_debug_mode(self, enabled=True):
@@ -118,8 +119,27 @@ class OptimizedMViTProcessor(nn.Module):
     def _process_tensor_views(self, clips, view_mask):
         """Process standard tensor input with sequential view processing."""
         # Handle different clip formats
-        if clips.dim() == 7:  # [B, clips_per_video, max_views, C, T, H, W]
-            batch_size, clips_per_video, max_views = clips.shape[:3]
+        if clips.dim() == 7:  # [B, clips_per_video, actual_views, C, T, H, W]
+            batch_size, clips_per_video, actual_views = clips.shape[:3]
+            
+            # Handle view dimension mismatch - pad or truncate to expected max_views
+            # Note: max_views is determined by the model configuration, not the data
+            expected_max_views = getattr(self, 'expected_max_views', actual_views)
+            if hasattr(self, 'expected_max_views') and expected_max_views != actual_views:
+                logger.debug(f"Adjusting clips from {actual_views} to {expected_max_views} views")
+                if actual_views < expected_max_views:
+                    # Pad with zeros
+                    pad_size = expected_max_views - actual_views
+                    padding = torch.zeros(batch_size, clips_per_video, pad_size, *clips.shape[3:], 
+                                        device=clips.device, dtype=clips.dtype)
+                    clips = torch.cat([clips, padding], dim=2)
+                elif actual_views > expected_max_views:
+                    # Truncate
+                    clips = clips[:, :, :expected_max_views]
+                max_views = expected_max_views
+            else:
+                max_views = actual_views
+                
             # Flatten clips and views: [B*clips_per_video, max_views, C, T, H, W]
             clips = clips.view(batch_size * clips_per_video, max_views, *clips.shape[3:])
             
@@ -195,18 +215,41 @@ class OptimizedMViTProcessor(nn.Module):
             view_mask = torch.ones(effective_batch_size, max_views, dtype=torch.bool, device=device)
         else:
             # Ensure view_mask matches effective_batch_size after clip flattening
-            if view_mask.shape[0] != effective_batch_size:
-                logger.debug(f"Reshaping view_mask from {view_mask.shape} to match effective_batch_size={effective_batch_size}")
+            if view_mask.shape[0] != effective_batch_size or (view_mask.dim() > 1 and view_mask.shape[-1] != max_views):
+                logger.debug(f"Reshaping view_mask from {view_mask.shape} to match effective_batch_size={effective_batch_size}, max_views={max_views}")
                 if clips_per_video > 1 and view_mask.dim() == 3:
-                    # Handle 3D view_mask: [B, C, V] -> [B*C, V]
-                    if view_mask.shape == (batch_size, clips_per_video, max_views):
-                        view_mask = view_mask.view(effective_batch_size, max_views)
+                    # Handle 3D view_mask: [B, C, V_actual] -> [B*C, max_views]
+                    actual_views = view_mask.shape[2]
+                    if view_mask.shape[:2] == (batch_size, clips_per_video):
+                        # Reshape to [B*C, V_actual]
+                        view_mask_flat = view_mask.view(effective_batch_size, actual_views)
+                        # Pad or truncate to max_views
+                        if actual_views < max_views:
+                            # Pad with False (invalid views)
+                            padding = torch.zeros(effective_batch_size, max_views - actual_views, dtype=torch.bool, device=device)
+                            view_mask = torch.cat([view_mask_flat, padding], dim=1)
+                        elif actual_views > max_views:
+                            # Truncate to max_views
+                            view_mask = view_mask_flat[:, :max_views]
+                        else:
+                            view_mask = view_mask_flat
                     else:
-                        logger.warning(f"3D view_mask shape {view_mask.shape} doesn't match expected [{batch_size}, {clips_per_video}, {max_views}]. Using default mask.")
+                        logger.warning(f"3D view_mask shape {view_mask.shape} doesn't match expected [{batch_size}, {clips_per_video}, *]. Using default mask.")
                         view_mask = torch.ones(effective_batch_size, max_views, dtype=torch.bool, device=device)
                 elif clips_per_video > 1 and view_mask.shape[0] == batch_size:
-                    # Handle 2D view_mask: [B, V] -> [B*C, V] by repeating
-                    view_mask = view_mask.unsqueeze(1).repeat(1, clips_per_video, 1).view(effective_batch_size, max_views)
+                    # Handle 2D view_mask: [B, V_actual] -> [B*C, max_views] by repeating
+                    actual_views = view_mask.shape[1] if view_mask.dim() > 1 else 1
+                    if actual_views < max_views:
+                        # Pad the 2D mask first
+                        padding = torch.zeros(batch_size, max_views - actual_views, dtype=torch.bool, device=device)
+                        view_mask_padded = torch.cat([view_mask, padding], dim=1)
+                    elif actual_views > max_views:
+                        # Truncate the 2D mask first
+                        view_mask_padded = view_mask[:, :max_views]
+                    else:
+                        view_mask_padded = view_mask
+                    # Now repeat for clips
+                    view_mask = view_mask_padded.unsqueeze(1).repeat(1, clips_per_video, 1).view(effective_batch_size, max_views)
                 elif view_mask.shape[0] != effective_batch_size:
                     # Create default mask if dimensions don't match
                     logger.warning(f"view_mask shape mismatch: got {view_mask.shape}, expected [{effective_batch_size}, {max_views}]. Using default mask.")
@@ -603,7 +646,8 @@ class MultiTaskMultiViewMViT(nn.Module):
             self.mvit_processor = OptimizedMViTProcessor(
                 backbone, 
                 use_gradient_checkpointing=self.use_gradient_checkpointing,
-                use_mixed_precision=getattr(self.config, 'use_mixed_precision', False)
+                use_mixed_precision=getattr(self.config, 'use_mixed_precision', False),
+                expected_max_views=getattr(self.config, 'max_views', None)
             )
             
             # Initialize augmentation for addressing class imbalance
