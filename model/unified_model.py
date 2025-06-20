@@ -197,8 +197,15 @@ class OptimizedMViTProcessor(nn.Module):
             # Ensure view_mask matches effective_batch_size after clip flattening
             if view_mask.shape[0] != effective_batch_size:
                 logger.debug(f"Reshaping view_mask from {view_mask.shape} to match effective_batch_size={effective_batch_size}")
-                if clips_per_video > 1 and view_mask.shape[0] == batch_size:
-                    # Repeat view_mask for each clip: [B, V] -> [B*C, V]
+                if clips_per_video > 1 and view_mask.dim() == 3:
+                    # Handle 3D view_mask: [B, C, V] -> [B*C, V]
+                    if view_mask.shape == (batch_size, clips_per_video, max_views):
+                        view_mask = view_mask.view(effective_batch_size, max_views)
+                    else:
+                        logger.warning(f"3D view_mask shape {view_mask.shape} doesn't match expected [{batch_size}, {clips_per_video}, {max_views}]. Using default mask.")
+                        view_mask = torch.ones(effective_batch_size, max_views, dtype=torch.bool, device=device)
+                elif clips_per_video > 1 and view_mask.shape[0] == batch_size:
+                    # Handle 2D view_mask: [B, V] -> [B*C, V] by repeating
                     view_mask = view_mask.unsqueeze(1).repeat(1, clips_per_video, 1).view(effective_batch_size, max_views)
                 elif view_mask.shape[0] != effective_batch_size:
                     # Create default mask if dimensions don't match
