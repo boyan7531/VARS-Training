@@ -193,6 +193,17 @@ class OptimizedMViTProcessor(nn.Module):
         # Create view mask if not provided
         if view_mask is None:
             view_mask = torch.ones(effective_batch_size, max_views, dtype=torch.bool, device=device)
+        else:
+            # Ensure view_mask matches effective_batch_size after clip flattening
+            if view_mask.shape[0] != effective_batch_size:
+                logger.debug(f"Reshaping view_mask from {view_mask.shape} to match effective_batch_size={effective_batch_size}")
+                if clips_per_video > 1 and view_mask.shape[0] == batch_size:
+                    # Repeat view_mask for each clip: [B, V] -> [B*C, V]
+                    view_mask = view_mask.unsqueeze(1).repeat(1, clips_per_video, 1).view(effective_batch_size, max_views)
+                elif view_mask.shape[0] != effective_batch_size:
+                    # Create default mask if dimensions don't match
+                    logger.warning(f"view_mask shape mismatch: got {view_mask.shape}, expected [{effective_batch_size}, {max_views}]. Using default mask.")
+                    view_mask = torch.ones(effective_batch_size, max_views, dtype=torch.bool, device=device)
         
         # Process views sequentially to avoid memory fragmentation
         for view_idx in range(max_views):
