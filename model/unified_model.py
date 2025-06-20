@@ -751,9 +751,12 @@ class MultiTaskMultiViewMViT(nn.Module):
             severity_logits = torch.clamp(severity_logits, min=-20.0, max=20.0)
             action_type_logits = torch.clamp(action_type_logits, min=-20.0, max=20.0)
             
-            # Handle multi-clip averaging if we flattened clips earlier
-            if clips_per_video > 1:
-                # Reshape back to [B, C, num_classes] and average over clips
+            # If the clip dimension has not been averaged out yet (i.e., logits were
+            # produced per-clip), they will have batch_size * clips_per_video rows.
+            # Only then do we reshape and average; otherwise the features were already
+            # collapsed earlier and logits have shape [batch_size, num_classes].
+            expected_rows = batch_size * clips_per_video
+            if clips_per_video > 1 and severity_logits.shape[0] == expected_rows:
                 severity_logits = severity_logits.view(batch_size, clips_per_video, -1).mean(dim=1)
                 action_type_logits = action_type_logits.view(batch_size, clips_per_video, -1).mean(dim=1)
             
