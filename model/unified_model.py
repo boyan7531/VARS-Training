@@ -144,6 +144,7 @@ class OptimizedMViTProcessor(nn.Module):
             clips = clips.view(batch_size * clips_per_video, max_views, *clips.shape[3:])
             
             # Handle view_mask flattening if provided
+            view_mask_processed = False
             if view_mask is not None:
                 if view_mask.dim() == 3:  # [B, clips_per_video, actual_views]
                     # Handle dimension mismatch before flattening
@@ -160,6 +161,7 @@ class OptimizedMViTProcessor(nn.Module):
                             view_mask = view_mask[:, :, :max_views]
                     # Now flatten: [B, clips_per_video, max_views] -> [B*clips_per_video, max_views]
                     view_mask = view_mask.view(batch_size * clips_per_video, max_views)
+                    view_mask_processed = True
                 # If view_mask is 2D, assume it applies to all clips
             
             effective_batch_size = batch_size * clips_per_video
@@ -167,24 +169,29 @@ class OptimizedMViTProcessor(nn.Module):
             batch_size, max_views = clips.shape[:2]
             clips_per_video = 1
             effective_batch_size = batch_size
+            view_mask_processed = False
             
             # Handle view_mask dimensions
             if view_mask is not None and view_mask.dim() == 3:
                 # If we have 3D view_mask but 2D clips, squeeze the clips dimension
                 if view_mask.shape[1] == 1:  # [B, 1, max_views]
                     view_mask = view_mask.squeeze(1)  # [B, max_views]
+                    view_mask_processed = True
         elif clips.dim() == 5:  # [B, C, T, H, W] - single view case
             batch_size = clips.shape[0]
             max_views = 1
             clips_per_video = 1
             effective_batch_size = batch_size
+            view_mask_processed = False
             
             # Create view_mask for single view if not provided
             if view_mask is None:
                 view_mask = torch.ones(batch_size, 1, dtype=torch.bool, device=clips.device)
+                view_mask_processed = True
             elif view_mask.dim() == 2 and view_mask.shape[1] > 1:
                 # If we have multi-view mask but single view clips, take first column
                 view_mask = view_mask[:, :1]
+                view_mask_processed = True
         else:
             raise ValueError(f"Unexpected clips tensor dimensions: {clips.dim()}. Expected 5D [B,C,T,H,W], 6D [B,V,C,T,H,W], or 7D [B,clips_per_video,V,C,T,H,W]")
         
@@ -226,10 +233,11 @@ class OptimizedMViTProcessor(nn.Module):
         # Create view mask if not provided
         if view_mask is None:
             view_mask = torch.ones(effective_batch_size, max_views, dtype=torch.bool, device=device)
-        else:
-            # Ensure view_mask matches effective_batch_size after clip flattening
+        elif not view_mask_processed:
+            # Ensure view_mask matches effective_batch_size after clip flattening (only if not already processed)
             if view_mask.shape[0] != effective_batch_size or (view_mask.dim() > 1 and view_mask.shape[-1] != max_views):
                 logger.debug(f"Reshaping view_mask from {view_mask.shape} to match effective_batch_size={effective_batch_size}, max_views={max_views}")
+                logger.debug(f"Condition check: clips_per_video={clips_per_video}, view_mask.dim()={view_mask.dim()}, view_mask.shape={view_mask.shape}")
                 if clips_per_video > 1 and view_mask.dim() == 3:
                     # Handle 3D view_mask: [B, C, V_actual] -> [B*C, max_views]
                     actual_views = view_mask.shape[2]
