@@ -145,7 +145,20 @@ class OptimizedMViTProcessor(nn.Module):
             
             # Handle view_mask flattening if provided
             if view_mask is not None:
-                if view_mask.dim() == 3:  # [B, clips_per_video, max_views]
+                if view_mask.dim() == 3:  # [B, clips_per_video, actual_views]
+                    # Handle dimension mismatch before flattening
+                    actual_views_mask = view_mask.shape[2]
+                    if actual_views_mask != max_views:
+                        logger.debug(f"Adjusting view_mask from {actual_views_mask} to {max_views} views")
+                        if actual_views_mask < max_views:
+                            # Pad with False (invalid views)
+                            padding = torch.zeros(batch_size, clips_per_video, max_views - actual_views_mask, 
+                                                dtype=torch.bool, device=view_mask.device)
+                            view_mask = torch.cat([view_mask, padding], dim=2)
+                        elif actual_views_mask > max_views:
+                            # Truncate
+                            view_mask = view_mask[:, :, :max_views]
+                    # Now flatten: [B, clips_per_video, max_views] -> [B*clips_per_video, max_views]
                     view_mask = view_mask.view(batch_size * clips_per_video, max_views)
                 # If view_mask is 2D, assume it applies to all clips
             
